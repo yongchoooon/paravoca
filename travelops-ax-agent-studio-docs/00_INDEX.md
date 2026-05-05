@@ -1,0 +1,103 @@
+# TravelOps AX Agent Studio 문서 인덱스
+
+작성 기준일: 2026-05-05
+
+이 폴더는 Codex가 실제 개발을 시작할 수 있도록 만든 프로젝트 상세 명세입니다. 원문 아이디어의 방향은 유지하되, 프론트엔드 CSS 스택은 `Tailwind CSS`와 `shadcn/ui`를 사용하지 않고 `Bootstrap 5`와 `React-Bootstrap`을 사용하는 것으로 확정했습니다.
+
+## 프로젝트 요약
+
+`TravelOps AX Agent Studio`는 여행 액티비티와 관광 상품 운영자를 위한 멀티에이전트 워크플로우 시스템입니다. 사용자가 "이번 달 부산에서 외국인 대상 액티비티 상품을 5개 기획해줘"처럼 요청하면, 시스템은 공공 관광 데이터 조회, 지역/계절성 분석, 상품 아이디어 생성, 상세페이지 카피/FAQ 생성, 리스크 검수, 사람 승인, 저장까지 이어지는 운영 자동화 플로우를 실행합니다.
+
+핵심은 단순 챗봇이 아니라 운영 가능한 AX 시스템처럼 보이게 만드는 것입니다. 그래서 문서 전반에서 다음을 강제합니다.
+
+- 출처 기반 생성: TourAPI, 관광 수요 데이터, 자체 DB, RAG 결과를 근거로 답변합니다.
+- 도구 호출 추적: 어떤 Agent가 어떤 API/tool을 왜 호출했는지 저장합니다.
+- Human-in-the-loop: 최종 저장과 외부 전송은 사람 승인 뒤에만 실행합니다.
+- 평가 자동화: RAG, agent tool call, workflow success, 비용, latency를 측정합니다.
+- 비용 거버넌스: LiteLLM 사용량 추적, 저가 모델 라우팅, 샘플 기반 eval, batch 실행을 설계합니다.
+
+## 문서 목록
+
+1. [01_PRODUCT_BRIEF.md](./01_PRODUCT_BRIEF.md)
+   - 제품 목적, 대상 사용자, 비즈니스 임팩트, 포트폴리오 포지셔닝
+
+2. [02_USER_STORIES_AND_SCOPE.md](./02_USER_STORIES_AND_SCOPE.md)
+   - 사용자 스토리, MVP/P1/P2 범위, 수용 기준
+
+3. [03_SYSTEM_ARCHITECTURE.md](./03_SYSTEM_ARCHITECTURE.md)
+   - 전체 아키텍처, 서비스 구성, 데이터 흐름, 실행 플로우
+
+4. [04_TECH_STACK_BOOTSTRAP.md](./04_TECH_STACK_BOOTSTRAP.md)
+   - 기술스택 확정안, Bootstrap 적용 방식, Tailwind/shadcn 금지 사항
+
+5. [05_DATA_SOURCES_AND_INGESTION.md](./05_DATA_SOURCES_AND_INGESTION.md)
+   - TourAPI, 관광 수요 데이터, 수집/정제/저장/색인 전략
+
+6. [06_AGENT_WORKFLOW_SPEC.md](./06_AGENT_WORKFLOW_SPEC.md)
+   - Planner, Data, Research, Product, Marketing, QA/Compliance Agent 상세 명세
+
+7. [07_BACKEND_API_AND_DB_SPEC.md](./07_BACKEND_API_AND_DB_SPEC.md)
+   - FastAPI 엔드포인트, DB 테이블, Pydantic 스키마, 작업 큐
+
+8. [08_FRONTEND_UI_SPEC.md](./08_FRONTEND_UI_SPEC.md)
+   - React/Next.js UI, React Flow 워크플로우 빌더, Bootstrap 컴포넌트 규칙
+
+9. [09_RAG_GUARDRAILS_EVALUATION.md](./09_RAG_GUARDRAILS_EVALUATION.md)
+   - RAG 설계, Guardrails, Ragas/DeepEval/pytest 평가 지표
+
+10. [10_COST_BILLING_AND_PAYMENT.md](./10_COST_BILLING_AND_PAYMENT.md)
+    - LLM 비용 설계, 월 3만 원 내외 운영 전략, SaaS 결제 설계, Toss/Stripe 옵션
+
+11. [11_IMPLEMENTATION_ROADMAP.md](./11_IMPLEMENTATION_ROADMAP.md)
+    - 개발 순서, 마일스톤, Codex 작업 단위, 완료 기준
+
+12. [12_DEPLOYMENT_OPERATIONS_SECURITY.md](./12_DEPLOYMENT_OPERATIONS_SECURITY.md)
+    - Docker, 배포, 환경변수, 보안, 로그, 운영 점검
+
+13. [13_CODEX_IMPLEMENTATION_PROMPT.md](./13_CODEX_IMPLEMENTATION_PROMPT.md)
+    - Codex에게 그대로 전달할 구현 프롬프트와 작업 규칙
+
+## 최종 개발 방향
+
+### MVP에서 반드시 구현할 것
+
+- 지역/기간/타깃/상품 수 입력 기반 상품 기획 실행
+- TourAPI 기반 관광지/행사/숙박/이미지 데이터 조회
+- RAG 검색 결과와 출처를 포함한 상품 아이디어 생성
+- 상세페이지 카피, FAQ, SNS 문구, 검색 키워드 생성
+- QA/Compliance Agent의 리스크 검수
+- Human Approval 상태 전환
+- Workflow Builder UI에서 노드 기반 플로우 생성/실행
+- 실행 로그, tool call 로그, 비용/latency 기록
+- 최소 평가 스크립트: retrieval recall, faithfulness, tool call accuracy, task success, cost per task
+
+### MVP에서 하지 않을 것
+
+- 실제 여행 상품 판매/예약/재고 연동
+- 실결제 승인
+- 대규모 크롤링
+- 자체 LLM 학습
+- 완전한 멀티테넌트 권한/정산 시스템
+- Tailwind CSS, shadcn/ui 설치 또는 사용
+
+## 공식 출처 확인 메모
+
+아래 링크는 문서 작성 시 참고한 공식/주요 출처입니다. 가격과 API 정책은 변동 가능성이 있으므로 실제 구현 직전 재확인이 필요합니다.
+
+- 한국관광공사 국문 관광정보 서비스: https://www.data.go.kr/data/15101578/openapi.do
+- 한국관광공사 지역별 관광 자원 수요 API: https://www.data.go.kr/data/15152138/openapi.do
+- LangGraph workflows/agents: https://docs.langchain.com/oss/python/langgraph/workflows-agents
+- OpenAI Agents SDK: https://platform.openai.com/docs/guides/agents-sdk
+- OpenAI API pricing: https://openai.com/api/pricing/
+- Gemini Developer API pricing: https://ai.google.dev/pricing
+- Claude pricing: https://platform.claude.com/docs/en/about-claude/pricing
+- LiteLLM docs: https://docs.litellm.ai/
+- Chroma docs: https://docs.trychroma.com/docs/overview/getting-started
+- Qdrant quickstart/indexing: https://qdrant.tech/documentation/quick-start/
+- Ragas metrics: https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/
+- DeepEval docs: https://deepeval.com/docs/introduction
+- React Flow: https://reactflow.dev/
+- React-Bootstrap: https://react-bootstrap.github.io/docs/getting-started/introduction
+- Toss Payments billing: https://docs.tosspayments.com/guides/v2/billing
+- Stripe subscriptions: https://docs.stripe.com/billing/subscriptions/set-up-subscription
+
