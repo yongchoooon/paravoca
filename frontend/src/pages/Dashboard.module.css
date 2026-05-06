@@ -1,0 +1,72 @@
+.toolbar {
+  align-items: flex-start;
+}
+
+.tablePanel {
+  overflow-x: auto;
+}
+
+.runsTable {
+  table-layout: fixed;
+  min-width: 980px;
+}
+
+.taskColumn {
+  width: 34%;
+}
+
+.statusColumn {
+  width: 112px;
+}
+
+.regionColumn {
+  width: 90px;
+}
+
+.productsColumn {
+  width: 90px;
+}
+
+.revisionsColumn {
+  width: 120px;
+}
+
+.createdColumn {
+  width: 180px;
+}
+
+.actionColumn {
+  width: 96px;
+}
+
+.taskCell {
+  overflow: hidden;
+}
+
+.revisionRow td {
+  background: var(--mantine-color-gray-0);
+}
+
+.revisionTask {
+  padding-left: 20px;
+}
+
+.branchMarker {
+  color: var(--mantine-color-gray-6);
+  flex: 0 0 auto;
+}
+
+.overviewPanel {
+  background: var(--mantine-color-gray-0);
+}
+
+.workflowPreview {
+  height: 430px;
+  border: 1px solid var(--mantine-color-gray-3);
+  background: var(--mantine-color-gray-0);
+}
+
+.workflowNodeLabel {
+  width: 126px;
+  text-align: left;
+}

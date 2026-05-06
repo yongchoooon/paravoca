@@ -1,0 +1,87 @@
+.detailGrid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.2fr);
+  gap: 16px;
+}
+
+.revisionEditGrid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.35fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.productList {
+  overflow: hidden;
+}
+
+.productButton {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.productButtonLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel {
+  min-width: 0;
+}
+
+.evidenceTable {
+  overflow: hidden;
+}
+
+.jsonBlock {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.qaTable {
+  table-layout: fixed;
+  min-width: 1120px;
+}
+
+.qaSelectColumn {
+  width: 44px;
+  min-width: 44px;
+}
+
+.qaProductColumn {
+  width: 180px;
+  min-width: 180px;
+}
+
+.qaSeverityColumn {
+  width: 96px;
+  min-width: 96px;
+  white-space: nowrap;
+}
+
+.qaTypeColumn {
+  width: 112px;
+  min-width: 112px;
+  white-space: nowrap;
+}
+
+.qaMessageColumn {
+  min-width: 420px;
+}
+
+.qaFixColumn {
+  min-width: 270px;
+}
+
+.qaSeverityBadge {
+  min-width: 44px;
+  justify-content: center;
+}
+
+@media (max-width: 900px) {
+  .detailGrid,
+  .revisionEditGrid {
+    grid-template-columns: 1fr;
+  }
+}

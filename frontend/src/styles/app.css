@@ -1,0 +1,19 @@
+:root {
+  color-scheme: light;
+  background: var(--mantine-color-gray-0);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--mantine-color-gray-0);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+

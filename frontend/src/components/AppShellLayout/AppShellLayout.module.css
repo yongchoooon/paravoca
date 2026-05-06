@@ -1,0 +1,24 @@
+.brandMark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--mantine-color-opsBlue-6);
+  color: white;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.navButton {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.main {
+  min-height: calc(100vh - 56px);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0)),
+    var(--mantine-color-gray-0);
+}
+
