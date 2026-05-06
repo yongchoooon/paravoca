@@ -6,6 +6,7 @@ __pycache__/
 data/*.db
 data/*.log
 backend/data/*.db
+*.db.*
 backend/logs/
 data/chroma/
 data/test_chroma/
