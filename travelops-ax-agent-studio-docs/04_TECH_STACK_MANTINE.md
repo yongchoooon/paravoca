@@ -20,7 +20,7 @@
 
 - LangGraph 우선 사용
 - OpenAI Agents SDK는 대체 구현 또는 비교 구현으로 문서화
-- LiteLLM for LLM gateway
+- Gemini gateway for LLM calls
 - Guardrails는 다음 방식으로 구현
   - Pydantic schema validation
   - deterministic rule checks
@@ -53,10 +53,11 @@ P1 또는 production-like 옵션:
 
 - React 또는 Next.js
 - TypeScript
+- Mantine UI
+- CSS Modules 또는 SCSS Modules
 - React Flow (`@xyflow/react`)
-- Bootstrap 5
-- React-Bootstrap
-- Bootstrap Icons 또는 lucide-react
+- Tabler Icons 또는 lucide-react
+- Recharts optional
 - TanStack Query optional
 - Zustand optional
 
@@ -64,7 +65,8 @@ P1 또는 production-like 옵션:
 
 - Tailwind CSS 사용 금지
 - shadcn/ui 사용 금지
-- Radix 기반 shadcn 컴포넌트 scaffold 금지
+- Bootstrap 사용 금지
+- Bootstrap 기반 class, layout, component library 사용 금지
 
 ### Evaluation
 
@@ -84,116 +86,222 @@ P1 또는 production-like 옵션:
 - DB: SQLite MVP, PostgreSQL managed DB optional
 - Vector DB: Chroma local/persistent, Qdrant container optional
 
-## Bootstrap 프론트엔드 규칙
+## Mantine 프론트엔드 규칙
 
 ### 설치 패키지
 
-React 기반으로 개발할 경우:
+React 또는 Next.js 기반으로 개발할 경우:
 
 ```bash
-npm install bootstrap react-bootstrap @xyflow/react bootstrap-icons
+npm install @mantine/core @mantine/hooks @mantine/form @mantine/notifications @mantine/dates @tabler/icons-react @xyflow/react
 ```
 
-Next.js 기반으로 개발할 경우도 동일합니다.
+차트가 필요하면:
 
-`src/main.tsx` 또는 Next.js root layout에서 Bootstrap CSS를 import합니다.
+```bash
+npm install @mantine/charts recharts
+```
+
+Mantine 기본 스타일은 앱 루트에서 import합니다.
 
 ```tsx
-import "bootstrap/dist/css/bootstrap.min.css";
-import "bootstrap-icons/font/bootstrap-icons.css";
-import "./styles/app.scss";
+import "@mantine/core/styles.css";
+import "@mantine/notifications/styles.css";
+import "@mantine/dates/styles.css";
+import "@xyflow/react/dist/style.css";
+import "./styles/app.css";
 ```
 
-Bootstrap JS가 필요한 dropdown/modal/toast를 React-Bootstrap으로 구현하면 별도 Bootstrap JS import를 최소화할 수 있습니다.
+앱 루트는 `MantineProvider`와 `Notifications`로 감쌉니다.
 
-### 사용 컴포넌트
+```tsx
+import { MantineProvider } from "@mantine/core";
+import { Notifications } from "@mantine/notifications";
+import { theme } from "./theme";
 
-React-Bootstrap 권장 컴포넌트:
+export function Root() {
+  return (
+    <MantineProvider theme={theme} defaultColorScheme="light">
+      <Notifications position="top-right" />
+      <App />
+    </MantineProvider>
+  );
+}
+```
 
-- `Container`
-- `Row`
-- `Col`
-- `Navbar`
-- `Nav`
-- `Button`
-- `ButtonGroup`
-- `Card`
-- `Badge`
-- `Alert`
-- `Tabs`
-- `Tab`
+### 핵심 Mantine 컴포넌트
+
+운영툴 UI는 Mantine의 다음 컴포넌트를 중심으로 구성합니다.
+
+- `AppShell`
 - `Table`
-- `Form`
-- `InputGroup`
+- `Tabs`
 - `Modal`
-- `Offcanvas`
-- `Toast`
-- `Dropdown`
-- `ProgressBar`
-- `Spinner`
+- `Drawer`
+- `Notification` / `Notifications`
+- `Badge`
+- `Button`
+- `ActionIcon`
+- `Menu`
+- `Group`
+- `Stack`
+- `Grid`
+- `SimpleGrid`
+- `Card`
+- `Paper`
+- `ScrollArea`
+- `Divider`
+- `Text`
+- `Title`
+- `Tooltip`
+- `Progress`
+- `RingProgress`
+- `Timeline`
+- `Alert`
+- `Loader`
+- `Skeleton`
+- `TextInput`
+- `Textarea`
+- `NumberInput`
+- `Select`
+- `MultiSelect`
+- `DateInput` 또는 `DatePickerInput`
+- `Checkbox`
+- `Switch`
+- `SegmentedControl`
 
-단, 운영툴 UI에서는 장식적인 Card 남용을 피합니다. Card는 반복 아이템, 결과 패널, modal 내부 요약 정도에 제한합니다.
+`Card`와 `Paper`는 반복 item, 결과 패널, inspector, modal 내부 요약에만 제한적으로 사용합니다. 페이지 전체를 카드 묶음처럼 만들지 않습니다.
 
 ### 스타일 파일 구조
 
+CSS Modules 또는 SCSS Modules를 사용합니다.
+
 ```text
-frontend/src/styles/
-  app.scss
-  _variables.scss
-  _layout.scss
-  _workflow-builder.scss
-  _run-console.scss
-  _result-review.scss
-  _evaluation.scss
+frontend/src/
+  theme.ts
+  styles/
+    app.css
+  components/
+    AppShellLayout/
+      AppShellLayout.tsx
+      AppShellLayout.module.css
+    WorkflowCanvas/
+      WorkflowCanvas.tsx
+      WorkflowCanvas.module.css
+    ResultReview/
+      ResultReview.tsx
+      ResultReview.module.css
 ```
 
-### Bootstrap theme customization
+SCSS Modules를 선택하면:
 
-`_variables.scss` 예시:
+```text
+AppShellLayout.module.scss
+WorkflowCanvas.module.scss
+ResultReview.module.scss
+```
 
-```scss
-$primary: #1f6feb;
-$success: #2da44e;
-$warning: #bf8700;
-$danger: #cf222e;
-$body-bg: #f6f8fa;
-$body-color: #24292f;
-$border-radius: 0.375rem;
-$border-radius-lg: 0.5rem;
+### Mantine theme customization
+
+`theme.ts` 예시:
+
+```tsx
+import { createTheme, rem } from "@mantine/core";
+
+export const theme = createTheme({
+  primaryColor: "indigo",
+  fontFamily:
+    "Inter, Pretendard, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+  headings: {
+    fontFamily:
+      "Inter, Pretendard, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+    fontWeight: "650",
+  },
+  radius: {
+    xs: rem(3),
+    sm: rem(5),
+    md: rem(7),
+    lg: rem(8),
+    xl: rem(10),
+  },
+  defaultRadius: "md",
+  colors: {
+    opsBlue: [
+      "#edf4ff",
+      "#dce9fb",
+      "#b8d0f3",
+      "#91b5ec",
+      "#709fe5",
+      "#5b90e2",
+      "#4f87e1",
+      "#4076c8",
+      "#3569b3",
+      "#285a9f",
+    ],
+  },
+});
 ```
 
 주의:
 
+- Mantine 기본 theme를 그대로 쓰지 말고 운영툴에 맞게 spacing, radius, color, font weight를 조정합니다.
 - 한 가지 색상 계열만 지배하는 팔레트를 피합니다.
 - 보라/남색 gradient 중심 UI를 피합니다.
-- 운영툴답게 밀도 있고 스캔하기 쉬운 UI를 만듭니다.
+- SaaS 운영툴답게 밀도 있고 스캔하기 쉬운 UI를 만듭니다.
 - hero/landing page를 만들지 않습니다. 첫 화면은 실제 workflow dashboard입니다.
 
-### Tailwind/shadcn 금지 사항
+### CSS Modules 사용 원칙
+
+Mantine props만으로 충분한 레이아웃은 Mantine props를 사용합니다.
+
+```tsx
+<Group justify="space-between" align="center" gap="sm">
+  <Badge color="green" variant="light">approved</Badge>
+  <Button size="xs">Run</Button>
+</Group>
+```
+
+반복되는 화면 구조, React Flow canvas, run console, result review처럼 제품 고유의 레이아웃은 CSS Modules로 작성합니다.
+
+```css
+.canvasShell {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 340px;
+  height: calc(100dvh - var(--app-shell-header-height));
+  min-height: 640px;
+}
+
+.canvas {
+  min-width: 0;
+  border-left: 1px solid var(--mantine-color-gray-3);
+  border-right: 1px solid var(--mantine-color-gray-3);
+}
+```
+
+### Tailwind/shadcn/Bootstrap 금지 사항
 
 다음 파일이나 패키지는 만들거나 설치하지 않습니다.
 
 - `tailwind.config.js`
 - `tailwind.config.ts`
-- `postcss.config.js`에 tailwind plugin
+- Tailwind용 `postcss.config.js`
 - `@tailwind base`
 - `@tailwind components`
 - `@tailwind utilities`
 - `tailwindcss`
 - `shadcn-ui`
-- `components.json` for shadcn
-- `class-variance-authority`를 shadcn 목적으로 추가
+- shadcn용 `components.json`
+- shadcn 목적으로 쓰는 `class-variance-authority`
+- `bootstrap`
+- `react-bootstrap`
+- `bootstrap-icons`
 
-Bootstrap utility class는 사용 가능합니다.
+다음 스타일 방식도 피합니다.
 
-예:
-
-```tsx
-<div className="d-flex align-items-center gap-2">
-  <Badge bg="success">approved</Badge>
-  <Button variant="primary" size="sm">Run</Button>
-</div>
-```
+- Tailwind utility class 기반 layout
+- Bootstrap class 기반 layout
+- shadcn scaffold component 복붙
+- 아무 theme 조정 없이 Mantine default만 쓰는 화면
 
 ## Backend 상세 스택
 
@@ -307,15 +415,15 @@ OpenAI Agents SDK는 다음 primitive를 제공합니다.
 
 `cheap`: 분류, 정규화, 간단 요약
 
-- Gemini Flash-Lite 또는 저가 OpenAI mini/nano 계열
+- Gemini 2.5 Flash-Lite
 
 `standard`: 상품 기획, 카피 생성
 
-- Gemini Flash, GPT mini급, Claude Haiku/Sonnet 소량
+- Gemini 2.5 Flash-Lite 우선, 필요 시 Gemini Flash 계열 검토
 
 `premium`: 최종 품질 생성, 복잡한 검수
 
-- Claude Sonnet 또는 GPT 계열
+- GPT 계열
 
 ### 호출 정책
 
@@ -356,7 +464,7 @@ MVP 우선순위:
 
 - API schema
 - DB model
-- tool provider mock
+- TourAPI provider integration
 - prompt output parser
 - cost calculation
 - approval gate
@@ -426,17 +534,20 @@ Qdrant를 선택하면:
 ```json
 {
   "dependencies": {
+    "@mantine/core": "^7",
+    "@mantine/hooks": "^7",
+    "@mantine/form": "^7",
+    "@mantine/notifications": "^7",
+    "@mantine/dates": "^7",
+    "@tabler/icons-react": "^3",
     "@xyflow/react": "^12",
-    "bootstrap": "^5",
-    "bootstrap-icons": "^1",
-    "react-bootstrap": "^2",
     "react": "^19",
     "react-dom": "^19"
   }
 }
 ```
 
-React 버전은 실제 scaffold 시점의 안정 버전에 맞춥니다.
+React와 Mantine의 실제 major version은 scaffold 시점의 안정 버전에 맞춥니다.
 
 ## 품질 기준
 
@@ -444,6 +555,6 @@ React 버전은 실제 scaffold 시점의 안정 버전에 맞춥니다.
 - 모든 LLM 출력은 가능하면 structured output 또는 JSON schema validation을 거칩니다.
 - tool call은 DB에 저장합니다.
 - workflow run마다 cost와 latency를 집계합니다.
-- Bootstrap class와 SCSS를 사용하되, 인라인 style 남용을 피합니다.
+- Mantine component props, theme, CSS Modules를 함께 사용합니다.
 - 사용자에게 보이는 상태명은 일관되게 표시합니다.
-
+- Tailwind/shadcn/Bootstrap 의존성이 없어야 합니다.

@@ -2,19 +2,19 @@
 
 작성 기준일: 2026-05-05
 
-이 폴더는 Codex가 실제 개발을 시작할 수 있도록 만든 프로젝트 상세 명세입니다. 원문 아이디어의 방향은 유지하되, 프론트엔드 CSS 스택은 `Tailwind CSS`와 `shadcn/ui`를 사용하지 않고 `Bootstrap 5`와 `React-Bootstrap`을 사용하는 것으로 확정했습니다.
+이 폴더는 Codex가 실제 개발을 시작할 수 있도록 만든 프로젝트 상세 명세입니다. 원문 아이디어의 방향은 유지하되, 프론트엔드 스택은 `Tailwind CSS`, `shadcn/ui`, `Bootstrap`을 사용하지 않고 `Mantine UI`, `CSS Modules 또는 SCSS Modules`, `React Flow`를 사용하는 것으로 확정했습니다.
 
 ## 프로젝트 요약
 
 `TravelOps AX Agent Studio`는 여행 액티비티와 관광 상품 운영자를 위한 멀티에이전트 워크플로우 시스템입니다. 사용자가 "이번 달 부산에서 외국인 대상 액티비티 상품을 5개 기획해줘"처럼 요청하면, 시스템은 공공 관광 데이터 조회, 지역/계절성 분석, 상품 아이디어 생성, 상세페이지 카피/FAQ 생성, 리스크 검수, 사람 승인, 저장까지 이어지는 운영 자동화 플로우를 실행합니다.
 
-핵심은 단순 챗봇이 아니라 운영 가능한 AX 시스템처럼 보이게 만드는 것입니다. 그래서 문서 전반에서 다음을 강제합니다.
+제품 방향은 여행 상품화 운영 업무에 맞춥니다. 문서 전반에서 다음을 강제합니다.
 
 - 출처 기반 생성: TourAPI, 관광 수요 데이터, 자체 DB, RAG 결과를 근거로 답변합니다.
 - 도구 호출 추적: 어떤 Agent가 어떤 API/tool을 왜 호출했는지 저장합니다.
 - Human-in-the-loop: 최종 저장과 외부 전송은 사람 승인 뒤에만 실행합니다.
 - 평가 자동화: RAG, agent tool call, workflow success, 비용, latency를 측정합니다.
-- 비용 거버넌스: LiteLLM 사용량 추적, 저가 모델 라우팅, 샘플 기반 eval, batch 실행을 설계합니다.
+- 비용 거버넌스: Gemini gateway 사용량 추적, 저가 모델 라우팅, 샘플 기반 eval, batch 실행을 설계합니다.
 
 ## 문서 목록
 
@@ -27,8 +27,8 @@
 3. [03_SYSTEM_ARCHITECTURE.md](./03_SYSTEM_ARCHITECTURE.md)
    - 전체 아키텍처, 서비스 구성, 데이터 흐름, 실행 플로우
 
-4. [04_TECH_STACK_BOOTSTRAP.md](./04_TECH_STACK_BOOTSTRAP.md)
-   - 기술스택 확정안, Bootstrap 적용 방식, Tailwind/shadcn 금지 사항
+4. [04_TECH_STACK_MANTINE.md](./04_TECH_STACK_MANTINE.md)
+   - 기술스택 확정안, Mantine UI 적용 방식, Tailwind/shadcn/Bootstrap 금지 사항
 
 5. [05_DATA_SOURCES_AND_INGESTION.md](./05_DATA_SOURCES_AND_INGESTION.md)
    - TourAPI, 관광 수요 데이터, 수집/정제/저장/색인 전략
@@ -40,7 +40,7 @@
    - FastAPI 엔드포인트, DB 테이블, Pydantic 스키마, 작업 큐
 
 8. [08_FRONTEND_UI_SPEC.md](./08_FRONTEND_UI_SPEC.md)
-   - React/Next.js UI, React Flow 워크플로우 빌더, Bootstrap 컴포넌트 규칙
+   - React/Next.js UI, React Flow 워크플로우 빌더, Mantine UI 컴포넌트 규칙
 
 9. [09_RAG_GUARDRAILS_EVALUATION.md](./09_RAG_GUARDRAILS_EVALUATION.md)
    - RAG 설계, Guardrails, Ragas/DeepEval/pytest 평가 지표
@@ -78,7 +78,8 @@
 - 대규모 크롤링
 - 자체 LLM 학습
 - 완전한 멀티테넌트 권한/정산 시스템
-- Tailwind CSS, shadcn/ui 설치 또는 사용
+- Poster Studio 이미지 생성
+- Tailwind CSS, shadcn/ui, Bootstrap 설치 또는 사용
 
 ## 공식 출처 확인 메모
 
@@ -87,17 +88,14 @@
 - 한국관광공사 국문 관광정보 서비스: https://www.data.go.kr/data/15101578/openapi.do
 - 한국관광공사 지역별 관광 자원 수요 API: https://www.data.go.kr/data/15152138/openapi.do
 - LangGraph workflows/agents: https://docs.langchain.com/oss/python/langgraph/workflows-agents
-- OpenAI Agents SDK: https://platform.openai.com/docs/guides/agents-sdk
-- OpenAI API pricing: https://openai.com/api/pricing/
 - Gemini Developer API pricing: https://ai.google.dev/pricing
-- Claude pricing: https://platform.claude.com/docs/en/about-claude/pricing
-- LiteLLM docs: https://docs.litellm.ai/
+- OpenAI Image generation: https://developers.openai.com/api/docs/guides/image-generation
 - Chroma docs: https://docs.trychroma.com/docs/overview/getting-started
 - Qdrant quickstart/indexing: https://qdrant.tech/documentation/quick-start/
 - Ragas metrics: https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/
 - DeepEval docs: https://deepeval.com/docs/introduction
 - React Flow: https://reactflow.dev/
-- React-Bootstrap: https://react-bootstrap.github.io/docs/getting-started/introduction
+- Mantine getting started: https://mantine.dev/getting-started/
+- Mantine AppShell: https://mantine.dev/core/app-shell/
 - Toss Payments billing: https://docs.tosspayments.com/guides/v2/billing
 - Stripe subscriptions: https://docs.stripe.com/billing/subscriptions/set-up-subscription
-

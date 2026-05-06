@@ -50,19 +50,30 @@ Chroma만 사용할 경우 Qdrant 서비스는 생략 가능합니다.
 
 ```env
 APP_ENV=local
-DATABASE_URL=sqlite:////data/travelops.db
+DATABASE_URL=sqlite:///./data/travelops.db
+CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
 
-TOURISM_PROVIDER=mock
 TOURAPI_SERVICE_KEY=
 
 VECTOR_DB=chroma
-CHROMA_PATH=/data/chroma
+CHROMA_PATH=./data/chroma
 QDRANT_URL=http://localhost:6333
 
-LITELLM_LOG_LEVEL=INFO
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
 GEMINI_API_KEY=
+GEMINI_CHECK_MODEL=gemini-2.5-flash-lite
+GEMINI_GENERATION_MODEL=gemini-2.5-flash-lite
+GEMINI_MAX_RETRIES=3
+GEMINI_JSON_MAX_RETRIES=2
+GEMINI_RETRY_BASE_SECONDS=1.5
+GEMINI_RETRY_MAX_SECONDS=12
+LLM_USAGE_LOG_DIR=logs
+APP_LOG_DIR=logs
+
+# Future Poster Studio
+OPENAI_API_KEY=
+OPENAI_IMAGE_MODEL=gpt-image-2
+POSTER_GENERATION_ENABLED=false
+POSTER_ASSET_DIR=poster_assets
 
 DEFAULT_CHEAP_MODEL=
 DEFAULT_STANDARD_MODEL=
@@ -75,16 +86,8 @@ MONTHLY_BUDGET_KRW=30000
 WORKFLOW_BUDGET_KRW=300
 EVAL_RUN_BUDGET_KRW=3000
 
-MOCK_LLM_ENABLED=true
-MOCK_LLM_FIXTURE_PATH=app/fixtures/mock_llm
-
+LLM_ENABLED=true
 SECRET_KEY=change-me
-CORS_ORIGINS=http://localhost:5173,http://localhost:3000
-
-TOSS_CLIENT_KEY=
-TOSS_SECRET_KEY=
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
 ```
 
 ## Secret 관리
@@ -121,7 +124,7 @@ Production:
 MVP:
 
 - 단일 demo user
-- header 기반 mock user optional
+- header 기반 dev user optional
 
 P1:
 
@@ -226,7 +229,7 @@ docker compose up --build
 장점:
 
 - 비용 거의 없음
-- mock provider 사용 가능
+- 실제 TourAPI 기반 데모 가능
 - 영상 녹화 쉬움
 
 ### Option B: Render/Railway backend + Vercel frontend
@@ -276,6 +279,18 @@ Docker Compose 전체를 한 서버에서 실행합니다.
 - tool argument validation
 - external write tool approval gate
 
+### Poster Studio
+
+- OpenAI API key는 backend env에만 저장
+- 포스터 생성은 `POSTER_GENERATION_ENABLED=true`일 때만 허용
+- 이미지 생성 전 사용자가 prompt와 옵션을 확인
+- 생성 이미지는 기본 `needs_review` 상태로 저장
+- 승인 전 외부 게시/export 차단
+- 이미지 안 텍스트는 사람이 최종 검수
+- 가격, 예약 가능 여부, 운영 일정 단정 표현 차단
+- TourAPI 이미지 참고/재사용 시 license note 확인
+- OpenAI Image API 모델명, 가격, moderation 설정은 구현 직전에 공식 문서로 재확인
+
 ### Data
 
 - 공공데이터 license note 보존
@@ -309,7 +324,7 @@ P2 결제 구현 시:
 대응:
 
 - retry
-- fallback model
+- backup model
 - partial output
 - failed step 표시
 
@@ -317,8 +332,8 @@ P2 결제 구현 시:
 
 대응:
 
-- keyword DB search fallback
-- RAG confidence 낮춤
+- 실패 로그 저장
+- run 실패 처리
 - eval report에 retrieval failure 기록
 
 ### Budget exceeded
@@ -369,4 +384,3 @@ MVP에서 production으로 가기 전에 필요한 것:
 - 결제 약관
 - API quota management
 - automated backup
-

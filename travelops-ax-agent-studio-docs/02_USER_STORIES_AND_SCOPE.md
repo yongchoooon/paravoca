@@ -36,7 +36,7 @@ QA/Compliance 결과를 검토하고 수정 의견을 남깁니다.
 
 결과 리포트와 실행 로그를 조회합니다.
 
-MVP에서는 인증을 간단히 구현합니다. 실제 계정 시스템은 `user_id` mock 또는 단일 관리자 계정으로 시작해도 됩니다.
+MVP에서는 인증을 간단히 구현합니다. 실제 계정 시스템은 단일 관리자 계정으로 시작해도 됩니다.
 
 ## MVP 사용자 스토리
 
@@ -86,9 +86,9 @@ MVP에서는 인증을 간단히 구현합니다. 실제 계정 시스템은 `us
 수용 기준:
 
 - Data Agent는 지역코드 조회, 키워드 검색, 지역 기반 관광정보, 행사정보, 숙박정보, 이미지정보 중 최소 3개 이상을 호출합니다.
-- 실제 API 키가 없을 때는 fixture/mock provider가 동일한 인터페이스로 응답합니다.
+- 실제 TourAPI 키가 없으면 관광 데이터 조회와 workflow run은 실패 상태로 기록됩니다.
 - tool call 로그에는 tool name, arguments, response summary, latency, success 여부가 저장됩니다.
-- API 실패 시 retry 또는 graceful fallback이 동작합니다.
+- API 실패 시 tool call error와 workflow run error가 저장되고 개발자 로그에 출력됩니다.
 
 ### US-004: 지역/계절성/타깃 분석
 
@@ -196,8 +196,58 @@ MVP에서는 인증을 간단히 구현합니다. 실제 계정 시스템은 `us
   - Task Success Rate
   - Cost per Task
   - Latency
-  - Human Revision Rate
+- Human Revision Rate
 - 평가 결과는 JSON과 Markdown 리포트로 저장됩니다.
+
+## 후속 사용자 스토리
+
+### US-011: Poster Studio
+
+사용자로서 승인 또는 검토 중인 상품 초안을 기반으로 홍보 포스터를 만들고 싶다.
+
+사용 흐름:
+
+1. Run Review에서 포스터를 만들 상품을 선택합니다.
+2. 시스템은 선택한 상품의 title, one_liner, core_value, itinerary, sales_copy, FAQ, assumptions, not_to_claim, QA issue를 읽습니다.
+3. Poster Prompt Agent가 포스터에 넣을 문구와 디자인 방향을 추천합니다.
+4. 사용자는 추천 문구를 남기거나 삭제하고 직접 수정합니다.
+5. 사용자는 포스터 목적, 비율, 스타일, 문구 밀도, 포함 정보, 이미지 기준을 선택합니다.
+6. Poster Prompt Agent가 최종 이미지 생성 프롬프트를 생성합니다.
+7. Poster Image Agent가 OpenAI Image API로 포스터 이미지를 생성합니다.
+8. 생성 결과는 원본 run과 product에 연결되어 저장됩니다.
+
+입력 옵션:
+
+- `product_id`: 포스터를 만들 상품
+- `purpose`: `detail_cover`, `sns_feed`, `sns_story`, `offline_a4`
+- `aspect_ratio`: `1:1`, `4:5`, `9:16`, `a4_portrait`
+- `style_direction`: 예: 프리미엄 여행, 로컬 감성, 축제 홍보, 가족 친화, 액티비티 중심
+- `copy_density`: `minimal`, `balanced`, `detailed`
+- `include_fields`: 상품명, 지역, 기간, 타깃, 핵심 코스, CTA, 확인 필요 문구
+- `visual_source_mode`: `ai_generated`, `tourapi_reference`, `graphic_only`
+- `custom_instruction`: 사용자가 직접 추가하는 디자인/문구 지시
+
+Poster Prompt Agent 추천 항목:
+
+- headline 후보 3개
+- subheadline 후보 3개
+- CTA 후보 3개
+- 포스터에 넣을 핵심 정보
+- 제외할 정보
+- 이미지 스타일 설명
+- 색감/분위기 후보
+- 텍스트 배치 가이드
+- 운영 리스크가 있는 문구
+
+수용 기준:
+
+- 포스터 생성은 기존 workflow run을 덮어쓰지 않고 별도 poster asset으로 저장됩니다.
+- 최종 이미지 생성 전 사용자가 문구와 옵션을 확인하고 수정할 수 있습니다.
+- 최종 prompt에는 가격, 예약 가능 여부, 운영 시간 단정 표현이 들어가지 않아야 합니다.
+- `not_to_claim`, QA issue, requested changes는 포스터 문구 추천에서 제한 조건으로 반영됩니다.
+- 생성된 이미지, prompt, 선택 옵션, provider, model, latency, 예상 비용이 저장됩니다.
+- 기본 이미지 모델 후보는 구현 시점 공식 문서 기준으로 재확인하며, 현재 문서 기준 후보는 `gpt-image-2`입니다.
+- 생성 이미지는 `needs_review` 상태로 시작하고 사람이 승인해야 사용 가능 상태가 됩니다.
 
 ## MVP 범위
 
@@ -207,12 +257,12 @@ MVP에서는 인증을 간단히 구현합니다. 실제 계정 시스템은 `us
 - SQLite 기본 DB, PostgreSQL 전환 가능 구조
 - SQLAlchemy 모델
 - LangGraph 기반 workflow 실행
-- LiteLLM 기반 모델 호출 wrapper
-- TourAPI provider와 mock provider
+- Gemini gateway 기반 모델 호출 wrapper
+- TourAPI provider
 - Chroma 또는 Qdrant 중 하나
 - React 또는 Next.js frontend
 - React Flow workflow builder
-- Bootstrap 5 + React-Bootstrap UI
+- Mantine UI + CSS Modules 또는 SCSS Modules UI
 - pytest 평가/단위 테스트
 - Ragas 또는 DeepEval 최소 1개 연동
 - Docker Compose
@@ -220,11 +270,11 @@ MVP에서는 인증을 간단히 구현합니다. 실제 계정 시스템은 `us
 ### 선택 포함
 
 - Redis 기반 background queue
-- Google Sheets export mock
+- Google Sheets export placeholder
 - 로그인/권한
 - 다국어 출력
 - Qdrant payload index
-- OpenAI Agents SDK 대체 implementation branch
+- OpenAI/GPT 비교 implementation branch
 
 ## P1 범위
 
@@ -239,6 +289,7 @@ MVP 이후 추가할 기능입니다.
 - Human Revision diff tracking
 - CSV 업로드 기반 자체 상품 데이터 RAG
 - OpenTelemetry/Prometheus metrics
+- Poster Studio prompt draft UI
 
 ## P2 범위
 
@@ -249,7 +300,9 @@ MVP 이후 추가할 기능입니다.
 - 예약/재고/가격 관리 시스템 연동
 - Slack/Notion/Jira 알림
 - 자동 A/B copy variation 생성
-- 이미지 추천/썸네일 생성
+- Poster Studio 이미지 생성
+- OpenAI Image API 기반 포스터 asset 저장
+- 포스터 재생성/variant 관리
 - 외부 파트너 승인 워크플로우
 - 다국어 TourAPI 서비스 확장
 
@@ -257,9 +310,11 @@ MVP 이후 추가할 기능입니다.
 
 - Tailwind CSS 사용
 - shadcn/ui 사용
+- Bootstrap 사용
 - 실제 고객 결제 처리 MVP 포함
 - 예약 확정/취소/환불 처리
 - 공공데이터 라이선스 범위를 벗어난 이미지 재사용
+- 사람이 검수하지 않은 생성 포스터의 외부 게시
 - 웹 크롤링 중심 데이터 수집
 - 사람이 승인하지 않은 외부 저장/전송
 
@@ -268,13 +323,13 @@ MVP 이후 추가할 기능입니다.
 ### 성능
 
 - MVP 기준 단일 workflow는 90초 이내 완료를 목표로 합니다.
-- mock provider 기준 20초 이내 완료를 목표로 합니다.
+- 실제 TourAPI 호출 기준 30초 이내 완료를 목표로 합니다.
 - API 응답은 일반 조회 1초 이내, workflow 실행 시작 요청 2초 이내를 목표로 합니다.
 
 ### 안정성
 
 - 외부 API 실패 시 workflow 전체가 즉시 죽지 않고 partial result와 error를 남깁니다.
-- LLM 호출 실패 시 fallback model 또는 retry를 적용합니다.
+- LLM 호출 실패 시 실패 원인을 로그에 남기고 retry 가능 상태로 기록합니다.
 - 비용 상한 초과 시 expensive model 호출을 차단합니다.
 
 ### 관측성
@@ -287,4 +342,3 @@ MVP 이후 추가할 기능입니다.
 - API keys는 `.env`에만 저장합니다.
 - 프론트엔드 번들에 secret key가 들어가면 안 됩니다.
 - TourAPI service key, LLM provider key, 결제 provider secret은 서버에서만 사용합니다.
-

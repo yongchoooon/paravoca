@@ -2,7 +2,7 @@
 
 ## 목표
 
-이 프로젝트가 단순 LLM 앱이 아니라 운영형 AX 시스템으로 보이려면 평가가 반드시 필요합니다.
+이 프로젝트가 운영형 AX 시스템으로 설득력을 가지려면 평가가 반드시 필요합니다.
 
 평가 목표:
 
@@ -43,7 +43,7 @@ User request
   → query normalization
   → metadata filter
   → vector search
-  → keyword fallback
+  → keyword search
   → reranking
   → context pack
   → generation
@@ -179,6 +179,26 @@ Guardrails는 "모델 호출 전", "모델 출력 후", "승인/저장 전" 세 
 - reviewer comment optional
 - approved 후 export 실행
 
+### Poster Studio guardrails
+
+후속 Poster Studio에는 이미지 생성 전후 guardrail을 둡니다.
+
+Pre-generation:
+
+- 사용자가 poster prompt와 옵션을 확인했는지 확인
+- selected_content에 가격, 예약 가능 여부, 운영 시간 단정 표현이 없는지 확인
+- `not_to_claim`, QA issue, requested changes를 prompt constraint로 반영
+- TourAPI 이미지를 참고하거나 재사용할 때 license note 확인
+- image generation budget과 run당 생성 횟수 확인
+
+Post-generation:
+
+- 생성 이미지는 `needs_review` 상태로 저장
+- 이미지 안 텍스트가 선택 문구와 일치하는지 사람이 확인
+- 문구가 흐리거나 잘못 렌더링되면 재생성 또는 수동 편집 필요 표시
+- 과장 표현, 안전 보장 표현, 브랜드/상표/인물 리스크 확인
+- 승인 전 export 기본 비활성화
+
 ## Compliance rule examples
 
 ### 금지 표현
@@ -234,6 +254,9 @@ TourAPI 기준 행사 기간은 2026-05-10부터 2026-05-14까지입니다.
 | Cost per Task | workflow 1건당 LLM 비용 | 운영 비용 감각 |
 | Latency | workflow 완료 시간 | 프로덕션 고려 |
 | Human Revision Rate | 사람이 고친 비율 | 실제 임팩트 측정 |
+| Poster Prompt Acceptance | AI 추천 poster prompt를 사람이 얼마나 수정했는지 | 홍보 소재 자동화 품질 |
+| Poster QA Pass Rate | 생성 포스터가 QA 검수를 통과한 비율 | 이미지 생성 결과 운영 가능성 |
+| Poster Cost per Asset | 포스터 1장 생성 비용 | 이미지 생성 비용 관리 |
 
 ## Retrieval Recall
 
@@ -349,8 +372,7 @@ Eval report에는 USD와 KRW를 모두 표시합니다.
 
 목표:
 
-- mock provider: 20초 이내
-- real provider + low-cost LLM: 90초 이내
+- real TourAPI provider + low-cost LLM: 90초 이내
 
 ## Human Revision Rate
 
@@ -454,4 +476,3 @@ Eval 실패는 다음 type으로 분류합니다.
 4. DeepEval end-to-end/component eval 연동
 
 5. Dashboard 표시
-

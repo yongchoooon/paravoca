@@ -8,13 +8,13 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 
 ```text
 사용자 요청 입력
-→ mock 데이터 조회
+→ 실제 TourAPI 데이터 조회
 → agent workflow 실행
 → 상품 3개 생성
 → QA 검수
 → 승인 대기
 → 승인
-→ 결과 report 저장
+→ 결과 DB 저장과 JSON export
 ```
 
 ## Phase 0: 프로젝트 scaffold
@@ -23,13 +23,13 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 
 - backend/frontend 기본 구조 생성
 - Docker Compose 준비
-- Bootstrap 기반 UI scaffold
+- Mantine UI 기반 UI scaffold
 
 작업:
 
 - `backend/` FastAPI 프로젝트 생성
 - `frontend/` React/Next.js 프로젝트 생성
-- Tailwind/shadcn 없이 Bootstrap 설치
+- Tailwind/shadcn/Bootstrap 없이 Mantine UI 설치
 - `.env.example` 작성
 - `docker-compose.yml` 작성
 - README 실행 방법 작성
@@ -38,8 +38,8 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 
 - Backend `GET /api/health` 동작
 - Frontend dashboard 렌더링
-- Bootstrap style 적용
-- Tailwind 관련 파일 없음
+- MantineProvider와 기본 theme 적용
+- Tailwind/shadcn/Bootstrap 관련 파일 없음
 
 ## Phase 1: DB와 API 기본
 
@@ -67,22 +67,21 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 
 목표:
 
-- TourAPI interface와 mock provider 구현
+- TourAPI interface와 실제 provider 구현
 
 작업:
 
 - `TourismDataProvider` protocol 작성
-- mock fixture 작성
-- TourAPI 실제 client skeleton 작성
+- TourAPI 실제 client 작성
 - data normalization
 - tool logging decorator
 - tourism search API
 
 완료 기준:
 
-- mock provider로 부산 관광지/행사/숙박 데이터 반환
+- 실제 TourAPI로 부산 관광지/행사/숙박 데이터 반환
 - tool call log 저장
-- 실제 API 키가 없어도 테스트 통과
+- API 키가 없거나 호출 실패 시 run과 tool call에 실패 로그 저장
 
 ## Phase 3: RAG 최소 구현
 
@@ -95,13 +94,11 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 - SourceDocument model
 - Chroma client
 - embedding wrapper
-- fixture ingest command
 - vector search API
-- keyword fallback
 
 완료 기준:
 
-- 부산 fixture가 vector DB에 색인됨
+- TourAPI로 수집한 부산 데이터가 vector DB에 색인됨
 - `POST /api/rag/search`가 top_k 결과 반환
 - metadata filter 적용
 
@@ -124,7 +121,7 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 
 완료 기준:
 
-- mock input으로 end-to-end workflow 실행
+- 실제 TourAPI 입력으로 end-to-end workflow 실행
 - run status가 `awaiting_approval`로 멈춤
 - final draft output 생성
 - agent_steps, tool_calls, llm_calls 저장
@@ -133,23 +130,23 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 
 목표:
 
-- LiteLLM 기반 모델 호출과 비용 기록
+- Gemini gateway 기반 모델 호출과 비용 기록
 
 작업:
 
-- LLMGateway 구현
+- GeminiGateway 구현
 - model policy config
 - cost tracker
 - budget guard
-- schema validation retry
-- fallback policy
+- JSON schema validation
+- error logging policy
 
 완료 기준:
 
 - 모든 LLM 호출이 `llm_calls`에 저장
 - run total cost 계산
 - budget 초과 시 차단
-- mock LLM mode 지원
+- rule-based LLM-off mode 지원
 
 ## Phase 6: Frontend workflow/run UI
 
@@ -176,7 +173,38 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 - 상품 결과와 QA 이슈 표시
 - 승인/반려 가능
 
-## Phase 7: 평가 파이프라인
+## Phase 7: Revision Workflow
+
+목표:
+
+- 승인/반려 전 수정 요청을 실제 재생성 또는 사람 편집 흐름으로 연결
+- 기존 run을 덮어쓰지 않고 revision run을 새로 만들어 audit trail 유지
+
+작업:
+
+- `parent_run_id`, `revision_number`, `revision_mode` 필드 추가
+- `POST /api/workflow-runs/{run_id}/revisions` API 추가
+- 수정 방식 선택:
+  - `manual_save`: 운영자가 수정한 결과를 저장하고 QA는 재실행하지 않음
+  - `manual_edit`: 운영자가 products/marketing_assets 일부를 직접 수정하고 QA만 재실행
+  - `llm_partial_rewrite`: 선택한 QA issue와 requested changes를 바탕으로 필요한 필드만 AI patch
+  - `qa_only`: 기존 또는 수정된 결과로 QA/Compliance Agent만 다시 실행
+- 기존 source evidence, QA report, approval history를 revision context로 전달
+- revision 실행 전 create run 설정과 QA settings 확인/수정 UI 제공
+- revision run은 `pending -> running -> awaiting_approval`로 별도 실행
+- revision run은 항상 최상위 원본 run을 parent로 연결하고 `revision_number`만 증가
+- 대시보드에서는 최상위 원본 run 중심으로 표시하고 revision은 펼쳐서 확인
+- 원본 run과 revision run을 UI에서 이동 가능하게 표시
+
+완료 기준:
+
+- Request changes 이후 revision run 생성 가능
+- 직접 수정한 결과를 저장하거나 QA 재검수 가능
+- AI 수정이 전체 재생성 없이 선택된 QA issue 관련 필드만 변경
+- Approval History에서 v1 요청, v2 재검수, 최종 승인 흐름 확인 가능
+- QA 메시지에서 내부 필드명 노출을 막고 안전한 완화 문구를 단정 표현으로 오판하지 않음
+
+## Phase 8: 평가 파이프라인
 
 목표:
 
@@ -201,7 +229,7 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 - Markdown/JSON report 생성
 - Eval dashboard에서 결과 조회
 
-## Phase 8: 배포와 polish
+## Phase 9: 배포와 polish
 
 목표:
 
@@ -219,8 +247,77 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 완료 기준:
 
 - 새 환경에서 README만 보고 실행 가능
-- mock mode demo 완주 가능
-- 실제 TourAPI 키가 있으면 real mode 전환 가능
+- 실제 TourAPI 키가 있으면 demo 완주 가능
+- TourAPI 호출 실패 시 FastAPI 로그, tool call, workflow error log에서 원인 확인 가능
+
+## Phase 10: Poster Studio
+
+목표:
+
+- 상품 기획 결과를 포스터 제작 workflow로 확장
+- 사용자가 포스터 문구와 옵션을 검토한 뒤 이미지 생성 실행
+
+작업:
+
+- Poster Context Builder 구현
+- Poster Prompt Agent 구현
+- poster prompt draft schema 작성
+- poster option review UI 작성
+- `poster_assets`, `poster_prompt_drafts`, `poster_image_calls` 저장 구조 추가
+- OpenAIImageGateway 구현
+- `gpt-image-2` 기본 후보 설정
+- poster generation cost/latency logging
+- Poster QA/Review UI 작성
+- approved poster export flow 작성
+
+완료 기준:
+
+- Run Review에서 product를 선택하고 Poster Studio를 열 수 있음
+- Poster Prompt Agent가 headline/subheadline/CTA/style 후보를 생성
+- 사용자가 후보 문구와 옵션을 삭제/수정/추가 가능
+- 최종 prompt preview를 확인한 뒤 image generation 실행 가능
+- 생성 이미지가 원본 run/product와 연결되어 저장
+- 이미지 생성 provider/model/latency/cost가 기록
+- generated poster는 `needs_review` 상태로 시작
+- 승인된 poster만 export 가능
+- OpenAI Image API 모델명과 가격은 구현 직전에 공식 문서로 재확인
+
+## Phase 11: 웹 근거 보강과 사용자 추가 정보 수집
+
+목표:
+
+- TourAPI만으로 부족한 상품화/검증 정보를 웹 근거와 사용자 제공 정보로 보강
+- 최신 운영 정보, 예약 조건, 공식 공지, 집결지, 가격/포함사항 등 구체 정보의 출처를 보존
+- 비용과 latency가 늘지 않도록 기본 비활성화된 선택 기능으로 구현
+
+배경:
+
+- TourAPI는 관광지/행사/숙박의 공식 기본 데이터에는 강하지만, 실제 판매 가능한 상품으로 다듬는 데 필요한 세부 운영 정보가 부족할 수 있습니다.
+- 상품 상세페이지나 QA 검증에는 "왜 이 정보를 썼는지"를 보여줄 수 있는 근거 링크와 조회 시각이 필요합니다.
+- 일부 정보는 웹에서도 확정하기 어렵기 때문에 사용자가 직접 공급사 메모, 가격 조건, 집결지, 포함/불포함 항목을 입력하는 흐름이 필요합니다.
+
+작업:
+
+- `web_search_enabled`, `max_web_queries_per_run`, `max_grounded_prompts_per_run` 설정 추가
+- Data Agent에 `data_gaps` 기반 웹 보강 후보 생성 로직 추가
+- `web_search` 또는 `google_search_grounding` tool provider interface 작성
+- 웹 검색 결과를 `source=web` SourceDocument로 정규화하고 Chroma에 색인
+- 공식 사이트/공지, 비공식 문서, 사용자 입력의 trust level 분리
+- 검색 결과 URL, query, retrieved_at, source_type, provider metadata 저장
+- 사용자 추가 정보 요청 필드 설계: 집결지, 가격, 포함사항, 운영 시간, 예약 정책, 공급사 메모
+- Run Detail UI에서 "추가 정보 필요" 항목과 근거 링크 표시
+- Product/Marketing/QA Agent가 TourAPI 근거와 웹 근거를 분리해 표시하도록 prompt/context 확장
+- 비용 추적에 grounded prompt/search query count 추가
+- budget guard가 검색 grounding을 차단하거나 query 수를 줄일 수 있게 구현
+
+완료 기준:
+
+- TourAPI 근거만 부족한 run에서 `data_gaps`가 생성됨
+- 운영자가 웹 보강 검색을 켜면 `tool_calls`에 `web_search` 또는 `google_search_grounding`이 기록됨
+- 웹 검색 결과가 `source_documents`와 `retrieved_documents`에 출처 URL과 조회 시각을 포함해 저장됨
+- 상품/QA 결과에서 웹 근거가 있는 주장과 운영자 확인이 필요한 주장이 구분됨
+- 검색 비용/grounded prompt 수가 run 단위로 집계됨
+- 웹 검색 실패 시 workflow 전체를 실패시키지 않고 `web_search_unavailable`로 남긴 뒤 draft 생성은 계속됨
 
 ## Codex 작업 단위
 
@@ -231,7 +328,7 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 산출물:
 
 - backend FastAPI
-- frontend Bootstrap dashboard
+- frontend Mantine dashboard
 - docker compose
 
 ### Task 2
@@ -246,12 +343,11 @@ DB schema와 workflow run API.
 
 ### Task 3
 
-TourAPI provider와 mock fixtures.
+TourAPI provider.
 
 산출물:
 
 - provider interface
-- mock provider
 - data tools
 - tool call logs
 
@@ -262,7 +358,7 @@ LangGraph workflow skeleton.
 산출물:
 
 - graph state
-- dummy agents
+- workflow agents
 - run execution
 - approval stop
 
@@ -272,7 +368,7 @@ LLM gateway와 real prompt outputs.
 
 산출물:
 
-- LiteLLM wrapper
+- Gemini gateway
 - prompt files
 - structured output parsing
 - cost tracking
@@ -299,6 +395,19 @@ RAG와 evaluation.
 - metrics
 - report
 
+### Task 8
+
+Poster Studio 후속 확장.
+
+산출물:
+
+- Poster Prompt Agent
+- poster option review UI
+- OpenAIImageGateway
+- poster asset storage
+- poster cost logs
+- poster QA/review flow
+
 ## 작업 우선순위 판단 기준
 
 무조건 먼저:
@@ -314,8 +423,11 @@ RAG와 evaluation.
 - 예쁜 chart
 - 인증
 - 실제 결제
+- Poster Studio 이미지 생성
 - 복잡한 권한
 - 대규모 데이터 sync
+- 웹 근거 보강/검색 grounding
+- 사용자 추가 정보 수집 UI
 
 ## 완료 정의
 
@@ -324,7 +436,7 @@ MVP 완료는 다음 demo script가 성공하면 됩니다.
 1. 사용자가 dashboard에 접속합니다.
 2. "부산 / 2026년 5월 / 외국인 / 상품 5개" 요청을 입력합니다.
 3. workflow run이 생성되고 진행 상태가 보입니다.
-4. Data Agent tool call 로그에 TourAPI mock/real 호출이 보입니다.
+4. Data Agent tool call 로그에 실제 TourAPI 호출이 보입니다.
 5. 상품 5개가 생성됩니다.
 6. 각 상품에 source evidence가 연결됩니다.
 7. QA 이슈가 표시됩니다.
@@ -338,9 +450,9 @@ MVP 완료는 다음 demo script가 성공하면 됩니다.
 
 대응:
 
-- mock provider 기본
-- cached mode
-- 실제 API는 설정 시만 사용
+- TourAPI key 필수
+- API 실패 시 tool call/run 실패 로그 저장
+- 개발 중에도 실제 TourAPI 호출을 사용함
 
 ### LLM 비용 증가
 
@@ -348,7 +460,7 @@ MVP 완료는 다음 demo script가 성공하면 됩니다.
 
 - model tier
 - budget guard
-- mock LLM mode
+- rule-based LLM-off mode
 - eval sample size 제한
 
 ### 생성 JSON 깨짐
@@ -373,3 +485,12 @@ MVP 완료는 다음 demo script가 성공하면 됩니다.
 - deterministic metrics 먼저
 - Ragas/DeepEval은 최소 smoke 연동
 
+### 웹 검색 비용과 근거 품질
+
+대응:
+
+- 기본 비활성화
+- workflow run당 query/grounded prompt 제한
+- 공식 출처 우선
+- 비공식 출처는 `needs_review`로 분리
+- 검색 실패는 data gap으로 처리하고 workflow error log에 남김
