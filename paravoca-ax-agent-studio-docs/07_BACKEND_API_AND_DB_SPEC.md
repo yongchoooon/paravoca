@@ -55,7 +55,7 @@ Base URL:
 
 ## API 엔드포인트
 
-이 섹션은 전체 제품 목표 API까지 포함합니다. 현재 Phase 7 코드에 구현된 API는 아래 범위입니다.
+이 섹션은 전체 제품 목표 API까지 포함합니다. 현재 Phase 9 코드에 구현된 API는 아래 범위입니다.
 
 - `GET /api/health`
 - `GET /api/workflows`
@@ -71,17 +71,14 @@ Base URL:
 - `POST /api/workflow-runs/{run_id}/reject`
 - `POST /api/workflow-runs/{run_id}/request-changes`
 - `POST /api/workflow-runs/{run_id}/revisions`
-- `POST /api/workflow-runs/{run_id}/posters/draft`
-- `GET /api/workflow-runs/{run_id}/posters`
-- `POST /api/posters/{poster_id}/generate`
-- `POST /api/posters/{poster_id}/approve`
-- `POST /api/posters/{poster_id}/reject`
+- `GET /api/data/sources/capabilities`
 - `GET /api/data/tourism/search`
+- `POST /api/data/tourism/details/enrich`
 - `POST /api/rag/ingest/tourism`
 - `POST /api/rag/search`
 - `POST /api/llm/key-check`
 
-아래에 남아 있는 cancel/retry, report, sync, eval, cost API는 후속 Phase에서 구현할 목표입니다.
+아래에 남아 있는 cancel/retry, report, sync, eval, cost, poster API는 후속 Phase에서 구현할 목표입니다.
 
 ### Health
 
@@ -371,13 +368,36 @@ Generate response:
 GET /api/data/tourism/search
 GET /api/data/tourism/items/{item_id}
 POST /api/data/tourism/sync
+GET /api/data/sources/capabilities
+POST /api/data/tourism/details/enrich
 ```
+
+현재 Phase 9 구현 API는 `GET /api/data/tourism/search`, `GET /api/data/sources/capabilities`, `POST /api/data/tourism/details/enrich`입니다. 개별 item 조회와 sync API는 후속 Phase 목표입니다.
 
 Search query:
 
 ```text
 /api/data/tourism/search?region=부산&keyword=야경&type=attraction
 ```
+
+상세 보강 query:
+
+```text
+/api/data/tourism/search?region_code=6&content_type=event&enrich_details=true&detail_limit=1
+```
+
+상세 보강 request:
+
+```json
+{
+  "item_ids": ["tourapi:content:2786391"],
+  "content_ids": [],
+  "run_id": "run_...",
+  "limit": 1
+}
+```
+
+상세 보강 response에는 보강된 `items`, canonical `entities`, `visual_assets`, source document/index count, summary가 포함됩니다. `visual_assets.usage_status`는 기본 `candidate`입니다.
 
 ### RAG search
 
@@ -428,6 +448,8 @@ GET /api/costs/models
 ## DB 모델
 
 아래는 SQLAlchemy 기준 주요 테이블입니다.
+
+현재 Phase 9 코드에 실제 구현된 core table은 workflow, approval, tourism item, source document, KTO data foundation, usage log 중심입니다. Poster, evaluation, cost dashboard 전용 table은 후속 Phase 목표입니다.
 
 ### users
 
@@ -532,6 +554,8 @@ created_at datetime
 
 ### poster_assets
 
+후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 9 코드에는 아직 없습니다.
+
 ```text
 id string PK
 run_id string FK
@@ -568,6 +592,8 @@ Status:
 - `failed`
 
 ### poster_image_calls
+
+후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 9 코드에는 아직 없습니다.
 
 ```text
 id string PK
@@ -614,6 +640,8 @@ Unique:
 
 ### tourism_events
 
+초기 설계의 분리 테이블 후보입니다. 현재 Phase 9 코드에서는 행사도 `tourism_items`에 저장하고 `content_type=event`, `event_start_date`, `event_end_date`, `raw`로 관리합니다.
+
 ```text
 id string PK
 tourism_item_id string FK nullable
@@ -641,6 +669,149 @@ embedding_status string
 created_at datetime
 updated_at datetime
 ```
+
+Phase 9 metadata에는 `source_family`, `trust_level`, `license_note`, `detail_common_available`, `detail_intro_available`, `detail_info_count`, `detail_image_count`, `visual_asset_count`, `image_candidates` 같은 상세 보강 정보가 포함될 수 있습니다.
+
+### tourism_entities
+
+```text
+id string PK
+canonical_name string
+entity_type string
+region_code string nullable
+sigungu_code string nullable
+address text nullable
+map_x numeric nullable
+map_y numeric nullable
+primary_source_item_id string nullable
+match_confidence numeric nullable
+metadata json
+created_at datetime
+updated_at datetime
+```
+
+Phase 9에서는 TourAPI content_id 기준 canonical entity를 저장합니다. 예: `entity:tourapi:content:2786391`.
+
+### tourism_visual_assets
+
+```text
+id string PK
+entity_id string FK nullable
+source_family string
+source_item_id string nullable
+title string nullable
+image_url text
+thumbnail_url text nullable
+shooting_place string nullable
+shooting_date string nullable
+photographer string nullable
+keywords json
+license_type string nullable
+license_note text nullable
+usage_status string
+raw json
+retrieved_at datetime nullable
+created_at datetime
+```
+
+Phase 9에서는 `detailImage2` 결과를 `usage_status=candidate`로 저장합니다. 게시 가능 여부는 별도 검토 또는 Poster Studio 단계에서 판단합니다.
+
+### tourism_route_assets
+
+```text
+id string PK
+entity_id string FK nullable
+source_family string
+course_name string nullable
+path_name string nullable
+gpx_url text nullable
+distance_km numeric nullable
+estimated_duration string nullable
+start_point string nullable
+end_point string nullable
+nearby_places json
+safety_notes json
+raw json
+retrieved_at datetime nullable
+created_at datetime
+```
+
+Phase 8 foundation으로 테이블만 준비되어 있으며, 두루누비/route API 연결은 후속 Phase입니다.
+
+### tourism_signal_records
+
+```text
+id string PK
+entity_id string FK nullable
+region_code string nullable
+sigungu_code string nullable
+source_family string
+signal_type string
+period_start string nullable
+period_end string nullable
+value_json json
+interpretation_note text nullable
+raw json
+retrieved_at datetime nullable
+created_at datetime
+```
+
+Phase 8 foundation으로 테이블만 준비되어 있으며, 수요/혼잡/연관 관광지 데이터 연결은 후속 Phase입니다.
+
+### enrichment_runs
+
+```text
+id string PK
+workflow_run_id string nullable
+trigger_type string
+status string
+gap_report_json json
+plan_json json
+result_summary_json json
+created_at datetime
+started_at datetime nullable
+finished_at datetime nullable
+```
+
+### enrichment_tool_calls
+
+```text
+id string PK
+enrichment_run_id string FK nullable
+workflow_run_id string nullable
+plan_id string nullable
+tool_name string
+source_family string
+status string
+arguments_json json
+response_summary_json nullable
+error_json nullable
+cache_hit bool
+latency_ms int nullable
+created_at datetime
+```
+
+### web_evidence_documents
+
+```text
+id string PK
+workflow_run_id string FK nullable
+entity_id string FK nullable
+field_name string
+status string
+source_type string
+title string nullable
+url text
+summary text nullable
+retrieved_at datetime nullable
+published_at datetime nullable
+confidence numeric nullable
+needs_human_review bool
+raw_json json
+created_at datetime
+```
+
+공식 웹 근거 수집은 Phase 12 이후 목표이며, 현재는 저장 기반만 준비되어 있습니다.
 
 ### generated_products
 

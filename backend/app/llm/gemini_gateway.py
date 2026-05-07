@@ -310,7 +310,7 @@ def call_gemini_json(
 
 def _build_json_prompt(*, prompt: str, response_schema: dict[str, Any]) -> str:
     return (
-        "당신은 TravelOps AX Agent Studio의 백엔드 에이전트입니다.\n"
+        "당신은 PARAVOCA AX Agent Studio의 백엔드 에이전트입니다.\n"
         "반드시 유효한 JSON 객체 하나만 반환하세요. 첫 글자는 {, 마지막 글자는 } 여야 합니다.\n"
         "JSON을 markdown 코드블록으로 감싸지 말고, JSON 뒤에 두 번째 객체나 설명 문장을 붙이지 마세요.\n"
         "작업 입력에 없는 금지 기준을 새로 만들지 말고, 작업 입력의 규칙 안에서만 판단하세요.\n"

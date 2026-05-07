@@ -32,6 +32,13 @@ MVP:
 
 - Chroma
 
+현재 Phase 9 코드:
+
+- Chroma를 사용합니다.
+- source document는 실제 TourAPI 검색/상세 보강 결과로 생성됩니다.
+- embedding은 아직 임시 hash 기반 구현입니다.
+- Phase 9.5에서 로컬 `sentence-transformers` 기반 semantic embedding으로 교체합니다.
+
 P1:
 
 - Qdrant

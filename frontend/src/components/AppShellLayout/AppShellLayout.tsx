@@ -39,7 +39,7 @@ export function AppShellLayout({ children }: { children: React.ReactNode }) {
             <div className={classes.brandMark}>AX</div>
             <div>
               <Text fw={700} size="sm">
-                TravelOps AX
+                PARAVOCA AX
               </Text>
               <Text c="dimmed" size="xs">
                 Agent Studio

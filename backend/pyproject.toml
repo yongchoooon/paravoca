@@ -3,9 +3,9 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "travelops-backend"
+name = "paravoca-backend"
 version = "0.1.0"
-description = "FastAPI backend for TravelOps AX Agent Studio"
+description = "FastAPI backend for PARAVOCA AX Agent Studio"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.111",
@@ -22,6 +22,10 @@ dependencies = [
 dev = [
   "pytest>=8.0"
 ]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["data*", "logs*"]
 
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]

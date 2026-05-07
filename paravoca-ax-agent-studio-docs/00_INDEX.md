@@ -1,12 +1,12 @@
-# TravelOps AX Agent Studio 문서 인덱스
+# PARAVOCA AX Agent Studio 문서 인덱스
 
-작성 기준일: 2026-05-05
+작성 기준일: 2026-05-07
 
 이 폴더는 Codex가 실제 개발을 시작할 수 있도록 만든 프로젝트 상세 명세입니다. 원문 아이디어의 방향은 유지하되, 프론트엔드 스택은 `Tailwind CSS`, `shadcn/ui`, `Bootstrap`을 사용하지 않고 `Mantine UI`, `CSS Modules 또는 SCSS Modules`, `React Flow`를 사용하는 것으로 확정했습니다.
 
 ## 프로젝트 요약
 
-`TravelOps AX Agent Studio`는 여행 액티비티와 관광 상품 운영자를 위한 멀티에이전트 워크플로우 시스템입니다. 사용자가 "이번 달 부산에서 외국인 대상 액티비티 상품을 5개 기획해줘"처럼 요청하면, 시스템은 공공 관광 데이터 조회, 지역/계절성 분석, 상품 아이디어 생성, 상세페이지 카피/FAQ 생성, 리스크 검수, 사람 승인, 저장까지 이어지는 운영 자동화 플로우를 실행합니다.
+`PARAVOCA AX Agent Studio`는 여행 액티비티와 관광 상품 운영자를 위한 멀티에이전트 워크플로우 시스템입니다. 사용자가 "이번 달 부산에서 외국인 대상 액티비티 상품을 5개 기획해줘"처럼 요청하면, 시스템은 공공 관광 데이터 조회, 지역/계절성 분석, 상품 아이디어 생성, 상세페이지 카피/FAQ 생성, 리스크 검수, 사람 승인, 저장까지 이어지는 운영 자동화 플로우를 실행합니다.
 
 제품 방향은 여행 상품화 운영 업무에 맞춥니다. 문서 전반에서 다음을 강제합니다.
 
@@ -15,6 +15,8 @@
 - Human-in-the-loop: 최종 저장과 외부 전송은 사람 승인 뒤에만 실행합니다.
 - 평가 자동화: RAG, agent tool call, workflow success, 비용, latency를 측정합니다.
 - 비용 거버넌스: Gemini gateway 사용량 추적, 저가 모델 라우팅, 샘플 기반 eval, batch 실행을 설계합니다.
+
+현재 코드 구현 기준은 Phase 9까지입니다. TourAPI 기본 검색, KorService2 상세 보강, source document/Chroma 색인, Gemini 기반 Product/Marketing/QA, revision workflow, KTO capability catalog, Run Detail Evidence의 상세 정보/이미지 후보 표시까지 구현되어 있습니다. Phase 9.5부터는 로컬 semantic embedding 교체를 우선합니다.
 
 ## 문서 목록
 
@@ -32,6 +34,12 @@
 
 5. [05_DATA_SOURCES_AND_INGESTION.md](./05_DATA_SOURCES_AND_INGESTION.md)
    - TourAPI, 관광 수요 데이터, 수집/정제/저장/색인 전략
+
+5-1. [05_01_KTO_OPENAPI_DATA_ENRICHMENT_PLAN.md](./05_01_KTO_OPENAPI_DATA_ENRICHMENT_PLAN.md)
+   - 한국관광공사 OpenAPI 묶음별 데이터 보강 계획, 상품화 활용 방식, 우선 구현 순서
+
+5-2. [05_02_DATA_ENRICHMENT_AGENT_WORKFLOW.md](./05_02_DATA_ENRICHMENT_AGENT_WORKFLOW.md)
+   - 데이터 공백 분석, API 라우팅, 보강 실행, 근거 병합 Agent 구현 계획
 
 6. [06_AGENT_WORKFLOW_SPEC.md](./06_AGENT_WORKFLOW_SPEC.md)
    - Planner, Data, Research, Product, Marketing, QA/Compliance Agent 상세 명세
@@ -56,6 +64,9 @@
 
 13. [13_CODEX_IMPLEMENTATION_PROMPT.md](./13_CODEX_IMPLEMENTATION_PROMPT.md)
     - Codex에게 그대로 전달할 구현 프롬프트와 작업 규칙
+
+14. [14_POST_PHASE7_IMPLEMENTATION_PLAN.md](./14_POST_PHASE7_IMPLEMENTATION_PLAN.md)
+    - Phase 7 이후 KTO 데이터 보강, 공식 웹 근거, Agent 실제화, 평가, 배포, Poster Studio 구현 순서
 
 ## 최종 개발 방향
 
@@ -87,6 +98,17 @@
 
 - 한국관광공사 국문 관광정보 서비스: https://www.data.go.kr/data/15101578/openapi.do
 - 한국관광공사 지역별 관광 자원 수요 API: https://www.data.go.kr/data/15152138/openapi.do
+- 한국관광공사 관광공모전 사진 수상작 정보: https://www.data.go.kr/data/15145706/openapi.do
+- 한국관광공사 웰니스관광정보: https://www.data.go.kr/data/15144030/openapi.do
+- 한국관광공사 의료관광정보: https://www.data.go.kr/data/15143913/openapi.do
+- 한국관광공사 반려동물 동반여행 서비스: https://www.data.go.kr/data/15135102/openapi.do
+- 한국관광공사 두루누비 정보 서비스_GW: https://www.data.go.kr/data/15101974/openapi.do
+- 한국관광공사 관광지 오디오 가이드정보_GW: https://www.data.go.kr/data/15101971/openapi.do
+- 한국관광공사 생태 관광 정보_GW: https://www.data.go.kr/data/15101908/openapi.do
+- 한국관광공사 관광사진 정보_GW: https://www.data.go.kr/data/15101914/openapi.do
+- 한국관광공사 관광빅데이터 정보서비스_GW: https://www.data.go.kr/data/15101972/openapi.do
+- 한국관광공사 관광지 집중률 방문자 추이 예측 정보: https://www.data.go.kr/data/15128555/openapi.do
+- 한국관광공사 관광지별 연관 관광지 정보: https://www.data.go.kr/data/15128560/openapi.do
 - LangGraph workflows/agents: https://docs.langchain.com/oss/python/langgraph/workflows-agents
 - Gemini Developer API pricing: https://ai.google.dev/pricing
 - OpenAI Image generation: https://developers.openai.com/api/docs/guides/image-generation

@@ -143,10 +143,21 @@ Planner가 만든 plan에 따라 외부/내부 데이터를 조회합니다.
 - `tourapi_search_festival`
 - `tourapi_search_stay`
 - `tourapi_detail_common`
+- `tourapi_detail_intro`
+- `tourapi_detail_info`
 - `tourapi_detail_image`
+- `tourapi_category_code`
+- `tourapi_location_based_list`
 - `tourism_demand_resource`
 - `local_product_search`
 - `vector_search`
+
+현재 Phase 9 구현:
+
+- Data Agent는 기본 TourAPI 검색 결과 일부를 `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2`로 보강합니다.
+- 보강된 상세/반복/이미지 metadata는 `source_documents`와 Chroma index에 반영됩니다.
+- 상세 이미지 후보는 `tourism_visual_assets.usage_status=candidate`로 저장합니다.
+- `categoryCode2`, `locationBasedList2`는 provider method는 준비되어 있으나, 아직 Data Agent의 코스 조합/ranking 판단에는 연결하지 않았습니다.
 
 P2 이후 추가 후보:
 

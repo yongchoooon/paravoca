@@ -1,5 +1,7 @@
 # 구현 로드맵
 
+이 문서는 초기 end-to-end 구현 로드맵입니다. Phase 7 이후 실제 구현 순서는 KTO 데이터 보강 계획이 추가되면서 `14_POST_PHASE7_IMPLEMENTATION_PLAN.md`를 우선합니다. 현재 코드 기준으로는 `14_POST_PHASE7_IMPLEMENTATION_PLAN.md`의 Phase 9까지 구현되어 있고, 다음 단계는 Phase 9.5 local semantic embedding입니다.
+
 ## 구현 원칙
 
 Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end-to-end slice"를 먼저 만든 뒤, 데이터/에이전트/평가/UI를 점진적으로 강화하는 것입니다.
@@ -205,6 +207,8 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 - QA 메시지에서 내부 필드명 노출을 막고 안전한 완화 문구를 단정 표현으로 오판하지 않음
 
 ## Phase 8: 평가 파이프라인
+
+현재 Phase 7 이후 실제 구현 순서는 데이터 보강 범위가 확장되면서 재정렬되었습니다. Phase 8 이후의 최신 계획은 `14_POST_PHASE7_IMPLEMENTATION_PLAN.md`를 우선합니다. 이 섹션의 평가 파이프라인은 KTO 상세/이미지/수요/공식 웹 근거 보강과 Planner/Data/Research Agent 실제화 이후 진행합니다.
 
 목표:
 

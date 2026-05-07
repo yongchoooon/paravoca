@@ -2,7 +2,7 @@
 
 ## 프론트엔드 목표
 
-TravelOps AX Agent Studio의 프론트엔드는 여행 상품화 운영툴입니다. 첫 화면부터 실제 workflow 실행, 상품 초안 검토, 근거 확인, 리스크 검수, 평가 지표 확인이 가능해야 합니다.
+PARAVOCA AX Agent Studio의 프론트엔드는 여행 상품화 운영툴입니다. 첫 화면부터 실제 workflow 실행, 상품 초안 검토, 근거 확인, 리스크 검수, 평가 지표 확인이 가능해야 합니다.
 
 핵심 화면:
 
@@ -16,7 +16,7 @@ TravelOps AX Agent Studio의 프론트엔드는 여행 상품화 운영툴입니
 8. Cost Dashboard
 9. Settings
 
-현재 Phase 7 코드에는 Dashboard, run 생성 form, run table, React Flow preview, Run Detail, Result Review, approval action, revision history, AI 수정/직접 수정/QA 재검수 modal이 구현되어 있습니다. 노드 편집형 Workflow Builder, Poster Studio, Data Sources 독립 화면, Evaluation Dashboard, Cost Dashboard, Settings 독립 화면은 후속 Phase 목표로 유지합니다.
+현재 Phase 9 코드에는 Dashboard, run 생성 form, run table, React Flow preview, Run Detail, Result Review, approval action, revision history, AI 수정/직접 수정/QA 재검수 modal, Run Detail Evidence의 상세 정보/이미지 후보 표시가 구현되어 있습니다. 노드 편집형 Workflow Builder, Poster Studio, Data Sources 독립 화면, Evaluation Dashboard, Cost Dashboard, Settings 독립 화면은 후속 Phase 목표로 유지합니다.
 
 ## 기술 제약
 
@@ -121,7 +121,7 @@ export function AppShellLayout({ children }: { children: React.ReactNode }) {
         <Group h="100%" px="md" justify="space-between">
           <Group gap="sm">
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
-            <Text fw={700}>TravelOps AX</Text>
+            <Text fw={700}>PARAVOCA AX</Text>
           </Group>
         </Group>
       </AppShell.Header>

@@ -1,2 +1,2 @@
-"""TravelOps AX Agent Studio backend package."""
+"""PARAVOCA AX Agent Studio backend package."""
 

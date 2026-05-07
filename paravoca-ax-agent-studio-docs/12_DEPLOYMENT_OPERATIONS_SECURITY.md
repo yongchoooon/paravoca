@@ -50,10 +50,11 @@ Chroma만 사용할 경우 Qdrant 서비스는 생략 가능합니다.
 
 ```env
 APP_ENV=local
-DATABASE_URL=sqlite:///./data/travelops.db
+DATABASE_URL=sqlite:///./data/paravoca.db
 CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
 
 TOURAPI_SERVICE_KEY=
+TOURAPI_DETAIL_ENRICHMENT_LIMIT=5
 
 VECTOR_DB=chroma
 CHROMA_PATH=./data/chroma
@@ -206,7 +207,7 @@ P1:
 
 MVP local:
 
-- `data/travelops.db`
+- `data/paravoca.db`
 - `data/chroma`
 - `reports/`
 

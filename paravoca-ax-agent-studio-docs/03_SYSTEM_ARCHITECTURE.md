@@ -2,7 +2,7 @@
 
 ## 아키텍처 목표
 
-TravelOps AX Agent Studio는 운영 업무 자동화 시스템입니다. 따라서 아키텍처는 다음 요구를 만족해야 합니다.
+PARAVOCA AX Agent Studio는 운영 업무 자동화 시스템입니다. 따라서 아키텍처는 다음 요구를 만족해야 합니다.
 
 - 에이전트 실행 상태를 저장할 수 있어야 합니다.
 - 도구 호출과 LLM 호출을 추적할 수 있어야 합니다.
@@ -317,7 +317,7 @@ User Input
 ## 폴더 구조 제안
 
 ```text
-travelops/
+paravoca/
   backend/
     app/
       main.py

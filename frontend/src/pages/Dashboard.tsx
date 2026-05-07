@@ -504,7 +504,7 @@ export function Dashboard() {
       <Paper withBorder p="md" className={classes.overviewPanel}>
         <Group justify="space-between" align="flex-start">
           <div>
-            <Text fw={700}>TravelOps AX Agent Studio</Text>
+            <Text fw={700}>PARAVOCA AX Agent Studio</Text>
             <Text c="dimmed" size="sm">
               지역, 기간, 타깃을 입력하면 관광 데이터 수집부터 여행 상품 초안, 마케팅 카피, FAQ, 운영 리스크 검수, 검토 승인까지 이어지는 운영 워크플로우입니다.
             </Text>
