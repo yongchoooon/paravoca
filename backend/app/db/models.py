@@ -79,6 +79,12 @@ class WorkflowRun(Base):
     approvals: Mapped[list["Approval"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    enrichment_runs: Mapped[list["EnrichmentRun"]] = relationship(
+        back_populates="workflow_run", cascade="all, delete-orphan"
+    )
+    web_evidence_documents: Mapped[list["WebEvidenceDocument"]] = relationship(
+        back_populates="workflow_run", cascade="all, delete-orphan"
+    )
 
 
 class AgentStep(Base):
@@ -233,4 +239,222 @@ class SourceDocument(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class TourismEntity(Base):
+    __tablename__ = "tourism_entities"
+
+    id: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default=lambda: new_id("entity")
+    )
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    region_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    sigungu_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    map_x: Mapped[float | None] = mapped_column(Numeric(12, 7), nullable=True)
+    map_y: Mapped[float | None] = mapped_column(Numeric(12, 7), nullable=True)
+    primary_source_item_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    match_confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    entity_metadata: Mapped[dict] = mapped_column(
+        "metadata", JSON, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    visual_assets: Mapped[list["TourismVisualAsset"]] = relationship(
+        back_populates="entity", cascade="all, delete-orphan"
+    )
+    route_assets: Mapped[list["TourismRouteAsset"]] = relationship(
+        back_populates="entity", cascade="all, delete-orphan"
+    )
+    signal_records: Mapped[list["TourismSignalRecord"]] = relationship(
+        back_populates="entity", cascade="all, delete-orphan"
+    )
+    web_evidence_documents: Mapped[list["WebEvidenceDocument"]] = relationship(
+        back_populates="entity"
+    )
+
+
+class TourismVisualAsset(Base):
+    __tablename__ = "tourism_visual_assets"
+
+    id: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default=lambda: new_id("visual")
+    )
+    entity_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("tourism_entities.id"), nullable=True
+    )
+    source_family: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_item_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    image_url: Mapped[str] = mapped_column(Text, nullable=False)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shooting_place: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shooting_date: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    photographer: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    keywords: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    license_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    license_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_status: Mapped[str] = mapped_column(
+        String(60), default="candidate", nullable=False
+    )
+    raw: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+
+    entity: Mapped[TourismEntity | None] = relationship(back_populates="visual_assets")
+
+
+class TourismRouteAsset(Base):
+    __tablename__ = "tourism_route_assets"
+
+    id: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default=lambda: new_id("route")
+    )
+    entity_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("tourism_entities.id"), nullable=True
+    )
+    source_family: Mapped[str] = mapped_column(String(120), nullable=False)
+    course_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    path_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    gpx_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    distance_km: Mapped[float | None] = mapped_column(Numeric(8, 3), nullable=True)
+    estimated_duration: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    start_point: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    end_point: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    nearby_places: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    safety_notes: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+
+    entity: Mapped[TourismEntity | None] = relationship(back_populates="route_assets")
+
+
+class TourismSignalRecord(Base):
+    __tablename__ = "tourism_signal_records"
+
+    id: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default=lambda: new_id("signal")
+    )
+    entity_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("tourism_entities.id"), nullable=True
+    )
+    region_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    sigungu_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_family: Mapped[str] = mapped_column(String(120), nullable=False)
+    signal_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    period_start: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    period_end: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    value: Mapped[dict] = mapped_column("value_json", JSON, default=dict, nullable=False)
+    interpretation_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+
+    entity: Mapped[TourismEntity | None] = relationship(back_populates="signal_records")
+
+
+class EnrichmentRun(Base):
+    __tablename__ = "enrichment_runs"
+
+    id: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default=lambda: new_id("enrich")
+    )
+    workflow_run_id: Mapped[str | None] = mapped_column(
+        String(120), ForeignKey("workflow_runs.id"), nullable=True
+    )
+    trigger_type: Mapped[str] = mapped_column(String(80), default="manual", nullable=False)
+    status: Mapped[str] = mapped_column(String(60), default="planned", nullable=False)
+    gap_report: Mapped[dict] = mapped_column("gap_report_json", JSON, default=dict, nullable=False)
+    plan: Mapped[dict] = mapped_column("plan_json", JSON, default=dict, nullable=False)
+    result_summary: Mapped[dict] = mapped_column(
+        "result_summary_json", JSON, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    workflow_run: Mapped[WorkflowRun | None] = relationship(back_populates="enrichment_runs")
+    tool_calls: Mapped[list["EnrichmentToolCall"]] = relationship(
+        back_populates="enrichment_run", cascade="all, delete-orphan"
+    )
+
+
+class EnrichmentToolCall(Base):
+    __tablename__ = "enrichment_tool_calls"
+
+    id: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default=lambda: new_id("enrich_tool")
+    )
+    enrichment_run_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("enrichment_runs.id"), nullable=True
+    )
+    workflow_run_id: Mapped[str | None] = mapped_column(
+        String(120), ForeignKey("workflow_runs.id"), nullable=True
+    )
+    plan_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    source_family: Mapped[str] = mapped_column(String(120), nullable=False)
+    arguments: Mapped[dict] = mapped_column("arguments_json", JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(60), default="planned", nullable=False)
+    response_summary: Mapped[dict | None] = mapped_column(
+        "response_summary_json", JSON, nullable=True
+    )
+    error: Mapped[dict | None] = mapped_column("error_json", JSON, nullable=True)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+
+    enrichment_run: Mapped[EnrichmentRun | None] = relationship(back_populates="tool_calls")
+
+
+class WebEvidenceDocument(Base):
+    __tablename__ = "web_evidence_documents"
+
+    id: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default=lambda: new_id("web_ev")
+    )
+    workflow_run_id: Mapped[str | None] = mapped_column(
+        String(120), ForeignKey("workflow_runs.id"), nullable=True
+    )
+    entity_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("tourism_entities.id"), nullable=True
+    )
+    field_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(60), default="candidate", nullable=False)
+    source_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    needs_human_review: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    raw: Mapped[dict] = mapped_column("raw_json", JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+
+    workflow_run: Mapped[WorkflowRun | None] = relationship(
+        back_populates="web_evidence_documents"
+    )
+    entity: Mapped[TourismEntity | None] = relationship(
+        back_populates="web_evidence_documents"
     )

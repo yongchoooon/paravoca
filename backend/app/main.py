@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     routes_data,
+    routes_data_sources,
     routes_health,
     routes_llm,
     routes_rag,
@@ -42,5 +43,6 @@ app.include_router(routes_health.router, prefix="/api", tags=["health"])
 app.include_router(routes_workflows.router, prefix="/api")
 app.include_router(routes_runs.router, prefix="/api")
 app.include_router(routes_data.router, prefix="/api")
+app.include_router(routes_data_sources.router, prefix="/api")
 app.include_router(routes_rag.router, prefix="/api")
 app.include_router(routes_llm.router, prefix="/api")
