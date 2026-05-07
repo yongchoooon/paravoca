@@ -42,9 +42,16 @@ export const workflowStages: WorkflowStage[] = [
     stepType: "planner",
   },
   {
+    key: "geo",
+    label: "Geo",
+    description: "자연어 요청에서 지역 범위를 해석합니다.",
+    agentName: "GeoResolverAgent",
+    stepType: "geo_resolution",
+  },
+  {
     key: "data",
     label: "Data",
-    description: "TourAPI 데이터를 수집하고 source document를 생성합니다.",
+    description: "해석된 지역 범위로 TourAPI 데이터를 수집합니다.",
     agentName: "DataAgent",
     stepType: "data_collection",
   },
@@ -148,7 +155,7 @@ export function joinLines(value: string[] | undefined) {
 
 export function revisionQaSettingsFromRun(run: WorkflowRun | null): RevisionQaSettings {
   return {
-    region: run?.input.region ?? "부산",
+    region: run?.input.region ?? "",
     period: run?.input.period ?? "",
     target_customer: run?.input.target_customer ?? "외국인",
     product_count: run?.input.product_count ?? 3,
@@ -325,6 +332,8 @@ export function normalizeWorkflowResult(raw: unknown): WorkflowResult {
   return {
     status: typeof result.status === "string" ? result.status : "not_available",
     normalized_request: recordOrEmpty(result.normalized_request),
+    geo_scope: recordOrEmpty(result.geo_scope),
+    user_message: recordOrEmpty(result.user_message),
     source_items: arrayOrEmpty(result.source_items),
     retrieved_documents: arrayOrEmpty<EvidenceDocument>(result.retrieved_documents),
     research_summary: recordOrEmpty(result.research_summary),

@@ -11,6 +11,8 @@ const statusColor: Record<string, string> = {
   started: "blue",
   failed: "red",
   cancelled: "gray",
+  unsupported: "gray",
+  needs_clarification: "red",
 };
 
 const statusLabel: Record<string, string> = {
@@ -24,6 +26,8 @@ const statusLabel: Record<string, string> = {
   started: "시작됨",
   failed: "실패",
   cancelled: "취소됨",
+  unsupported: "지원 범위 밖",
+  needs_clarification: "실패",
 };
 
 export function StatusBadge({ status }: { status: string }) {

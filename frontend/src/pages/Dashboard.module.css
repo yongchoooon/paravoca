@@ -70,3 +70,38 @@
   width: 126px;
   text-align: left;
 }
+
+.workflowDecisionLabel {
+  width: 152px;
+  height: 82px;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  background: var(--mantine-color-teal-5);
+  filter: drop-shadow(0 1px 3px rgba(18, 184, 134, 0.16));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.workflowDecisionContent {
+  width: 148px;
+  height: 78px;
+  box-sizing: border-box;
+  padding: 0 28px;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  background: var(--mantine-color-teal-0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.workflowHiddenHandle {
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  min-height: 1px;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+}

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Badge,
@@ -22,8 +22,8 @@ import { useForm } from "@mantine/form";
 import { useDisclosure } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import { IconAlertCircle, IconEye, IconPlayerPlay } from "@tabler/icons-react";
-import { Background, Controls, MarkerType, ReactFlow } from "@xyflow/react";
-import type { Edge, Node } from "@xyflow/react";
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow } from "@xyflow/react";
+import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
 import { createWorkflowRun, listWorkflowRuns, listWorkflowTemplates, WorkflowRun } from "../services/runsApi";
 import { StatusBadge } from "../components/StatusBadge";
 import { RunDetail } from "./RunDetail";
@@ -48,6 +48,25 @@ function WorkflowNodeLabel({
   );
 }
 
+function WorkflowDecisionNode() {
+  return (
+    <div className={classes.workflowDecisionLabel}>
+      <Handle className={classes.workflowHiddenHandle} id="in-left" type="target" position={Position.Left} />
+      <Handle className={classes.workflowHiddenHandle} id="resolved-right" type="source" position={Position.Right} />
+      <Handle className={classes.workflowHiddenHandle} id="exit-top" type="source" position={Position.Top} />
+      <div className={classes.workflowDecisionContent}>
+        <Text fw={800} size="xs">지역 확정?</Text>
+        <Text ff="monospace" size="9px" c="dimmed">geo_gate</Text>
+        <Text size="9px" c="dimmed" lh={1.15}>진행 / 종료 판단</Text>
+      </div>
+    </div>
+  );
+}
+
+const workflowNodeTypes = {
+  decision: WorkflowDecisionNode,
+};
+
 const normalNodeStyle = {
   background: "var(--mantine-color-blue-0)",
   border: "1px solid var(--mantine-color-blue-5)",
@@ -60,6 +79,28 @@ const revisionNodeStyle = {
   boxShadow: "0 1px 3px rgba(174, 62, 201, 0.18)",
 };
 
+const resolvedNodeStyle = {
+  background: "var(--mantine-color-teal-0)",
+  border: "1px solid var(--mantine-color-teal-5)",
+  boxShadow: "0 1px 3px rgba(18, 184, 134, 0.16)",
+};
+
+const geoExitNodeStyle = {
+  background: "var(--mantine-color-red-0)",
+  border: "1px solid var(--mantine-color-red-5)",
+  boxShadow: "0 1px 3px rgba(250, 82, 82, 0.16)",
+  width: 158,
+};
+
+const decisionNodeStyle = {
+  background: "transparent",
+  border: "0",
+  boxShadow: "none",
+  padding: 0,
+  width: 158,
+  height: 88,
+};
+
 const normalEdgeStyle = {
   stroke: "var(--mantine-color-blue-6)",
   strokeWidth: 2,
@@ -70,35 +111,87 @@ const revisionEdgeStyle = {
   strokeWidth: 2,
 };
 
+const resolvedEdgeStyle = {
+  stroke: "var(--mantine-color-teal-6)",
+  strokeWidth: 2,
+};
+
+const geoExitEdgeStyle = {
+  stroke: "var(--mantine-color-red-6)",
+  strokeWidth: 2,
+  strokeDasharray: "6 4",
+};
+
+const workflowGraphBounds = {
+  minX: -20,
+  minY: -140,
+  maxX: 1970,
+  maxY: 455,
+};
+
 const workflowNodes: Node[] = [
   {
     id: "request",
-    position: { x: 0, y: 40 },
-    type: "input",
+    position: { x: 0, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Top,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="New run" stepType="workflow_created" description="요청 생성" />,
+      label: <WorkflowNodeLabel title="New run" stepType="workflow_created" description="자연어 요청 생성" />,
     },
   },
   {
     id: "planner",
-    position: { x: 190, y: 40 },
+    position: { x: 190, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Planner" stepType="planner" description="요청 정규화" />,
+      label: <WorkflowNodeLabel title="Planner" stepType="planner" description="요청/기간 정규화" />,
+    },
+  },
+  {
+    id: "geo",
+    position: { x: 360, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="GeoResolver" stepType="geo_resolution" description="ldong 지역 해석" />,
+    },
+  },
+  {
+    id: "geo-decision",
+    position: { x: 525, y: 8 },
+    type: "decision",
+    style: decisionNodeStyle,
+    data: {},
+  },
+  {
+    id: "geo-resolved",
+    position: { x: 735, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: resolvedNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Geo resolved" stepType="geo_scope_resolved" description="지역 확정 후 계속 진행" />,
     },
   },
   {
     id: "data",
-    position: { x: 380, y: 40 },
+    position: { x: 915, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Data" stepType="data_collection" description="TourAPI 수집" />,
+      label: <WorkflowNodeLabel title="Data" stepType="data_collection" description="TourAPI ldong 수집" />,
     },
   },
   {
     id: "research",
-    position: { x: 570, y: 40 },
+    position: { x: 1095, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
       label: <WorkflowNodeLabel title="Research" stepType="research" description="RAG 검색/요약" />,
@@ -106,7 +199,9 @@ const workflowNodes: Node[] = [
   },
   {
     id: "product",
-    position: { x: 760, y: 40 },
+    position: { x: 1275, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
       label: <WorkflowNodeLabel title="Product" stepType="product_generation" description="상품 초안" />,
@@ -114,7 +209,9 @@ const workflowNodes: Node[] = [
   },
   {
     id: "marketing",
-    position: { x: 950, y: 40 },
+    position: { x: 1455, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
       label: <WorkflowNodeLabel title="Marketing" stepType="marketing_generation" description="카피/FAQ/SNS" />,
@@ -122,7 +219,9 @@ const workflowNodes: Node[] = [
   },
   {
     id: "qa",
-    position: { x: 1140, y: 40 },
+    position: { x: 1635, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
       label: <WorkflowNodeLabel title="QA" stepType="qa_review" description="리스크 검수" />,
@@ -130,16 +229,27 @@ const workflowNodes: Node[] = [
   },
   {
     id: "approval",
-    position: { x: 1330, y: 40 },
+    position: { x: 1815, y: 20 },
     type: "output",
+    targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
       label: <WorkflowNodeLabel title="Approval" stepType="human_approval" description="승인 대기" />,
     },
   },
   {
+    id: "geo-exit",
+    position: { x: 525, y: -115 },
+    sourcePosition: Position.Top,
+    targetPosition: Position.Bottom,
+    style: geoExitNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Geo exit" stepType="geo_scope_exit" description="후보 안내 / 지원 범위 밖" />,
+    },
+  },
+  {
     id: "source-run",
-    position: { x: 0, y: 230 },
+    position: { x: 0, y: 330 },
     type: "input",
     style: revisionNodeStyle,
     data: {
@@ -148,7 +258,7 @@ const workflowNodes: Node[] = [
   },
   {
     id: "revision-context",
-    position: { x: 240, y: 230 },
+    position: { x: 240, y: 330 },
     style: revisionNodeStyle,
     data: {
       label: <WorkflowNodeLabel title="Revision" stepType="revision_context" description="수정 맥락 생성" />,
@@ -156,7 +266,7 @@ const workflowNodes: Node[] = [
   },
   {
     id: "revision-patch",
-    position: { x: 480, y: 230 },
+    position: { x: 480, y: 330 },
     style: revisionNodeStyle,
     data: {
       label: <WorkflowNodeLabel title="AI Patch" stepType="revision_patch" description="선택 이슈만 수정" />,
@@ -164,7 +274,7 @@ const workflowNodes: Node[] = [
   },
   {
     id: "revision-qa",
-    position: { x: 720, y: 230 },
+    position: { x: 720, y: 330 },
     style: revisionNodeStyle,
     data: {
       label: <WorkflowNodeLabel title="QA" stepType="qa_review" description="재검수" />,
@@ -172,7 +282,7 @@ const workflowNodes: Node[] = [
   },
   {
     id: "revision-approval",
-    position: { x: 960, y: 230 },
+    position: { x: 960, y: 330 },
     type: "output",
     style: revisionNodeStyle,
     data: {
@@ -184,7 +294,9 @@ const workflowNodes: Node[] = [
 const workflowEdges: Edge[] = [
   ...[
     ["request", "planner"],
-    ["planner", "data"],
+    ["planner", "geo"],
+    ["geo", "geo-decision"],
+    ["geo-resolved", "data"],
     ["data", "research"],
     ["research", "product"],
     ["product", "marketing"],
@@ -194,9 +306,38 @@ const workflowEdges: Edge[] = [
     id: `${source}-${target}`,
     source,
     target,
+    targetHandle: target === "geo-decision" ? "in-left" : undefined,
     style: normalEdgeStyle,
     markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-blue-6)" },
   })),
+  {
+    id: "geo-resolved-edge",
+    source: "geo-decision",
+    sourceHandle: "resolved-right",
+    target: "geo-resolved",
+    label: "확정",
+    style: resolvedEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-teal-6)" },
+  },
+  {
+    id: "geo-exit-edge",
+    source: "geo-decision",
+    sourceHandle: "exit-top",
+    target: "geo-exit",
+    label: "확정 불가 / 해외",
+    type: "smoothstep",
+    style: geoExitEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-red-6)" },
+  },
+  {
+    id: "geo-exit-retry-edge",
+    source: "geo-exit",
+    target: "request",
+    label: "지역명 보강 후 새 run",
+    type: "smoothstep",
+    style: { ...geoExitEdgeStyle, strokeDasharray: "2 5" },
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-red-6)" },
+  },
   {
     id: "source-revision",
     source: "source-run",
@@ -263,6 +404,38 @@ function getRunProductCount(run: WorkflowRun) {
   return products > 0 ? products : run.input.product_count;
 }
 
+function getRunGeoLabel(run: WorkflowRun) {
+  const finalGeoScope = recordOrNull(run.final_output?.geo_scope);
+  const normalizedGeoScope = recordOrNull(run.normalized_input?.geo_scope);
+  const scope = finalGeoScope ?? normalizedGeoScope;
+  if (!scope) {
+    return run.input.region || "-";
+  }
+  if (scope.status === "unsupported" || scope.mode === "unsupported_region") {
+    return "지원 불가";
+  }
+  if (scope.allow_nationwide === true) {
+    return "전국";
+  }
+  if (scope.needs_clarification === true) {
+    return "후보 확인";
+  }
+  const locations = Array.isArray(scope.locations)
+    ? (scope.locations as Array<Record<string, unknown>>)
+    : [];
+  const names = locations
+    .map((location) => String(location.name ?? "").trim())
+    .filter(Boolean);
+  const separator = scope.mode === "route" ? " → " : ", ";
+  return names.length > 0 ? names.join(separator) : run.input.region || "-";
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function RunTableRow({
   run,
   selectedRunId,
@@ -301,7 +474,7 @@ function RunTableRow({
       <Table.Td>
         <StatusBadge status={run.status} />
       </Table.Td>
-      <Table.Td>{run.input.region ?? "-"}</Table.Td>
+      <Table.Td>{getRunGeoLabel(run)}</Table.Td>
       <Table.Td>{getRunProductCount(run)}</Table.Td>
       <Table.Td>
         {!indent && revisionCount > 0 ? (
@@ -339,12 +512,15 @@ export function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [expandedRootIds, setExpandedRootIds] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState("runs");
+  const [workflowFlow, setWorkflowFlow] = useState<ReactFlowInstance | null>(null);
+  const workflowPreviewRef = useRef<HTMLDivElement | null>(null);
+  const workflowCenterTimers = useRef<number[]>([]);
   const [opened, { open, close }] = useDisclosure(false);
 
   const form = useForm({
     initialValues: {
-      message: "이번 달 부산에서 외국인 대상 액티비티 상품을 5개 기획해줘",
-      region: "부산",
+      message: "이번 달 대전에서 외국인 대상 액티비티 상품을 5개 기획해줘",
       period: "2026-05",
       target_customer: "외국인",
       product_count: 5,
@@ -407,6 +583,42 @@ export function Dashboard() {
     }, 2500);
     return () => window.clearInterval(timer);
   }, [hasActiveRuns]);
+
+  function centerWorkflowMap(instance: ReactFlowInstance, duration = 0) {
+    const container = workflowPreviewRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    if (rect.width < 50 || rect.height < 50) return;
+
+    const graphWidth = workflowGraphBounds.maxX - workflowGraphBounds.minX;
+    const graphHeight = workflowGraphBounds.maxY - workflowGraphBounds.minY;
+    const padding = 56;
+    const zoom = Math.min(
+      (rect.width - padding * 2) / graphWidth,
+      (rect.height - padding * 2) / graphHeight,
+      0.95,
+    );
+    const safeZoom = Math.max(0.25, zoom);
+    const x = (rect.width - graphWidth * safeZoom) / 2 - workflowGraphBounds.minX * safeZoom;
+    const y = (rect.height - graphHeight * safeZoom) / 2 - workflowGraphBounds.minY * safeZoom;
+    instance.setViewport({ x, y, zoom: safeZoom }, { duration });
+  }
+
+  function scheduleWorkflowCenter(instance: ReactFlowInstance) {
+    workflowCenterTimers.current.forEach((timer) => window.clearTimeout(timer));
+    workflowCenterTimers.current = [0, 50, 160, 360, 700].map((delay) =>
+      window.setTimeout(() => centerWorkflowMap(instance, delay === 0 ? 0 : 180), delay)
+    );
+  }
+
+  useEffect(() => {
+    if (activeTab !== "workflow" || !workflowFlow) return;
+    scheduleWorkflowCenter(workflowFlow);
+    return () => {
+      workflowCenterTimers.current.forEach((timer) => window.clearTimeout(timer));
+      workflowCenterTimers.current = [];
+    };
+  }, [activeTab, workflowFlow]);
 
   async function handleCreateRun(values: typeof form.values) {
     try {
@@ -506,11 +718,11 @@ export function Dashboard() {
           <div>
             <Text fw={700}>PARAVOCA AX Agent Studio</Text>
             <Text c="dimmed" size="sm">
-              지역, 기간, 타깃을 입력하면 관광 데이터 수집부터 여행 상품 초안, 마케팅 카피, FAQ, 운영 리스크 검수, 검토 승인까지 이어지는 운영 워크플로우입니다.
+              요청 문장에서 지역 의도를 해석한 뒤 관광 데이터 수집부터 여행 상품 초안, 마케팅 카피, FAQ, 운영 리스크 검수, 검토 승인까지 이어지는 운영 워크플로우입니다.
             </Text>
           </div>
           <Group gap="xs">
-            {["Data", "RAG", "Draft", "QA", "Approval"].map((step) => (
+            {["Geo", "Data", "RAG", "Draft", "QA", "Approval"].map((step) => (
               <Badge key={step} variant="light" color="opsBlue">
                 {step}
               </Badge>
@@ -549,7 +761,7 @@ export function Dashboard() {
         </Paper>
       </SimpleGrid>
 
-      <Tabs defaultValue="runs">
+      <Tabs value={activeTab} onChange={(value) => setActiveTab(value ?? "runs")}>
         <Tabs.List>
           <Tabs.Tab value="runs">Runs</Tabs.Tab>
           <Tabs.Tab value="workflow">Workflow preview</Tabs.Tab>
@@ -562,7 +774,7 @@ export function Dashboard() {
                 <Table.Tr>
                   <Table.Th className={classes.taskColumn}>Task</Table.Th>
                   <Table.Th className={classes.statusColumn}>Status</Table.Th>
-                  <Table.Th className={classes.regionColumn}>Region</Table.Th>
+                  <Table.Th className={classes.regionColumn}>Geo</Table.Th>
                   <Table.Th className={classes.productsColumn}>Products</Table.Th>
                   <Table.Th className={classes.revisionsColumn}>Revisions</Table.Th>
                   <Table.Th className={classes.createdColumn}>Created</Table.Th>
@@ -597,33 +809,49 @@ export function Dashboard() {
                 </div>
                 <Group gap="xs">
                   <Badge variant="light" color="opsBlue">Normal run</Badge>
+                  <Badge variant="light" color="teal">Decision gate</Badge>
+                  <Badge variant="light" color="teal">Geo resolved</Badge>
+                  <Badge variant="light" color="red">Geo exit</Badge>
                   <Badge variant="light" color="grape">Revision run</Badge>
-                  <Badge variant="outline" color="gray">dashed = optional path</Badge>
+                  <Badge variant="outline" color="gray">dashed = exit path</Badge>
                 </Group>
               </Group>
             </Paper>
 
-            <Paper withBorder className={classes.workflowPreview}>
-              <ReactFlow
-                nodes={workflowNodes}
-                edges={workflowEdges}
-                fitView
-                minZoom={0.35}
-                maxZoom={1.3}
-                nodesDraggable={false}
-                nodesConnectable={false}
-                elementsSelectable={false}
-              >
-                <Background />
-                <Controls showInteractive={false} />
-              </ReactFlow>
+            <Paper withBorder className={classes.workflowPreview} ref={workflowPreviewRef}>
+              {activeTab === "workflow" ? (
+                <ReactFlow
+                  nodes={workflowNodes}
+                  edges={workflowEdges}
+                  nodeTypes={workflowNodeTypes}
+                  defaultViewport={{ x: 60, y: 48, zoom: 0.7 }}
+                  onInit={(instance) => {
+                    setWorkflowFlow(instance);
+                    scheduleWorkflowCenter(instance);
+                  }}
+                  minZoom={0.25}
+                  maxZoom={1.3}
+                  nodesDraggable={false}
+                  nodesConnectable={false}
+                  elementsSelectable={false}
+                >
+                  <Background />
+                  <Controls showInteractive={false} />
+                </ReactFlow>
+              ) : null}
             </Paper>
 
-            <SimpleGrid cols={{ base: 1, md: 2 }}>
+            <SimpleGrid cols={{ base: 1, md: 3 }}>
               <Paper withBorder p="md">
                 <Text fw={700} size="sm">Normal run</Text>
                 <Text size="sm" c="dimmed">
-                  새 요청은 TourAPI 수집, RAG 근거 검색, 상품/마케팅 생성, QA 검수를 거쳐 `awaiting_approval` 상태가 됩니다.
+                  새 요청은 Planner 다음 GeoResolver가 자연어 지역을 분석하고, `지역 확정?` gate에서 계속 진행할지 종료할지 판단한 뒤 TourAPI 수집으로 넘어갑니다.
+                </Text>
+              </Paper>
+              <Paper withBorder p="md">
+                <Text fw={700} size="sm">Geo exits</Text>
+                <Text size="sm" c="dimmed">
+                  `중구`처럼 후보가 여러 개인 요청은 실패 상태로 멈추고 후보를 보여줍니다. 해외 목적지는 PARAVOCA 국내 지원 안내로 종료하며, 사용자는 지역명을 보강해 새 run을 만들 수 있습니다.
                 </Text>
               </Paper>
               <Paper withBorder p="md">
@@ -661,11 +889,11 @@ export function Dashboard() {
           <Stack gap="sm">
             <Textarea
               label="Request"
+              description="지역은 이 요청 문장에서 우선 해석합니다."
               minRows={3}
               {...form.getInputProps("message")}
             />
             <Group grow>
-              <TextInput label="Region" {...form.getInputProps("region")} />
               <TextInput
                 label="Period"
                 type="month"

@@ -140,6 +140,7 @@ export function RunDetail({
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [selectedEvidence, setSelectedEvidence] = useState<EvidenceDocument | null>(null);
+  const [showSelectedProductEvidenceOnly, setShowSelectedProductEvidenceOnly] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [approvalModal, setApprovalModal] = useState<ApprovalModalState>(null);
@@ -168,29 +169,41 @@ export function RunDetail({
         setLoading(true);
       }
       setError(null);
-      const [nextRun, nextResult, nextSteps, nextToolCalls, nextLlmCalls, nextApprovals] =
-        await Promise.all([
-          getWorkflowRun(runId),
+      const nextRun = await getWorkflowRun(runId);
+      const [resultResponse, stepsResponse, toolCallsResponse, llmCallsResponse, approvalsResponse] =
+        await Promise.allSettled([
           getWorkflowRunResult(runId),
           listRunSteps(runId),
           listRunToolCalls(runId),
           listRunLlmCalls(runId),
           listRunApprovals(runId),
         ]);
-      const normalizedResult = normalizeWorkflowResult(nextResult);
       setRun(nextRun);
-      setResult(normalizedResult);
+      const nextSteps = stepsResponse.status === "fulfilled" ? stepsResponse.value : [];
+      const nextToolCalls = toolCallsResponse.status === "fulfilled" ? toolCallsResponse.value : [];
+      const nextLlmCalls = llmCallsResponse.status === "fulfilled" ? llmCallsResponse.value : [];
+      const nextApprovals = approvalsResponse.status === "fulfilled" ? approvalsResponse.value : [];
       setSteps(nextSteps);
       setToolCalls(nextToolCalls);
       setLlmCalls(nextLlmCalls);
       setApprovals(nextApprovals);
-      const nextIssueKeys = new Set(qaIssueKeys(normalizedResult.qa_report));
-      setSelectedQaIssueKeys((current) => current.filter((key) => nextIssueKeys.has(key)));
-      setSelectedProductId((current) =>
-        current && normalizedResult.products.some((product) => product.id === current)
-          ? current
-          : normalizedResult.products[0]?.id ?? null
-      );
+      if (resultResponse.status === "fulfilled") {
+        const normalizedResult = normalizeWorkflowResult(resultResponse.value);
+        setResult(normalizedResult);
+        const nextIssueKeys = new Set(qaIssueKeys(normalizedResult.qa_report));
+        setSelectedQaIssueKeys((current) => current.filter((key) => nextIssueKeys.has(key)));
+        setSelectedProductId((current) =>
+          current && normalizedResult.products.some((product) => product.id === current)
+            ? current
+            : normalizedResult.products[0]?.id ?? null
+        );
+      } else {
+        setResult(null);
+        setSelectedProductId(null);
+        if (nextRun.status !== "failed") {
+          throw resultResponse.reason;
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load run detail");
     } finally {
@@ -229,11 +242,12 @@ export function RunDetail({
 
   const selectedEvidenceRows = useMemo(() => {
     if (!result) return [];
-    if (!selectedProduct?.source_ids.length) return result.retrieved_documents;
+    if (!showSelectedProductEvidenceOnly || !selectedProduct?.source_ids.length) {
+      return result.retrieved_documents;
+    }
     const sourceIds = new Set(selectedProduct.source_ids);
-    const matched = result.retrieved_documents.filter((doc) => sourceIds.has(doc.doc_id));
-    return matched.length > 0 ? matched : result.retrieved_documents;
-  }, [result, selectedProduct]);
+    return result.retrieved_documents.filter((doc) => sourceIds.has(doc.doc_id));
+  }, [result, selectedProduct, showSelectedProductEvidenceOnly]);
 
   const canReview = run?.status === "awaiting_approval" || run?.status === "changes_requested";
   const canCreateRevision = Boolean(run?.final_output && (result?.products.length ?? 0) > 0 && !isActiveRun);
@@ -560,11 +574,46 @@ export function RunDetail({
     );
   }
 
-  if (error || !run || !result) {
+  if (error || !run) {
     return (
       <Alert color="red">
         {error ?? "Run detail을 확인할 수 없습니다."}
       </Alert>
+    );
+  }
+
+  if (!result) {
+    return (
+      <Paper withBorder p="md">
+        <Stack gap="md">
+          <Group justify="space-between" align="flex-start">
+            <div>
+              <Group gap="sm">
+                <Title order={3}>Run Detail</Title>
+                <StatusBadge status={run.status} />
+              </Group>
+              <Text ff="monospace" size="sm" c="dimmed">
+                {run.id}
+              </Text>
+            </div>
+          </Group>
+          <Alert
+            color={run.status === "failed" ? "red" : "blue"}
+            title={run.status === "failed" ? "Workflow failed" : "Result is not ready"}
+          >
+            {run.error ? errorMessage(run.error) : "아직 생성된 result가 없습니다."}
+          </Alert>
+          <GeoClarificationFromSteps steps={steps} />
+          <WorkflowProgress steps={steps} />
+          <RunLogs
+            run={run}
+            steps={steps}
+            toolCalls={toolCalls}
+            llmCalls={llmCalls}
+            agentExecution={[]}
+          />
+        </Stack>
+      </Paper>
     );
   }
 
@@ -638,10 +687,18 @@ export function RunDetail({
           </Alert>
         ) : null}
 
-        {run.status === "failed" ? (
+        {run.status === "failed" && !isGeoClarificationResult(result) ? (
           <Alert color="red" title="Workflow failed">
             {run.error ? errorMessage(run.error) : "Run Logs의 Errors 탭에서 실패한 step을 확인하세요."}
           </Alert>
+        ) : null}
+
+        {result.status === "unsupported" ? (
+          <SupportScopeNotice result={result} />
+        ) : null}
+
+        {isGeoClarificationResult(result) ? (
+          <GeoClarificationNotice result={result} />
         ) : null}
 
         <SimpleGrid cols={{ base: 1, sm: 4 }}>
@@ -650,6 +707,8 @@ export function RunDetail({
           <Metric label="QA status" value={result.qa_report.overall_status} />
           <Metric label="LLM mode" value={String(result.cost_summary.mode ?? "-")} />
         </SimpleGrid>
+
+        <GeoScopePanel scope={geoScopeFromResult(result)} />
 
         <Tabs
           value={activeTab}
@@ -690,6 +749,10 @@ export function RunDetail({
                   )}
                 </Paper>
               </div>
+            ) : result.status === "unsupported" ? (
+              <SupportScopeNotice result={result} />
+            ) : isGeoClarificationResult(result) ? (
+              <GeoClarificationReviewNotice />
             ) : (
               <Alert color="gray">
                 <Group gap="sm" align="flex-start">
@@ -709,6 +772,23 @@ export function RunDetail({
 
           <Tabs.Panel value="evidence" pt="md">
             <Stack gap="md">
+              <Group justify="space-between" align="flex-start">
+                <div>
+                  <Text fw={700} size="sm">Evidence documents</Text>
+                  <Text size="sm" c="dimmed">
+                    Showing {selectedEvidenceRows.length} of {result.retrieved_documents.length}
+                    {showSelectedProductEvidenceOnly && selectedProduct
+                      ? ` linked to ${selectedProduct.title}`
+                      : " retrieved documents"}
+                  </Text>
+                </div>
+                <Checkbox
+                  checked={showSelectedProductEvidenceOnly}
+                  disabled={!selectedProduct?.source_ids.length}
+                  label="Selected product only"
+                  onChange={(event) => setShowSelectedProductEvidenceOnly(event.currentTarget.checked)}
+                />
+              </Group>
               <EvidenceTable
                 rows={selectedEvidenceRows}
                 onOpenEvidence={setSelectedEvidence}
@@ -802,7 +882,7 @@ export function RunDetail({
         {selectedEvidence ? (
           <Stack gap="sm">
             <Group gap="xs">
-              <Badge variant="light">{String(selectedEvidence.metadata.content_type ?? "source")}</Badge>
+              <Badge variant="light">{evidenceTypeLabel(selectedEvidence)}</Badge>
               <EvidenceDetailBadge row={selectedEvidence} />
             </Group>
             <Text size="sm" c="dimmed">
@@ -989,6 +1069,51 @@ export function RunDetail({
   );
 }
 
+function SupportScopeNotice({ result }: { result: WorkflowResult }) {
+  const userMessage = recordOrNull(result.user_message);
+  const title = String(userMessage?.title ?? "지원 범위 안내");
+  const message = String(userMessage?.message ?? "PARAVOCA는 현재 국내 관광 데이터만 지원합니다.");
+  const detail = String(userMessage?.detail ?? "국내 지역을 포함해 다시 요청하면 상품 기획을 진행할 수 있습니다.");
+  return (
+    <Alert color="blue" title={title}>
+      <Stack gap={4}>
+        <Text size="sm">{message}</Text>
+        <Text size="sm" c="dimmed">{detail}</Text>
+      </Stack>
+    </Alert>
+  );
+}
+
+function GeoClarificationNotice({ result }: { result: WorkflowResult }) {
+  return (
+    <Alert color="yellow" title="지역을 하나로 좁혀 주세요">
+      <Stack gap={4}>
+        <Text size="sm">
+          요청 문장만으로는 어느 지역인지 확정하기 어려워 데이터 수집을 시작하지 않았습니다.
+        </Text>
+        <Text size="sm" c="dimmed">
+          예: `서울 중구 야간 관광 상품`처럼 시도와 시군구를 함께 넣어 다시 요청해 주세요.
+        </Text>
+      </Stack>
+    </Alert>
+  );
+}
+
+function GeoClarificationReviewNotice() {
+  return (
+    <Alert color="gray" title="아직 상품을 만들지 않았습니다">
+      <Stack gap={4}>
+        <Text size="sm">
+          요청한 지역을 하나로 정하지 못해 관광 데이터 검색 전에 멈췄습니다.
+        </Text>
+        <Text size="sm" c="dimmed">
+          위의 지역 후보를 보고 원하는 지역명을 더 구체적으로 넣어 새 run을 만들어 주세요.
+        </Text>
+      </Stack>
+    </Alert>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <Paper withBorder p="sm">
@@ -1089,6 +1214,172 @@ function WorkflowProgress({ steps }: { steps: AgentStep[] }) {
       })}
     </Stack>
   );
+}
+
+function GeoClarificationFromSteps({ steps }: { steps: AgentStep[] }) {
+  const geoStep = steps.find(
+    (step) => step.agent_name === "GeoResolverAgent" && step.step_type === "geo_resolution"
+  );
+  const output = recordOrNull(geoStep?.output);
+  const scope = recordOrNull(output?.geo_scope);
+  return scope ? <GeoScopePanel scope={scope} /> : null;
+}
+
+function GeoScopePanel({ scope }: { scope: Record<string, unknown> | null }) {
+  if (!scope) return null;
+  const locations = arrayOfRecords(scope.locations);
+  const candidates = arrayOfRecords(scope.candidates);
+  const unresolved = arrayOfRecords(scope.unresolved_locations);
+  const displayCandidates = geoCandidateNames(candidates, unresolved);
+  const needsClarification = scope.needs_clarification === true;
+  const isUnsupported = scope.status === "unsupported" || scope.mode === "unsupported_region";
+  const unsupportedLocations = Array.isArray(scope.unsupported_locations)
+    ? scope.unsupported_locations.map(String).filter(Boolean)
+    : [];
+  const statusLabel = isUnsupported
+    ? "지원 범위 안내"
+    : needsClarification
+      ? "확인 필요"
+      : scope.allow_nationwide === true
+        ? "전국"
+        : scope.mode === "route"
+          ? "동선"
+          : "지역 확정";
+  return (
+    <Paper withBorder p="md">
+      <Stack gap="sm">
+        <Group justify="space-between" align="flex-start">
+          <div>
+            <Text fw={700} size="sm">해석된 지역 범위</Text>
+            <Text size="sm" c="dimmed">
+              {geoScopeLabel(scope)}
+            </Text>
+          </div>
+          <Badge variant="light" color={needsClarification ? "yellow" : isUnsupported ? "gray" : "opsBlue"}>
+            {statusLabel}
+          </Badge>
+        </Group>
+        {isUnsupported ? (
+          <Alert color="blue" title="지원 범위 안내">
+            <Text size="sm">
+              {String(scope.unsupported_reason ?? "PARAVOCA는 현재 국내 관광 데이터만 지원합니다.")}
+              {unsupportedLocations.length > 0 ? ` 감지된 지역: ${unsupportedLocations.join(", ")}` : ""}
+            </Text>
+          </Alert>
+        ) : null}
+        {needsClarification ? (
+          <Alert color="yellow" title="지역을 하나로 좁혀 주세요">
+            <Stack gap="xs">
+              <Text size="sm">
+                요청 문장만으로는 어느 지역인지 확정하기 어렵습니다. 아래 후보 중 원하는 지역명을 포함해 다시 요청해 주세요.
+              </Text>
+            </Stack>
+          </Alert>
+        ) : null}
+        {needsClarification && displayCandidates.length > 0 ? (
+          <Group gap="xs">
+            {displayCandidates.slice(0, 8).map((name) => (
+              <Text key={name} span size="sm" c="blue.7" fw={650}>
+                {name}
+              </Text>
+            ))}
+          </Group>
+        ) : null}
+        {!needsClarification && locations.length > 0 ? (
+          <Group gap="xs">
+            {locations.map((location) => (
+              <Badge
+                key={`${location.role}-${location.ldong_regn_cd}-${location.ldong_signgu_cd}-${location.name}`}
+                variant="light"
+                color="opsBlue"
+              >
+                {geoRoleLabel(location.role)}{String(location.name ?? "-")}
+              </Badge>
+            ))}
+          </Group>
+        ) : scope.allow_nationwide === true ? (
+          <Badge variant="light" color="opsBlue">전국 검색 허용</Badge>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+}
+
+function geoScopeFromResult(result: WorkflowResult): Record<string, unknown> | null {
+  return recordOrNull(result.geo_scope) ?? recordOrNull(result.normalized_request.geo_scope);
+}
+
+function isGeoClarificationResult(result: WorkflowResult) {
+  const scope = geoScopeFromResult(result);
+  return result.status === "needs_clarification" || scope?.needs_clarification === true;
+}
+
+function geoScopeLabel(scope: Record<string, unknown>) {
+  if (scope.status === "unsupported" || scope.mode === "unsupported_region") return "지원 범위 밖";
+  if (scope.allow_nationwide === true) return "전국";
+  if (scope.needs_clarification === true) return "지역을 더 구체적으로 입력해 주세요";
+  const locations = arrayOfRecords(scope.locations);
+  const names = locations.map((location) => String(location.name ?? "").trim()).filter(Boolean);
+  const separator = scope.mode === "route" ? " → " : ", ";
+  return names.length > 0 ? names.join(separator) : "-";
+}
+
+function geoCandidateNames(
+  candidates: Array<Record<string, unknown>>,
+  unresolved: Array<Record<string, unknown>>,
+) {
+  const names = new Map<string, string>();
+  const collect = (items: Array<Record<string, unknown>>) => {
+    items.forEach((item) => {
+      const name = String(item.name ?? "").replace(/\s+/g, " ").trim();
+      if (name && !names.has(name)) {
+        names.set(name, name);
+      }
+    });
+  };
+  collect(candidates);
+  unresolved.forEach((item) => collect(arrayOfRecords(item.candidates)));
+  return Array.from(names.values());
+}
+
+function geoRoleLabel(value: unknown) {
+  const role = String(value ?? "primary");
+  return {
+    origin: "출발: ",
+    destination: "도착: ",
+    stopover: "경유: ",
+    primary: "",
+    comparison: "비교: ",
+    nearby_anchor: "주변: ",
+  }[role] ?? "";
+}
+
+function evidenceTypeLabel(row: EvidenceDocument) {
+  const rawType = String(row.metadata.content_type ?? "").trim().toLowerCase();
+  return {
+    attraction: "관광지",
+    culture: "문화시설",
+    event: "행사/축제",
+    course: "여행코스",
+    leisure: "레포츠",
+    accommodation: "숙박",
+    shopping: "쇼핑",
+    restaurant: "음식점",
+  }[rawType] ?? (rawType ? rawType : "-");
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function arrayOfRecords(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === "object" && !Array.isArray(item))
+      )
+    : [];
 }
 
 function StageIndicator({ status }: { status: string }) {
@@ -1405,12 +1696,7 @@ function RevisionQaSettingsPanel({
             초기 설정으로 되돌리기
           </Button>
         </Group>
-        <SimpleGrid cols={{ base: 1, md: 4 }}>
-          <TextInput
-            label="Region"
-            value={settings.region}
-            onChange={(event) => onChange({ region: event.currentTarget.value })}
-          />
+        <SimpleGrid cols={{ base: 1, md: 3 }}>
           <TextInput
             label="Period"
             type="month"
@@ -1516,7 +1802,7 @@ function EvidenceTable({
                   <Text ff="monospace" size="xs" c="dimmed">{row.doc_id}</Text>
                 </Table.Td>
                 <Table.Td>
-                  <Badge variant="light">{String(row.metadata.content_type ?? "-")}</Badge>
+                  <Badge variant="light">{evidenceTypeLabel(row)}</Badge>
                 </Table.Td>
                 <Table.Td>
                   <EvidenceDetailBadge row={row} />
