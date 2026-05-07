@@ -9,6 +9,7 @@
 ```text
 User Input
   → Planner Agent
+  → GeoResolver Agent
   → Data Agent
   → Research Agent
   → Product Agent
@@ -17,6 +18,11 @@ User Input
   → Human Approval Node
   → Save/Export Node
 ```
+
+Phase 9.6 기준으로 GeoResolver 단계에는 두 개의 조기 종료 경로가 있습니다.
+
+- 지역 후보 안내: `중구`처럼 후보가 여러 개인 경우 run status는 `failed`로 저장하고 후보를 UI에 보여주며 Data Agent로 넘어가지 않습니다.
+- `unsupported`: 해외 목적지처럼 PARAVOCA의 현재 국내 관광 데이터 지원 범위 밖인 경우 안내 메시지를 반환하고 Data Agent로 넘어가지 않습니다.
 
 후속 Poster Studio workflow:
 
@@ -39,6 +45,7 @@ class GraphState(TypedDict):
     run_id: str
     user_request: dict
     normalized_request: dict
+    geo_scope: dict
     plan: list[dict]
     source_items: list[dict]
     retrieved_documents: list[dict]
@@ -79,8 +86,7 @@ class GraphState(TypedDict):
 ```json
 {
   "normalized_request": {
-    "region_name": "부산",
-    "region_code": "6",
+    "message": "이번 달 부산에서 외국인 대상 액티비티 상품을 5개 기획해줘",
     "start_date": "2026-05-01",
     "end_date": "2026-05-31",
     "target_customer": "foreign_travelers",
@@ -91,9 +97,9 @@ class GraphState(TypedDict):
   "tasks": [
     {
       "id": "task_1",
-      "type": "data_lookup",
-      "description": "부산 지역 관광지 후보 조회",
-      "required_tools": ["tourapi_area_based_list", "tourapi_search_keyword"]
+      "type": "geo_resolution",
+      "description": "요청 문장에서 지역 범위 해석",
+      "required_agent": "GeoResolverAgent"
     }
   ],
   "risk_notes": [
@@ -112,8 +118,57 @@ class GraphState(TypedDict):
 
 - 상대 날짜는 반드시 기준일로 절대 날짜 변환합니다.
 - 상품 수가 없으면 기본 3개로 설정합니다.
-- 지역이 불명확하면 `needs_clarification`으로 표시하지만, MVP에서는 최대한 합리적 추정으로 진행합니다.
+- 지역 해석은 GeoResolverAgent가 담당합니다.
+- 지역이 불명확하면 억지로 추정하지 않고 `needs_clarification`으로 멈춥니다.
 - 가격, 예약 가능 여부, 실시간 재고는 알 수 없다고 표시합니다.
+
+## GeoResolver Agent
+
+### 역할
+
+자연어 요청에서 지역 의도를 추출하고 TourAPI v4.4 검색에 사용할 `lDongRegnCd`/`lDongSignguCd` 기반 `geo_scope`를 만듭니다.
+
+### 입력
+
+```json
+{
+  "message": "부산 부산진구 전포동 일대 카페 투어 상품 3개 기획해줘",
+  "period": "2026-05",
+  "preferences": ["카페 투어"]
+}
+```
+
+### 처리 규칙
+
+- 기준 catalog는 `ldongCode2?lDongListYn=Y` 전체 paging sync 결과입니다.
+- resolver는 특정 테스트 지명을 코드에 하드코딩해 강제 매핑하지 않습니다.
+- 시도/시군구는 exact match, normalized match, fuzzy candidate 순서로 찾습니다.
+- 상위 지역이 확정된 상태에서만 `전포동` 같은 더 좁은 동네명을 keyword로 유지합니다.
+- `중구`처럼 여러 시도에 같은 시군구명이 있으면 `needs_clarification=true`로 처리합니다.
+- 해외 목적지는 `unsupported`로 처리하고 PARAVOCA가 현재 국내 관광 데이터만 지원한다는 안내를 반환합니다.
+- 사용자가 `전국`, `국내 전체`처럼 명시한 경우에만 전국 검색을 허용합니다.
+
+### 출력
+
+```json
+{
+  "geo_scope": {
+    "mode": "single_area",
+    "status": "resolved",
+    "locations": [
+      {
+        "name": "부산광역시 부산진구 전포동 일대",
+        "role": "primary",
+        "ldong_regn_cd": "26",
+        "ldong_signgu_cd": "230",
+        "keywords": ["전포동"],
+        "confidence": 0.98
+      }
+    ],
+    "needs_clarification": false
+  }
+}
+```
 
 ## Data Agent
 
@@ -126,11 +181,16 @@ Planner가 만든 plan에 따라 외부/내부 데이터를 조회합니다.
 ```json
 {
   "normalized_request": {
-    "region_code": "6",
     "start_date": "2026-05-01",
     "end_date": "2026-05-31",
     "target_customer": "foreign_travelers",
     "preferred_themes": ["night_view", "festival"]
+  },
+  "geo_scope": {
+    "mode": "single_area",
+    "locations": [
+      {"ldong_regn_cd": "26", "ldong_signgu_cd": "230", "keywords": ["전포동"]}
+    ]
   }
 }
 ```
@@ -138,6 +198,8 @@ Planner가 만든 plan에 따라 외부/내부 데이터를 조회합니다.
 ### 도구
 
 - `tourapi_area_code`
+- `tourapi_ldong_code`
+- `tourapi_lcls_system_code`
 - `tourapi_area_based_list`
 - `tourapi_search_keyword`
 - `tourapi_search_festival`
@@ -152,10 +214,12 @@ Planner가 만든 plan에 따라 외부/내부 데이터를 조회합니다.
 - `local_product_search`
 - `vector_search`
 
-현재 Phase 9 구현:
+현재 Phase 9.6 구현:
 
+- Data Agent는 GeoResolver가 만든 `geo_scope`를 기준으로 TourAPI v4.4 `lDongRegnCd`/`lDongSignguCd` 파라미터를 전달합니다.
 - Data Agent는 기본 TourAPI 검색 결과 일부를 `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2`로 보강합니다.
 - 보강된 상세/반복/이미지 metadata는 `source_documents`와 Chroma index에 반영됩니다.
+- `source_documents`와 Chroma metadata에는 `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3`가 저장됩니다.
 - 상세 이미지 후보는 `tourism_visual_assets.usage_status=candidate`로 저장합니다.
 - `categoryCode2`, `locationBasedList2`는 provider method는 준비되어 있으나, 아직 Data Agent의 코스 조합/ranking 판단에는 연결하지 않았습니다.
 

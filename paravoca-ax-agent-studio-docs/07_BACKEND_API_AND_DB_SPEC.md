@@ -55,7 +55,7 @@ Base URL:
 
 ## API 엔드포인트
 
-이 섹션은 전체 제품 목표 API까지 포함합니다. 현재 Phase 9 코드에 구현된 API는 아래 범위입니다.
+이 섹션은 전체 제품 목표 API까지 포함합니다. 현재 Phase 9.6 코드에 구현된 API는 아래 범위입니다.
 
 - `GET /api/health`
 - `GET /api/workflows`
@@ -372,7 +372,7 @@ GET /api/data/sources/capabilities
 POST /api/data/tourism/details/enrich
 ```
 
-현재 Phase 9 구현 API는 `GET /api/data/tourism/search`, `GET /api/data/sources/capabilities`, `POST /api/data/tourism/details/enrich`입니다. 개별 item 조회와 sync API는 후속 Phase 목표입니다.
+현재 Phase 9.6 구현 API는 `GET /api/data/tourism/search`, `GET /api/data/sources/capabilities`, `POST /api/data/tourism/details/enrich`입니다. TourAPI catalog sync는 API가 아니라 `python -m app.tools.sync_tourapi_catalogs` CLI로 제공합니다. 개별 item 조회와 API 기반 sync endpoint는 후속 Phase 목표입니다.
 
 Search query:
 
@@ -449,7 +449,7 @@ GET /api/costs/models
 
 아래는 SQLAlchemy 기준 주요 테이블입니다.
 
-현재 Phase 9 코드에 실제 구현된 core table은 workflow, approval, tourism item, source document, KTO data foundation, usage log 중심입니다. Poster, evaluation, cost dashboard 전용 table은 후속 Phase 목표입니다.
+현재 Phase 9.6 코드에 실제 구현된 core table은 workflow, approval, tourism item, source document, TourAPI `ldong/lcls` catalog, geo resolution, KTO data foundation, usage log 중심입니다. Poster, evaluation, cost dashboard 전용 table은 후속 Phase 목표입니다.
 
 ### users
 
@@ -554,7 +554,7 @@ created_at datetime
 
 ### poster_assets
 
-후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 9 코드에는 아직 없습니다.
+후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 9.6 코드에는 아직 없습니다.
 
 ```text
 id string PK
@@ -593,7 +593,7 @@ Status:
 
 ### poster_image_calls
 
-후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 9 코드에는 아직 없습니다.
+후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 9.6 코드에는 아직 없습니다.
 
 ```text
 id string PK
@@ -640,7 +640,7 @@ Unique:
 
 ### tourism_events
 
-초기 설계의 분리 테이블 후보입니다. 현재 Phase 9 코드에서는 행사도 `tourism_items`에 저장하고 `content_type=event`, `event_start_date`, `event_end_date`, `raw`로 관리합니다.
+초기 설계의 분리 테이블 후보입니다. 현재 Phase 9.6 코드에서는 행사도 `tourism_items`에 저장하고 `content_type=event`, `event_start_date`, `event_end_date`, `raw`로 관리합니다.
 
 ```text
 id string PK

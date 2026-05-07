@@ -1,6 +1,6 @@
 # 구현 로드맵
 
-이 문서는 초기 end-to-end 구현 로드맵입니다. Phase 7 이후 실제 구현 순서는 KTO 데이터 보강 계획이 추가되면서 `14_POST_PHASE7_IMPLEMENTATION_PLAN.md`를 우선합니다. 현재 코드 기준으로는 `14_POST_PHASE7_IMPLEMENTATION_PLAN.md`의 Phase 9까지 구현되어 있고, 다음 단계는 Phase 9.5 local semantic embedding입니다.
+이 문서는 초기 end-to-end 구현 로드맵입니다. Phase 7 이후 실제 구현 순서는 KTO 데이터 보강 계획이 추가되면서 `14_POST_PHASE7_IMPLEMENTATION_PLAN.md`를 우선합니다. 현재 코드 기준으로는 Phase 9.6까지 구현되어 있고, 다음 단계는 Phase 10 Data Enrichment Agent Workflow입니다.
 
 ## 구현 원칙
 
@@ -108,12 +108,13 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 
 목표:
 
-- Planner/Data/Research/Product/Marketing/QA node가 연결된 workflow 실행
+- Planner/GeoResolver/Data/Research/Product/Marketing/QA node가 연결된 workflow 실행
 
 작업:
 
 - GraphState 정의
 - Planner Agent 구현
+- GeoResolver Agent 구현
 - Data Agent 구현
 - Research Agent 구현
 - Product Agent 구현
@@ -124,6 +125,7 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 완료 기준:
 
 - 실제 TourAPI 입력으로 end-to-end workflow 실행
+- 자연어 요청의 지역이 TourAPI `ldong` catalog 기준으로 해석됨
 - run status가 `awaiting_approval`로 멈춤
 - final draft output 생성
 - agent_steps, tool_calls, llm_calls 저장

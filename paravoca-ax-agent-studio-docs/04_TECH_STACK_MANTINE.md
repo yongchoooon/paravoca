@@ -380,13 +380,14 @@ LangGraph는 workflow와 agent의 차이를 보여주기 좋습니다.
 정해진 workflow path:
 
 ```text
-Planner → Data → Research → Product → Marketing → QA → Human Approval → Save
+Planner → GeoResolver → Data → Research → Product → Marketing → QA → Human Approval → Save
 ```
 
 동적 agent behavior:
 
-- Planner가 필요한 tool call을 선택합니다.
-- Data Agent가 지역/키워드/행사/숙박 도구 중 필요한 것을 고릅니다.
+- Planner가 요청, 기간, 상품 수, 선호/회피 조건을 정규화합니다.
+- GeoResolverAgent가 자연어 지역을 TourAPI v4.4 `ldong` catalog 기준으로 확정하거나, 후보가 애매하면 run을 실패로 종료하고 후보 안내를 남깁니다.
+- Data Agent가 `geo_scope`에 맞는 지역/키워드/행사/숙박 도구 중 필요한 것을 고릅니다.
 - QA Agent가 검수 이슈에 따라 재작성 요청 여부를 결정합니다.
 
 ### OpenAI Agents SDK 대체 옵션

@@ -2,7 +2,7 @@
 
 작성 기준일: 2026-05-07
 
-이 문서는 Phase 9까지 구현된 PARAVOCA AX Agent Studio를 기준으로, 평가와 배포 전에 보강해야 할 구현 단계를 다시 정리한 문서입니다. 기존 `11_IMPLEMENTATION_ROADMAP.md`의 Phase 8/9는 초기 계획 기준이며, 실제 다음 개발은 이 문서의 순서를 우선합니다.
+이 문서는 Phase 9.6까지 구현된 PARAVOCA AX Agent Studio를 기준으로, 평가와 배포 전에 보강해야 할 구현 단계를 다시 정리한 문서입니다. 기존 `11_IMPLEMENTATION_ROADMAP.md`의 Phase 8/9는 초기 계획 기준이며, 실제 다음 개발은 이 문서의 순서를 우선합니다.
 
 ## 현재 구현 기준
 
@@ -10,6 +10,7 @@
 
 ```text
 Planner
+  -> GeoResolver
   -> Data
   -> Research
   -> Product
@@ -27,9 +28,14 @@ Planner
 - workflow run 생성/조회/승인/반려/수정 요청
 - revision run 생성
 - TourAPI 기반 기본 데이터 조회
+- TourAPI v4.4 `ldongCode2`/`lclsSystmCode2` catalog sync
+- GeoResolverAgent 기반 자연어 지역 해석
+- `lDongRegnCd`/`lDongSignguCd` 기반 workflow 검색
+- 지역 후보 안내/지원 범위 밖 조기 종료
 - TourAPI content_id 기반 상세 보강
 - source document 생성
 - Chroma 기반 vector search
+- local semantic embedding provider와 source document reindex command
 - Gemini 기반 Product, Marketing, QA, Revision patch
 - LLM/tool/error usage log
 - KTO API capability catalog
@@ -40,7 +46,9 @@ Planner
 
 현재 TourAPI 사용 범위:
 
-- `areaCode2`
+- `areaCode2` backward compatibility
+- `ldongCode2`
+- `lclsSystmCode2`
 - `areaBasedList2`
 - `searchKeyword2`
 - `searchFestival2`
@@ -55,6 +63,7 @@ Planner
 아직 부족한 부분:
 
 - 주변 관광지와 분류 코드는 provider method만 추가되어 있고 workflow 보강 판단에는 아직 직접 연결되지 않음
+- Product/Marketing이 evidence 내용을 완전히 반영하는 생성 품질은 Phase 10 이후 Data Enrichment/EvidenceFusion/Agent 실제화에서 보강 필요
 - 방문 수요, 혼잡도 같은 운영 판단 신호
 - 웰니스, 반려동물, 두루누비, 오디오 가이드, 생태, 의료 같은 테마별 공공데이터
 - 공식 홈페이지/예약 페이지/행사 공지에서 최신 운영 정보를 확인하는 웹 근거 수집
@@ -634,27 +643,25 @@ Approved or Reviewable Run
 
 ## 다음 구현 시작점
 
-바로 다음 구현은 Phase 9.5부터 시작합니다.
+바로 다음 구현은 Phase 10 Data Enrichment Agent Workflow부터 시작합니다.
 
 Codex에게 줄 첫 작업 범위:
 
 ```text
-Phase 9.5를 구현해줘.
+Phase 10: Data Enrichment Agent Workflow를 구현해줘.
 
 범위:
-- local sentence-transformers embedding provider 추가
-- 기존 hash embedding을 legacy_hash provider로 분리
-- Chroma index/search가 EMBEDDING_PROVIDER 설정을 사용하게 수정
-- source_documents 재색인 command 추가
-- retrieval recall smoke test 추가
-- README에 로컬 embedding 설치와 재색인 방법 추가
-- 기존 workflow run 생성/조회/리뷰/리비전 기능 유지
+- 현재 Phase 9.6의 GeoResolver/TourAPI v4.4 ldong/lcls/RAG metadata 구조를 유지
+- DataGapAnalyzer, BaselineDataAgent, EvidenceFusionAgent 범위 확정
+- TourAPI 상세 보강으로도 부족한 운영 시간, 예약 조건, 집결지, 가격/포함사항 공백을 구조화
+- Product/Marketing/QA가 evidence와 data_gap을 더 강하게 사용하도록 연결
+- 외부 웹 검색/grounding은 feature flag와 비용 한도 뒤에만 연결
 - backend test와 frontend build로 확인
 
 주의:
 - 아직 관광사진/공모전/수요/혼잡/두루누비/웰니스 API는 붙이지 마.
 - Gemini/OpenAI embedding은 기본값으로 쓰지 마.
-- 우선 로컬 CPU sentence-transformers를 사용해 embedding API 비용이 발생하지 않게 해.
+- 기존 local CPU sentence-transformers embedding provider를 유지해 embedding API 비용이 발생하지 않게 해.
 - TourAPI mock, fixture, fallback은 사용하지 마.
-- embedding 모델 로딩/색인 실패 시 개발자가 확인할 수 있게 error log에 남겨.
+- 지역 resolve 실패 시 전국 fallback하지 마.
 ```

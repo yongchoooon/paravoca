@@ -1,6 +1,6 @@
 # PARAVOCA AX Agent Studio
 
-PARAVOCA AX Agent Studio는 공공 관광 데이터를 여행 상품 운영자의 업무 결과물로 바꾸는 AI 워크플로우 시스템입니다. 지역, 기간, 타깃 고객을 입력하면 상품 후보 발굴, 상품 콘셉트 작성, 상세페이지 카피와 FAQ 생성, 운영 리스크 검수, 사람 승인까지 하나의 흐름으로 이어집니다.
+PARAVOCA AX Agent Studio는 공공 관광 데이터를 여행 상품 운영자의 업무 결과물로 바꾸는 AI 워크플로우 시스템입니다. 자연어 요청에서 지역과 의도를 해석하고, 기간과 타깃 고객을 함께 받아 상품 후보 발굴, 상품 콘셉트 작성, 상세페이지 카피와 FAQ 생성, 운영 리스크 검수, 사람 승인까지 하나의 흐름으로 이어집니다.
 
 ## 핵심 메시지
 
@@ -55,7 +55,7 @@ Poster Studio는 승인 또는 검토 중인 workflow run 결과를 바탕으로
 - API 사용량, latency, 예상 비용을 기록해 운영 비용 감각을 보여줍니다.
 - 작은 여행사와 지역 관광사업자도 접근 가능한 API 기반 구조를 지향합니다.
 
-현재 구현 범위는 Phase 0부터 Phase 9까지입니다.
+현재 구현 범위는 Phase 0부터 Phase 9.6까지입니다.
 
 ## 현재 구현 범위
 
@@ -92,7 +92,11 @@ Poster Studio는 승인 또는 검토 중인 workflow run 결과를 바탕으로
 - tool call logging
 - 관광 검색 결과 `tourism_items` upsert
 - `source_documents` 생성
-- Chroma 기반 local vector index/search
+- Chroma 기반 vector index/search
+- 설정 기반 embedding provider
+- 개발/테스트용 `legacy_hash` embedding provider
+- 로컬 `sentence-transformers` semantic embedding provider
+- source document 재색인 command
 - KTO API capability catalog
 - source family, trust level, license note, data quality metadata 저장 구조
 - KTO 데이터 보강용 DB 모델 기본 구조
@@ -101,6 +105,9 @@ Poster Studio는 승인 또는 검토 중인 workflow run 결과를 바탕으로
 - KorService2 상세 보강 provider method
 - `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2`
 - `categoryCode2`, `locationBasedList2`
+- TourAPI v4.4 `ldongCode2`, `lclsSystmCode2` catalog sync
+- `GeoResolverAgent` 기반 자연어 지역 해석
+- `lDongRegnCd`, `lDongSignguCd`, `lclsSystm1/2/3` metadata 저장
 - content_id 기반 상세 보강 API
 - TourAPI 검색 결과의 상세 주소, 홈페이지, 개요, 좌표, 대표 이미지 보강
 - content type별 소개 정보와 이용 시간, 주차, 쉬는 날, 문의, 요금성 안내 저장
@@ -109,6 +116,7 @@ Poster Studio는 승인 또는 검토 중인 workflow run 결과를 바탕으로
 - Run Detail Evidence에서 상세 정보와 이미지 후보 확인
 - LangGraph workflow skeleton
 - Planner, Data, Research, Product, Marketing, QA/Compliance Agent
+- Planner와 Data 사이에서 자연어 요청의 지역 범위를 해석하는 GeoResolverAgent
 - Human Approval Node
 - workflow run 생성 시 `awaiting_approval`까지 rule-based 또는 Gemini 실행
 - agent step, tool call, LLM call, latency, cost 기록 구조
@@ -162,6 +170,18 @@ TOURAPI_DETAIL_ENRICHMENT_LIMIT=5
 TOURAPI_SERVICE_KEY=your_tourapi_service_key
 ```
 
+Phase 9.6부터 workflow 지역 검색은 기존 `areaCode`가 아니라 TourAPI v4.4 법정동 코드와 신분류체계 기준으로 동작합니다. 지역 catalog는 `ldongCode2?lDongListYn=Y` 전체 목록을 paging해 동기화합니다.
+
+```bash
+conda activate paravoca-ax-agent-studio
+cd backend
+python -m app.tools.sync_tourapi_catalogs
+```
+
+잘못 저장된 catalog를 다시 받을 때는 `python -m app.tools.sync_tourapi_catalogs --reset`을 실행합니다.
+
+`GeoResolverAgent`는 사용자의 자연어 요청에서 지역 의도를 먼저 해석합니다. 공식 TourAPI `ldongCode2`로 동기화한 전국 시도/시군구 catalog를 먼저 확인하며, 코드에 특정 지명 예시를 하드코딩해 강제 매핑하지 않습니다. catalog가 비어 있으면 임의 값으로 추측하거나 전국 검색으로 넘어가지 않고 catalog 동기화가 필요하다고 중단합니다. 예를 들어 `대전 유성구`, `전남 장흥`, `부산 중구 남포동 일대`, `부산에서 시작해서 양산에서 끝나는 상품`처럼 행정구역명, 세부 동네명, route형 요청을 catalog 후보로 변환합니다. `전포동`처럼 TourAPI 검색 필터에 직접 넣을 수 없는 좁은 동네명은 상위 시군구가 확정된 경우 keyword로 유지합니다. UI는 별도 Region 입력을 받지 않고 자연어 요청을 기준으로 처리합니다. 확신이 낮거나 `중구`처럼 후보가 여러 개인 경우에는 전국 검색으로 넘어가지 않고 run status를 `failed`로 저장한 뒤 지역 후보 안내를 표시합니다. 전국 검색은 사용자가 `전국`, `국내 전체`처럼 명시한 경우에만 허용됩니다. `도쿄`, `오사카`, `파리` 같은 해외 목적지는 PARAVOCA의 현재 지원 범위 밖으로 판단해 검색을 시작하지 않습니다.
+
 LLM 키는 필수는 아닙니다. `LLM_ENABLED=false`이면 Gemini 키 없이도 rule-based workflow로 동작합니다. 실제 LLM 연동은 우선 Gemini만 사용합니다.
 
 Gemini를 사용하려면 `.env`에 아래 값을 넣습니다.
@@ -180,8 +200,8 @@ LLM_ENABLED=true
 
 LLM mode:
 
-- `LLM_ENABLED=false`: Planner/Data/Research/Product/Marketing/QA/RevisionPatch가 rule-based로 실행됩니다.
-- `LLM_ENABLED=true`: Planner/Data/Research는 규칙 기반을 유지하고, Product/Marketing/QA와 AI revision patch만 Gemini를 호출합니다.
+- `LLM_ENABLED=false`: Planner/GeoResolver/Data/Research/Product/Marketing/QA/RevisionPatch가 rule-based로 실행됩니다.
+- `LLM_ENABLED=true`: GeoResolver/Product/Marketing/QA와 AI revision patch가 Gemini를 호출합니다. Planner/Data/Research는 규칙 기반을 유지합니다.
 - `LLM_ENABLED=true`에서 Gemini 응답의 JSON 파싱/스키마 검증이 실패하면 `GEMINI_JSON_MAX_RETRIES` 횟수만큼 같은 provider로 다시 호출합니다.
 - 재시도 후에도 Gemini 호출, JSON 검증, 한글 출력 검증이 실패하면 workflow run은 `failed`가 됩니다.
 - 실패한 Agent는 `agent_steps.error`에 남고, Gemini 호출과 JSON 재시도 호출은 `llm_calls`에 token/latency/cost와 함께 저장됩니다.
@@ -202,6 +222,28 @@ LLM mode:
 - OpenAI/GPT는 현재 workflow에서 사용하지 않습니다.
 - 웹 검색/Google Search grounding은 현재 workflow에 구현되어 있지 않습니다. P2 이후 Data Agent 보강 기능으로 추가하며, 기본값은 비활성화하고 run당 query/grounded prompt 한도를 둘 계획입니다.
 - Google Cloud 가격표 기준으로 Gemini 2.0/2.5 Flash 계열의 Google Search grounding은 grounded prompt 단위로 계산됩니다. 하루 1,500 grounded prompts 추가요금 무료 구간은 검색 grounding 추가요금에 대한 것이며, 모델 token 비용은 별도입니다. Gemini 3 계열은 search query 단위 과금이 적용될 수 있어 별도 계산이 필요합니다.
+
+## Local Semantic Embedding
+
+기본 embedding provider는 빠른 개발과 기존 Chroma 호환을 위해 `legacy_hash`입니다. 실제 semantic retrieval을 확인하려면 로컬 `sentence-transformers` provider를 사용합니다. 이 방식은 Gemini/OpenAI embedding API를 호출하지 않으므로 embedding API 비용이 발생하지 않습니다.
+
+```env
+EMBEDDING_PROVIDER=local
+EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_DEVICE=cpu
+EMBEDDING_BATCH_SIZE=32
+```
+
+`EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, vector dimension이 바뀌면 기존 Chroma collection과 충돌할 수 있습니다. provider 또는 model 변경 후에는 reset reindex를 실행합니다.
+
+```bash
+conda activate paravoca-ax-agent-studio
+cd backend
+python -m pip install -e ".[dev]"
+python -m app.rag.reindex --collection source_documents --reset
+```
+
+빠른 개발/테스트만 필요하면 `.env`에서 `EMBEDDING_PROVIDER=legacy_hash`를 유지할 수 있습니다. semantic retrieval 품질 확인과 데모 전 재색인은 `EMBEDDING_PROVIDER=local`에서 실행합니다.
 
 ## 로컬 실행
 
@@ -237,7 +279,7 @@ Tourism search:
 
 ```bash
 curl -G http://localhost:8000/api/data/tourism/search \
-  --data-urlencode "region=부산" \
+  --data-urlencode "ldong_regn_cd=26" \
   --data-urlencode "keyword=야경" \
   --data-urlencode "limit=5"
 ```
@@ -246,7 +288,7 @@ curl -G http://localhost:8000/api/data/tourism/search \
 
 ```bash
 curl -G http://localhost:8000/api/data/tourism/search \
-  --data-urlencode "region_code=6" \
+  --data-urlencode "ldong_regn_cd=30" \
   --data-urlencode "content_type=event" \
   --data-urlencode "start_date=2026-05-01" \
   --data-urlencode "limit=1" \
@@ -280,7 +322,6 @@ curl -X POST http://localhost:8000/api/workflow-runs \
     "template_id": "default_product_planning",
     "input": {
       "message": "부산 외국인 야간 관광",
-      "region": "부산",
       "period": "2026-05",
       "target_customer": "외국인",
       "product_count": 3,
@@ -289,11 +330,11 @@ curl -X POST http://localhost:8000/api/workflow-runs \
 }'
 ```
 
-생성 응답은 즉시 `pending` 상태로 반환됩니다. 이후 백그라운드에서 Planner/Data/Research/Product/Marketing/QA/Human Approval 단계가 실행되고, 완료되면 `awaiting_approval` 상태가 됩니다.
+생성 응답은 즉시 `pending` 상태로 반환됩니다. 이후 백그라운드에서 Planner/GeoResolver/Data/Research/Product/Marketing/QA/Human Approval 단계가 실행되고, 완료되면 `awaiting_approval` 상태가 됩니다. 지역이 애매하면 `failed` 상태로 종료하되 지역 후보 안내를 보여주고, 해외 목적지처럼 PARAVOCA의 현재 지원 범위 밖이면 `unsupported`로 종료됩니다. 두 경우 모두 TourAPI 검색은 시작하지 않습니다.
 
 ```bash
 curl -G http://localhost:8000/api/data/tourism/search \
-  --data-urlencode "region=부산" \
+  --data-urlencode "ldong_regn_cd=26" \
   --data-urlencode "keyword=야경" \
   --data-urlencode "run_id=RUN_ID_FROM_RESPONSE"
 ```
@@ -385,10 +426,20 @@ curl -X POST http://localhost:8000/api/rag/search \
   -H "Content-Type: application/json" \
   -d '{
     "query": "광안리 야경 외국인 액티비티",
-    "filters": {"region_code": "6"},
+    "filters": {"ldong_regn_cd": "26"},
     "top_k": 5
   }'
 ```
+
+Source document 재색인:
+
+```bash
+python -m app.rag.reindex --collection source_documents --reset
+```
+
+현재 `.env`의 `EMBEDDING_PROVIDER`와 `EMBEDDING_MODEL` 기준으로 Chroma `source_documents` collection을 다시 생성하고, DB의 `source_documents.embedding_status`를 `indexed` 또는 `failed`로 갱신합니다.
+
+Phase 9.6 이후에는 source document metadata에 `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3`가 추가됩니다. 기존 Chroma collection에는 이 metadata가 없으므로 provider/model 변경 여부와 관계없이 reset reindex를 실행해야 지역 filter가 정확히 적용됩니다.
 
 Gemini key check:
 
@@ -413,7 +464,6 @@ curl -X POST http://localhost:8000/api/workflow-runs \
     "template_id": "default_product_planning",
     "input": {
       "message": "이번 달 부산에서 외국인 대상 액티비티 상품을 2개 기획해줘",
-      "region": "부산",
       "period": "2026-05",
       "target_customer": "외국인",
       "product_count": 2,
@@ -487,7 +537,7 @@ npm run build
 
 현재 확인된 검증 결과:
 
-- Backend: `20 passed`
+- Backend: `50 passed`
 - Frontend: production build 성공
 - Frontend: `npm run build`의 TypeScript check와 Vite production build 통과
 - `GET /api/health` 응답 확인
@@ -513,12 +563,17 @@ npm run build
 - `tourism_entities` canonical entity 저장 확인
 - `tourism_visual_assets` 이미지 후보 `candidate` 저장 확인
 - Run Detail Evidence에서 상세 정보와 이미지 후보 표시 확인
+- `legacy_hash` embedding provider routing과 RAG retrieval smoke test 확인
+- source document reindex command 확인
+- `GeoResolverAgent` 지역 해석 테스트 확인
+- TourAPI v4.4 `ldong/lcls` metadata 기반 workflow 검색 테스트 확인
+- 지역 해석 실패 시 전국 fallback 차단 테스트 확인
 
 ## 다음 Phase
 
-다음 Phase는 Phase 9.5입니다. 현재 Chroma 검색은 임시 hash 기반 embedding을 사용하므로, 비용이 들지 않는 로컬 `sentence-transformers` 기반 semantic embedding으로 교체하고 기존 source document를 재색인합니다.
+Phase 9.6에서는 `GeoResolverAgent`를 추가해 자연어 요청에서 지역 범위를 해석하고, TourAPI v4.4의 `ldongCode2`/`lclsSystmCode2` catalog 및 `lDongRegnCd`/`lDongSignguCd` 기반 검색으로 전환했습니다. 지역 해석 실패 시 전국 검색으로 fallback하지 않으며, provider/model 또는 metadata 변경 후에는 Chroma reset reindex가 필요합니다.
 
-이후 Phase에서는 데이터 보강 Agent workflow, 공식 웹 근거 수집, Planner/Data/Research Agent 실제화, 평가 자동화와 운영 지표를 강화합니다. RAG retrieval recall, faithfulness, tool call accuracy, task success rate, cost per task, latency를 dataset 기반으로 측정하고 Evaluation Dashboard에서 확인할 수 있게 만듭니다.
+다음 Phase는 Phase 10 Data Enrichment Agent Workflow입니다. 이후 공식 웹 근거 수집, Planner/Data/Research Agent 실제화, 평가 자동화와 운영 지표를 강화합니다. RAG retrieval recall, faithfulness, tool call accuracy, task success rate, cost per task, latency를 dataset 기반으로 측정하고 Evaluation Dashboard에서 확인할 수 있게 만듭니다.
 
 별도 후속 Phase에서는 웹 검색/검색 grounding과 사용자 추가 정보 수집을 Data Agent 보강 기능으로 추가합니다. TourAPI에 없는 운영 시간, 예약 조건, 집결지, 가격/포함사항, 최신 행사 공지 같은 정보를 출처 URL과 조회 시각이 있는 `source=web` 근거로 저장하고, 공식 출처가 약한 정보는 `needs_review`로 분리합니다.
 

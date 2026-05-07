@@ -53,7 +53,7 @@ Frontend request form
 → POST /api/workflow-runs
 → Backend creates workflow run
 → LangGraph workflow executes with real TourAPI provider
-→ Planner/Data/Research/Product/Marketing/QA steps are stored
+→ Planner/GeoResolver/Data/Research/Product/Marketing/QA steps are stored
 → Generated products include sources, FAQ, SNS, QA report
 → Run status becomes awaiting_approval
 → Frontend result review displays products/evidence/QA issues

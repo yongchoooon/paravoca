@@ -50,7 +50,9 @@ MVP에서 필요한 기능:
 
 | 기능 | 목적 | 내부 tool name |
 |---|---|---|
-| 지역코드 조회 | 부산/서울 같은 지역명을 API 코드로 변환 | `tourapi_area_code` |
+| legacy 지역코드 조회 | 기존 `areaCode` 호환/응답 해석 | `tourapi_area_code` |
+| 법정동 코드 조회 | TourAPI v4.4 시도/시군구 catalog sync와 지역 해석 | `tourapi_ldong_code` |
+| 신분류체계 조회 | TourAPI v4.4 대/중/소분류 catalog sync와 테마 metadata | `tourapi_lcls_system_code` |
 | 서비스분류코드 조회 | 관광지/문화시설/레포츠/숙박 등 분류 | `tourapi_category_code` |
 | 지역기반 관광정보 | 특정 지역의 관광지 후보 조회 | `tourapi_area_based_list` |
 | 위치기반 관광정보 | 좌표 중심 주변 관광지 조회 | `tourapi_location_based_list` |
@@ -64,7 +66,10 @@ MVP에서 필요한 기능:
 
 현재 구현 상태:
 
-- `areaCode2`, `areaBasedList2`, `searchKeyword2`, `searchFestival2`, `searchStay2`는 workflow Data 단계와 `/api/data/tourism/search`에서 사용합니다.
+- Phase 9.6부터 workflow Data 단계는 GeoResolverAgent가 만든 `geo_scope`를 사용하고, primary 지역 필터는 `lDongRegnCd`/`lDongSignguCd`입니다.
+- `ldongCode2?lDongListYn=Y`와 `lclsSystmCode2`는 `python -m app.tools.sync_tourapi_catalogs`로 DB catalog에 동기화합니다.
+- `areaCode2`는 backward compatibility와 legacy 응답 해석용으로 유지합니다.
+- `areaBasedList2`, `searchKeyword2`, `searchFestival2`, `searchStay2`는 workflow Data 단계와 `/api/data/tourism/search`에서 사용하며, v4.4 `ldong/lcls` 파라미터를 우선 전달합니다.
 - `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2`는 Phase 9에서 workflow Data 단계의 상세 보강과 `/api/data/tourism/details/enrich`에 연결했습니다.
 - `categoryCode2`, `locationBasedList2`는 provider method와 capability catalog에 추가되어 있으나, route planning이나 ranking workflow에는 아직 직접 연결하지 않았습니다.
 - 상세 보강 호출 수는 `TOURAPI_DETAIL_ENRICHMENT_LIMIT`로 제한합니다.
@@ -328,7 +333,7 @@ def normalize_yyyymmdd(value: str | None) -> date | None:
 - image/license chunk
 - event/date chunk
 
-현재 Phase 9 구현에서는 item 단위 source document를 유지하되, document content에 상세 소개와 이용정보를 함께 넣습니다. 상세 소개/반복 정보가 충분히 길어지는 경우 chunk 분리는 Phase 9.5 이후 semantic embedding과 함께 조정합니다.
+현재 Phase 9.6 구현에서는 item 단위 source document를 유지하되, document content에 상세 소개와 이용정보를 함께 넣습니다. source document metadata에는 `ldong/lcls` 필드를 저장하고, 상세 소개/반복 정보가 충분히 길어지는 경우 chunk 분리는 후속 retrieval 품질 개선에서 조정합니다.
 
 ### Embedding text template
 
