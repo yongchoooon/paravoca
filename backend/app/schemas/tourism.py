@@ -8,6 +8,11 @@ from pydantic import BaseModel, Field
 class TourismSearchQuery(BaseModel):
     region: str | None = None
     region_code: str | None = None
+    ldong_regn_cd: str | None = None
+    ldong_signgu_cd: str | None = None
+    lcls_systm_1: str | None = None
+    lcls_systm_2: str | None = None
+    lcls_systm_3: str | None = None
     keyword: str | None = None
     content_type: str | None = None
     start_date: str | None = None
@@ -24,6 +29,13 @@ class TourismItemRead(BaseModel):
     title: str
     region_code: str
     sigungu_code: str | None = None
+    legacy_area_code: str | None = None
+    legacy_sigungu_code: str | None = None
+    ldong_regn_cd: str | None = None
+    ldong_signgu_cd: str | None = None
+    lcls_systm_1: str | None = None
+    lcls_systm_2: str | None = None
+    lcls_systm_3: str | None = None
     address: str | None = None
     map_x: float | None = None
     map_y: float | None = None

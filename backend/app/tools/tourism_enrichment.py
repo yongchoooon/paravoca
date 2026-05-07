@@ -137,6 +137,33 @@ def upsert_enriched_tourism_item(
         "title": str(detail_common.get("title") or item.title),
         "region_code": str(detail_common.get("areacode") or item.region_code or ""),
         "sigungu_code": _string_or_none(detail_common.get("sigungucode") or item.sigungu_code),
+        "legacy_area_code": _string_or_none(
+            detail_common.get("areacode") or getattr(item, "legacy_area_code", None) or item.region_code
+        ),
+        "legacy_sigungu_code": _string_or_none(
+            detail_common.get("sigungucode")
+            or getattr(item, "legacy_sigungu_code", None)
+            or item.sigungu_code
+        ),
+        "ldong_regn_cd": _string_or_none(
+            detail_common.get("lDongRegnCd")
+            or detail_common.get("ldongRegnCd")
+            or getattr(item, "ldong_regn_cd", None)
+        ),
+        "ldong_signgu_cd": _string_or_none(
+            detail_common.get("lDongSignguCd")
+            or detail_common.get("ldongSignguCd")
+            or getattr(item, "ldong_signgu_cd", None)
+        ),
+        "lcls_systm_1": _string_or_none(
+            detail_common.get("lclsSystm1") or getattr(item, "lcls_systm_1", None)
+        ),
+        "lcls_systm_2": _string_or_none(
+            detail_common.get("lclsSystm2") or getattr(item, "lcls_systm_2", None)
+        ),
+        "lcls_systm_3": _string_or_none(
+            detail_common.get("lclsSystm3") or getattr(item, "lcls_systm_3", None)
+        ),
         "address": _join_address(detail_common.get("addr1"), detail_common.get("addr2"))
         or item.address,
         "map_x": _float_or_none(detail_common.get("mapx")) or item.map_x,
@@ -180,6 +207,13 @@ def upsert_tourism_entity(
         "content_id": item.content_id,
         "content_type": item.content_type,
         "source_item_id": item.id,
+        "legacy_area_code": item.legacy_area_code,
+        "legacy_sigungu_code": item.legacy_sigungu_code,
+        "ldong_regn_cd": item.ldong_regn_cd,
+        "ldong_signgu_cd": item.ldong_signgu_cd,
+        "lcls_systm_1": item.lcls_systm_1,
+        "lcls_systm_2": item.lcls_systm_2,
+        "lcls_systm_3": item.lcls_systm_3,
         "detail_enriched": bool((item.raw or {}).get("detail_common")),
         "updated_from": "detailCommon2",
     }

@@ -21,6 +21,13 @@ class TourismItem:
     title: str
     region_code: str
     sigungu_code: str | None = None
+    legacy_area_code: str | None = None
+    legacy_sigungu_code: str | None = None
+    ldong_regn_cd: str | None = None
+    ldong_signgu_cd: str | None = None
+    lcls_systm_1: str | None = None
+    lcls_systm_2: str | None = None
+    lcls_systm_3: str | None = None
     address: str | None = None
     map_x: float | None = None
     map_y: float | None = None
@@ -41,10 +48,38 @@ class TourismDataProvider(Protocol):
     def area_code(self, region: str | None = None) -> list[dict[str, Any]]:
         ...
 
+    def ldong_code(
+        self,
+        *,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        list_yn: str = "N",
+        page_no: int = 1,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        ...
+
+    def lcls_system_code(
+        self,
+        *,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
+        list_yn: str = "N",
+        page_no: int = 1,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        ...
+
     def area_based_list(
         self,
         *,
         region_code: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         content_type: str | None = None,
         keyword: str | None = None,
         limit: int = 20,
@@ -56,6 +91,11 @@ class TourismDataProvider(Protocol):
         *,
         query: str,
         region_code: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         limit: int = 20,
     ) -> list[TourismItem]:
         ...
@@ -64,6 +104,11 @@ class TourismDataProvider(Protocol):
         self,
         *,
         region_code: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
         limit: int = 20,
@@ -74,6 +119,11 @@ class TourismDataProvider(Protocol):
         self,
         *,
         region_code: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         limit: int = 20,
     ) -> list[TourismItem]:
         ...
@@ -117,6 +167,11 @@ class TourismDataProvider(Protocol):
         map_y: float,
         radius: int = 1000,
         content_type: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         limit: int = 20,
     ) -> list[TourismItem]:
         ...
@@ -126,6 +181,8 @@ class TourApiProvider:
     source_family = "kto_tourapi_kor"
     operation_names = {
         "area_code": "areaCode2",
+        "ldong_code": "ldongCode2",
+        "lcls_system_code": "lclsSystmCode2",
         "area_based_list": "areaBasedList2",
         "search_keyword": "searchKeyword2",
         "search_festival": "searchFestival2",
@@ -146,22 +203,79 @@ class TourApiProvider:
 
     def area_code(self, region: str | None = None) -> list[dict[str, Any]]:
         data = self.request_operation(self.operation_names["area_code"], {"numOfRows": 50})
-        items = _extract_response_items(data)
+        items = [_normalize_area_code_item(item) for item in _extract_response_items(data)]
         if not region:
             return items
         return [item for item in items if region in str(item.get("name", ""))]
+
+    def ldong_code(
+        self,
+        *,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        list_yn: str = "N",
+        page_no: int = 1,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        data = self.request_operation(
+            self.operation_names["ldong_code"],
+            {
+                "numOfRows": limit,
+                "lDongRegnCd": ldong_regn_cd,
+                "lDongSignguCd": ldong_signgu_cd,
+                "lDongListYn": list_yn,
+                "pageNo": page_no,
+            },
+        )
+        return _extract_response_items(data)
+
+    def lcls_system_code(
+        self,
+        *,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
+        list_yn: str = "N",
+        page_no: int = 1,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        data = self.request_operation(
+            self.operation_names["lcls_system_code"],
+            {
+                "numOfRows": limit,
+                "lclsSystm1": lcls_systm_1,
+                "lclsSystm2": lcls_systm_2,
+                "lclsSystm3": lcls_systm_3,
+                "lclsSystmListYn": list_yn,
+                "pageNo": page_no,
+            },
+        )
+        return _extract_response_items(data)
 
     def area_based_list(
         self,
         *,
         region_code: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         content_type: str | None = None,
         keyword: str | None = None,
         limit: int = 20,
     ) -> list[TourismItem]:
         params: dict[str, Any] = {"numOfRows": limit, "areaCode": region_code}
+        _apply_v44_search_filters(
+            params,
+            ldong_regn_cd=ldong_regn_cd,
+            ldong_signgu_cd=ldong_signgu_cd,
+            lcls_systm_1=lcls_systm_1,
+            lcls_systm_2=lcls_systm_2,
+            lcls_systm_3=lcls_systm_3,
+        )
         if content_type:
-            params["contentTypeId"] = content_type
+            params["contentTypeId"] = content_type_to_tourapi_id(content_type)
         data = self.request_operation(self.operation_names["area_based_list"], params)
         return [_tourapi_raw_to_item(item) for item in _extract_response_items(data)]
 
@@ -170,9 +284,22 @@ class TourApiProvider:
         *,
         query: str,
         region_code: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         limit: int = 20,
     ) -> list[TourismItem]:
         params: dict[str, Any] = {"numOfRows": limit, "keyword": query, "areaCode": region_code}
+        _apply_v44_search_filters(
+            params,
+            ldong_regn_cd=ldong_regn_cd,
+            ldong_signgu_cd=ldong_signgu_cd,
+            lcls_systm_1=lcls_systm_1,
+            lcls_systm_2=lcls_systm_2,
+            lcls_systm_3=lcls_systm_3,
+        )
         data = self.request_operation(self.operation_names["search_keyword"], params)
         return [_tourapi_raw_to_item(item) for item in _extract_response_items(data)]
 
@@ -180,6 +307,11 @@ class TourApiProvider:
         self,
         *,
         region_code: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
         limit: int = 20,
@@ -189,6 +321,16 @@ class TourApiProvider:
             "areaCode": region_code,
             "eventStartDate": start_date.strftime("%Y%m%d") if start_date else None,
         }
+        _apply_v44_search_filters(
+            params,
+            ldong_regn_cd=ldong_regn_cd,
+            ldong_signgu_cd=ldong_signgu_cd,
+            lcls_systm_1=lcls_systm_1,
+            lcls_systm_2=lcls_systm_2,
+            lcls_systm_3=lcls_systm_3,
+        )
+        if end_date:
+            params["eventEndDate"] = end_date.strftime("%Y%m%d")
         data = self.request_operation(self.operation_names["search_festival"], params)
         return [_tourapi_raw_to_item(item, content_type="event") for item in _extract_response_items(data)]
 
@@ -196,9 +338,22 @@ class TourApiProvider:
         self,
         *,
         region_code: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         limit: int = 20,
     ) -> list[TourismItem]:
         params: dict[str, Any] = {"numOfRows": limit, "areaCode": region_code}
+        _apply_v44_search_filters(
+            params,
+            ldong_regn_cd=ldong_regn_cd,
+            ldong_signgu_cd=ldong_signgu_cd,
+            lcls_systm_1=lcls_systm_1,
+            lcls_systm_2=lcls_systm_2,
+            lcls_systm_3=lcls_systm_3,
+        )
         data = self.request_operation(self.operation_names["search_stay"], params)
         return [
             _tourapi_raw_to_item(item, content_type="accommodation")
@@ -278,15 +433,28 @@ class TourApiProvider:
         map_y: float,
         radius: int = 1000,
         content_type: str | None = None,
+        ldong_regn_cd: str | None = None,
+        ldong_signgu_cd: str | None = None,
+        lcls_systm_1: str | None = None,
+        lcls_systm_2: str | None = None,
+        lcls_systm_3: str | None = None,
         limit: int = 20,
     ) -> list[TourismItem]:
         params: dict[str, Any] = {
             "mapX": map_x,
             "mapY": map_y,
             "radius": radius,
-            "contentTypeId": content_type,
+            "contentTypeId": content_type_to_tourapi_id(content_type) if content_type else None,
             "numOfRows": limit,
         }
+        _apply_v44_search_filters(
+            params,
+            ldong_regn_cd=ldong_regn_cd,
+            ldong_signgu_cd=ldong_signgu_cd,
+            lcls_systm_1=lcls_systm_1,
+            lcls_systm_2=lcls_systm_2,
+            lcls_systm_3=lcls_systm_3,
+        )
         data = self.request_operation(self.operation_names["location_based_list"], params)
         return [_tourapi_raw_to_item(item) for item in _extract_response_items(data)]
 
@@ -329,6 +497,14 @@ class TourApiProvider:
 
 def get_tourism_provider() -> TourismDataProvider:
     return TourApiProvider()
+
+
+def _normalize_area_code_item(item: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(item)
+    region_code = normalized.get("region_code") or normalized.get("code") or normalized.get("areaCode")
+    if region_code is not None:
+        normalized["region_code"] = str(region_code)
+    return normalized
 
 
 def log_tool_call(
@@ -420,18 +596,54 @@ def _extract_response_items(data: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _apply_v44_search_filters(
+    params: dict[str, Any],
+    *,
+    ldong_regn_cd: str | None = None,
+    ldong_signgu_cd: str | None = None,
+    lcls_systm_1: str | None = None,
+    lcls_systm_2: str | None = None,
+    lcls_systm_3: str | None = None,
+) -> None:
+    params.update(
+        {
+            "lDongRegnCd": ldong_regn_cd,
+            "lDongSignguCd": ldong_signgu_cd,
+            "lclsSystm1": lcls_systm_1,
+            "lclsSystm2": lcls_systm_2,
+            "lclsSystm3": lcls_systm_3,
+        }
+    )
+
+
 def _tourapi_raw_to_item(raw: dict[str, Any], content_type: str | None = None) -> TourismItem:
     content_id = str(raw.get("contentid", ""))
     content_type_id = str(raw.get("contenttypeid", ""))
     normalized_type = content_type or _content_type_from_id(content_type_id)
+    legacy_area_code = _string_or_none(_first(raw, "areacode", "areaCode"))
+    legacy_sigungu_code = _string_or_none(_first(raw, "sigungucode", "sigunguCode"))
+    ldong_regn_cd = _string_or_none(_first(raw, "lDongRegnCd", "ldongRegnCd", "ldong_regn_cd"))
+    ldong_signgu_cd = _string_or_none(
+        _first(raw, "lDongSignguCd", "ldongSignguCd", "ldong_signgu_cd")
+    )
+    lcls_systm_1 = _string_or_none(_first(raw, "lclsSystm1", "lcls_systm_1"))
+    lcls_systm_2 = _string_or_none(_first(raw, "lclsSystm2", "lcls_systm_2"))
+    lcls_systm_3 = _string_or_none(_first(raw, "lclsSystm3", "lcls_systm_3"))
     return TourismItem(
         id=f"tourapi:content:{content_id}",
         source="tourapi",
         content_id=content_id,
         content_type=normalized_type,
         title=str(raw.get("title", "")),
-        region_code=str(raw.get("areacode", "")),
-        sigungu_code=str(raw.get("sigungucode")) if raw.get("sigungucode") is not None else None,
+        region_code=legacy_area_code or ldong_regn_cd or "",
+        sigungu_code=legacy_sigungu_code or ldong_signgu_cd,
+        legacy_area_code=legacy_area_code,
+        legacy_sigungu_code=legacy_sigungu_code,
+        ldong_regn_cd=ldong_regn_cd,
+        ldong_signgu_cd=ldong_signgu_cd,
+        lcls_systm_1=lcls_systm_1,
+        lcls_systm_2=lcls_systm_2,
+        lcls_systm_3=lcls_systm_3,
         address=_join_address(raw.get("addr1"), raw.get("addr2")),
         map_x=_float_or_none(raw.get("mapx")),
         map_y=_float_or_none(raw.get("mapy")),
@@ -463,6 +675,9 @@ def content_type_to_tourapi_id(content_type: str | None, raw: dict[str, Any] | N
     raw_content_type = str((raw or {}).get("contenttypeid") or "")
     if raw_content_type:
         return raw_content_type
+    normalized = str(content_type or "")
+    if normalized in {"12", "14", "15", "25", "28", "32", "38", "39"}:
+        return normalized
     return {
         "attraction": "12",
         "culture": "14",
@@ -472,7 +687,7 @@ def content_type_to_tourapi_id(content_type: str | None, raw: dict[str, Any] | N
         "accommodation": "32",
         "shopping": "38",
         "restaurant": "39",
-    }.get(str(content_type or ""), "12")
+    }.get(normalized, "12")
 
 
 def tourapi_id_to_content_type(content_type_id: str | None) -> str:
@@ -491,6 +706,21 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _first(raw: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = raw.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return None
 
 
 def _join_address(addr1: Any, addr2: Any) -> str | None:

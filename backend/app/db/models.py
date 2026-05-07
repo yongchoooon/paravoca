@@ -198,6 +198,13 @@ class TourismItem(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     region_code: Mapped[str] = mapped_column(String(40), nullable=False)
     sigungu_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    legacy_area_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    legacy_sigungu_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ldong_regn_cd: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ldong_signgu_cd: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    lcls_systm_1: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    lcls_systm_2: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    lcls_systm_3: Mapped[str | None] = mapped_column(String(40), nullable=True)
     address: Mapped[str | None] = mapped_column(Text, nullable=True)
     map_x: Mapped[float | None] = mapped_column(Numeric(12, 7), nullable=True)
     map_y: Mapped[float | None] = mapped_column(Numeric(12, 7), nullable=True)
@@ -217,6 +224,76 @@ class TourismItem(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class TourApiLdongCode(Base):
+    __tablename__ = "tourapi_ldong_codes"
+
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    ldong_regn_cd: Mapped[str] = mapped_column(String(40), nullable=False)
+    ldong_regn_nm: Mapped[str] = mapped_column(String(120), nullable=False)
+    ldong_signgu_cd: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ldong_signgu_nm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    aliases: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class TourApiLclsCode(Base):
+    __tablename__ = "tourapi_lcls_codes"
+
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    lcls_systm_1: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    lcls_systm_1_nm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lcls_systm_2: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    lcls_systm_2_nm: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lcls_systm_3: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    lcls_systm_3_nm: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    content_type_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    content_type_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    aliases: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class GeoResolution(Base):
+    __tablename__ = "geo_resolutions"
+
+    id: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default=lambda: new_id("geo")
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        String(120), ForeignKey("workflow_runs.id"), nullable=True
+    )
+    input_text: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    locations: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    unresolved_locations: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    excluded_locations: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    keywords: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    needs_clarification: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    clarification_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    raw: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
     )
 
 

@@ -28,6 +28,7 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     migrate_workflow_runs_revision_columns()
+    migrate_tourism_item_geo_columns()
     with SessionLocal() as db:
         seed_default_workflow(db)
 
@@ -54,6 +55,26 @@ def migrate_workflow_runs_revision_columns() -> None:
             connection.execute(text("ALTER TABLE workflow_runs ADD COLUMN revision_mode VARCHAR(40)"))
 
 
+def migrate_tourism_item_geo_columns() -> None:
+    if not settings.database_url.startswith("sqlite"):
+        return
+    columns = {
+        "legacy_area_code": "VARCHAR(40)",
+        "legacy_sigungu_code": "VARCHAR(40)",
+        "ldong_regn_cd": "VARCHAR(40)",
+        "ldong_signgu_cd": "VARCHAR(40)",
+        "lcls_systm_1": "VARCHAR(40)",
+        "lcls_systm_2": "VARCHAR(40)",
+        "lcls_systm_3": "VARCHAR(40)",
+    }
+    with engine.begin() as connection:
+        rows = connection.execute(text("PRAGMA table_info(tourism_items)")).mappings().all()
+        existing_columns = {row["name"] for row in rows}
+        for name, column_type in columns.items():
+            if name not in existing_columns:
+                connection.execute(text(f"ALTER TABLE tourism_items ADD COLUMN {name} {column_type}"))
+
+
 def seed_default_workflow(db: Session) -> None:
     template = db.get(models.WorkflowTemplate, "default_product_planning")
     if template:
@@ -67,12 +88,14 @@ def seed_default_workflow(db: Session) -> None:
         nodes=[
             {"id": "user_input", "type": "user_input", "position": {"x": 0, "y": 120}, "config": {}},
             {"id": "planner", "type": "planner_agent", "position": {"x": 260, "y": 120}, "config": {}},
-            {"id": "data_agent", "type": "data_agent", "position": {"x": 520, "y": 120}, "config": {"provider": "tourapi"}},
-            {"id": "human_approval", "type": "human_approval", "position": {"x": 780, "y": 120}, "config": {"required": True}},
+            {"id": "geo_resolver", "type": "geo_resolver_agent", "position": {"x": 520, "y": 120}, "config": {}},
+            {"id": "data_agent", "type": "data_agent", "position": {"x": 780, "y": 120}, "config": {"provider": "tourapi"}},
+            {"id": "human_approval", "type": "human_approval", "position": {"x": 1040, "y": 120}, "config": {"required": True}},
         ],
         edges=[
             {"id": "edge_user_planner", "source": "user_input", "target": "planner"},
-            {"id": "edge_planner_data", "source": "planner", "target": "data_agent"},
+            {"id": "edge_planner_geo", "source": "planner", "target": "geo_resolver"},
+            {"id": "edge_geo_data", "source": "geo_resolver", "target": "data_agent"},
             {"id": "edge_data_approval", "source": "data_agent", "target": "human_approval"},
         ],
     )

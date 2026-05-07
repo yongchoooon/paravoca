@@ -10,6 +10,7 @@ from app.db.session import SessionLocal, engine
 from app.llm.gemini_gateway import _is_retryable_response, _parse_json, _retry_delay_seconds
 from app.main import app
 from app.rag.source_documents import build_source_document
+from app.tests.geo_catalog_helpers import seed_test_ldong_catalog
 from app.tools.tourism import TourismItem
 
 
@@ -25,14 +26,72 @@ def require_tourapi_key():
         pytest.skip("TOURAPI_SERVICE_KEY is required for workflow tests")
 
 
+def legacy_area_from_ldong(ldong_regn_cd, fallback):
+    return {
+        "26": "6",
+        "30": "3",
+    }.get(str(ldong_regn_cd or ""), fallback)
+
+
 class TestTourApiProvider:
     def area_code(self, region=None):
         return [{"code": "6", "name": "부산"}]
 
-    def area_based_list(self, *, region_code=None, content_type=None, keyword=None, limit=20):
-        return self.search_keyword(query=keyword or "부산", region_code=region_code, limit=limit)
+    def ldong_code(
+        self,
+        *,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        list_yn="N",
+        page_no=1,
+        limit=100,
+    ):
+        if ldong_regn_cd == "26":
+            return [{"lDongRegnCd": "26", "lDongRegnNm": "부산광역시"}]
+        return [{"lDongRegnCd": "26", "lDongRegnNm": "부산광역시"}]
 
-    def search_keyword(self, *, query, region_code=None, limit=20):
+    def lcls_system_code(
+        self,
+        *,
+        lcls_systm_1=None,
+        lcls_systm_2=None,
+        lcls_systm_3=None,
+        list_yn="N",
+        page_no=1,
+        limit=1000,
+    ):
+        return [{"lclsSystm1": "VE", "lclsSystm1Nm": "볼거리"}]
+
+    def area_based_list(
+        self,
+        *,
+        region_code=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        content_type=None,
+        keyword=None,
+        limit=20,
+        **kwargs,
+    ):
+        return self.search_keyword(
+            query=keyword or "부산",
+            region_code=region_code,
+            ldong_regn_cd=ldong_regn_cd,
+            ldong_signgu_cd=ldong_signgu_cd,
+            limit=limit,
+        )
+
+    def search_keyword(
+        self,
+        *,
+        query,
+        region_code=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        limit=20,
+        **kwargs,
+    ):
+        region_code = region_code or legacy_area_from_ldong(ldong_regn_cd, "6")
         return [
             TourismItem(
                 id="tourapi:test:busan:night-market",
@@ -42,13 +101,28 @@ class TestTourApiProvider:
                 title="부산 전통시장 야간 먹거리 골목",
                 region_code=region_code or "6",
                 sigungu_code="16",
+                legacy_area_code=region_code or "6",
+                legacy_sigungu_code="16",
+                ldong_regn_cd=ldong_regn_cd or "26",
+                ldong_signgu_cd=ldong_signgu_cd,
                 address="부산광역시 중구",
                 overview="야간 시간대 외국인 대상 먹거리 동선으로 검토할 수 있는 시장 후보입니다.",
                 license_type="TourAPI test response",
             )
         ][:limit]
 
-    def search_festival(self, *, region_code=None, start_date=None, end_date=None, limit=20):
+    def search_festival(
+        self,
+        *,
+        region_code=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        start_date=None,
+        end_date=None,
+        limit=20,
+        **kwargs,
+    ):
+        region_code = region_code or legacy_area_from_ldong(ldong_regn_cd, "6")
         return [
             TourismItem(
                 id="tourapi:test:busan:drone-show",
@@ -58,6 +132,10 @@ class TestTourApiProvider:
                 title="광안리 M 드론 라이트쇼",
                 region_code=region_code or "6",
                 sigungu_code="12",
+                legacy_area_code=region_code or "6",
+                legacy_sigungu_code="12",
+                ldong_regn_cd=ldong_regn_cd or "26",
+                ldong_signgu_cd=ldong_signgu_cd,
                 address="부산광역시 수영구 광안해변로",
                 overview="광안리 해변에서 진행되는 야간 드론 라이트쇼입니다.",
                 event_start_date="20260501",
@@ -66,7 +144,16 @@ class TestTourApiProvider:
             )
         ][:limit]
 
-    def search_stay(self, *, region_code=None, limit=20):
+    def search_stay(
+        self,
+        *,
+        region_code=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        limit=20,
+        **kwargs,
+    ):
+        region_code = region_code or legacy_area_from_ldong(ldong_regn_cd, "6")
         return [
             TourismItem(
                 id="tourapi:test:busan:hotel",
@@ -76,6 +163,10 @@ class TestTourApiProvider:
                 title="그랜드 조선 부산",
                 region_code=region_code or "6",
                 sigungu_code="16",
+                legacy_area_code=region_code or "6",
+                legacy_sigungu_code="16",
+                ldong_regn_cd=ldong_regn_cd or "26",
+                ldong_signgu_cd=ldong_signgu_cd,
                 address="부산광역시 해운대구",
                 overview="해운대 권역 숙박 후보입니다.",
                 license_type="TourAPI test response",
@@ -99,6 +190,8 @@ class TestTourApiProvider:
             "title": title,
             "areacode": "6",
             "sigungucode": "16",
+            "lDongRegnCd": "26",
+            "lDongSignguCd": "110",
             "addr1": "부산광역시 테스트구",
             "addr2": "상세 주소",
             "mapx": "129.1",
@@ -143,12 +236,209 @@ class TestTourApiProvider:
         map_y,
         radius=1000,
         content_type=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
         limit=20,
+        **kwargs,
     ):
-        return self.search_keyword(query="주변", region_code="6", limit=limit)
+        return self.search_keyword(
+            query="주변",
+            region_code="6",
+            ldong_regn_cd=ldong_regn_cd or "26",
+            ldong_signgu_cd=ldong_signgu_cd,
+            limit=limit,
+        )
+
+
+class DaejeonTourApiProvider(TestTourApiProvider):
+    def area_code(self, region=None):
+        return [{"code": "3", "name": "대전"}]
+
+    def ldong_code(
+        self,
+        *,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        list_yn="N",
+        page_no=1,
+        limit=100,
+    ):
+        if ldong_regn_cd == "30":
+            return [
+                {
+                    "lDongRegnCd": "30",
+                    "lDongRegnNm": "대전광역시",
+                    "lDongSignguCd": "200",
+                    "lDongSignguNm": "유성구",
+                }
+            ]
+        return [{"lDongRegnCd": "30", "lDongRegnNm": "대전광역시"}]
+
+    def area_based_list(
+        self,
+        *,
+        region_code=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        content_type=None,
+        keyword=None,
+        limit=20,
+        **kwargs,
+    ):
+        content_type = content_type or "12"
+        title = "대전 원도심 과학문화 산책" if content_type == "12" else "대전 갑천 레저 체험"
+        item_type = "attraction" if content_type == "12" else "leisure"
+        return [
+            self._daejeon_item(
+                suffix=f"area-{content_type}",
+                content_id=f"TEST-DAEJEON-{content_type}",
+                content_type=item_type,
+                title=title,
+                region_code=region_code,
+                ldong_regn_cd=ldong_regn_cd,
+                ldong_signgu_cd=ldong_signgu_cd,
+            )
+        ][:limit]
+
+    def search_keyword(
+        self,
+        *,
+        query,
+        region_code=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        limit=20,
+        **kwargs,
+    ):
+        return [
+            self._daejeon_item(
+                suffix="night-market",
+                content_id="TEST-DAEJEON-001",
+                content_type="attraction",
+                title="대전 중앙시장 야간 미식 투어",
+                region_code=region_code,
+                ldong_regn_cd=ldong_regn_cd,
+                ldong_signgu_cd=ldong_signgu_cd,
+            )
+        ][:limit]
+
+    def search_festival(
+        self,
+        *,
+        region_code=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        start_date=None,
+        end_date=None,
+        limit=20,
+        **kwargs,
+    ):
+        item = self._daejeon_item(
+            suffix="festival",
+            content_id="TEST-DAEJEON-002",
+            content_type="event",
+            title="대전 외국인 문화 교류 축제",
+            region_code=region_code,
+            ldong_regn_cd=ldong_regn_cd,
+            ldong_signgu_cd=ldong_signgu_cd,
+        )
+        item.event_start_date = "20260501"
+        item.event_end_date = "20260531"
+        return [item][:limit]
+
+    def search_stay(
+        self,
+        *,
+        region_code=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        limit=20,
+        **kwargs,
+    ):
+        return [
+            self._daejeon_item(
+                suffix="hotel",
+                content_id="TEST-DAEJEON-003",
+                content_type="accommodation",
+                title="대전역 관광호텔",
+                region_code=region_code,
+                ldong_regn_cd=ldong_regn_cd,
+                ldong_signgu_cd=ldong_signgu_cd,
+            )
+        ][:limit]
+
+    def detail_common(self, *, content_id):
+        return {
+            "contentid": content_id,
+            "contenttypeid": "15" if content_id == "TEST-DAEJEON-002" else "12",
+            "title": f"{content_id} 상세",
+            "areacode": "3",
+            "sigungucode": "1",
+            "lDongRegnCd": "30",
+            "lDongSignguCd": "200",
+            "addr1": "대전광역시 중구",
+            "addr2": "테스트 주소",
+            "mapx": "127.4",
+            "mapy": "36.3",
+            "tel": "042-000-0000",
+            "homepage": "https://example.com/daejeon",
+            "overview": "대전 지역 외국인 대상 관광 후보 상세 개요입니다.",
+            "firstimage": f"https://example.com/{content_id}.jpg",
+        }
+
+    def location_based_list(
+        self,
+        *,
+        map_x,
+        map_y,
+        radius=1000,
+        content_type=None,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+        limit=20,
+        **kwargs,
+    ):
+        return self.search_keyword(
+            query="주변",
+            region_code="3",
+            ldong_regn_cd=ldong_regn_cd or "30",
+            ldong_signgu_cd=ldong_signgu_cd,
+            limit=limit,
+        )
+
+    def _daejeon_item(
+        self,
+        *,
+        suffix,
+        content_id,
+        content_type,
+        title,
+        region_code,
+        ldong_regn_cd=None,
+        ldong_signgu_cd=None,
+    ):
+        region_code = region_code or legacy_area_from_ldong(ldong_regn_cd, "3")
+        return TourismItem(
+            id=f"tourapi:test:daejeon:{suffix}",
+            source="tourapi",
+            content_id=content_id,
+            content_type=content_type,
+            title=title,
+            region_code=region_code or "3",
+            sigungu_code="1",
+            legacy_area_code=region_code or "3",
+            legacy_sigungu_code="1",
+            ldong_regn_cd=ldong_regn_cd or "30",
+            ldong_signgu_cd=ldong_signgu_cd,
+            address="대전광역시 중구",
+            overview=f"{title}는 외국인 대상 대전 액티비티 후보입니다.",
+            license_type="TourAPI test response",
+        )
 
 
 def use_test_tourapi_provider(monkeypatch):
+    with SessionLocal() as db:
+        seed_test_ldong_catalog(db)
     monkeypatch.setattr(
         "app.agents.workflow.get_tourism_provider",
         lambda: TestTourApiProvider(),
@@ -156,6 +446,19 @@ def use_test_tourapi_provider(monkeypatch):
     monkeypatch.setattr(
         "app.api.routes_data.get_tourism_provider",
         lambda: TestTourApiProvider(),
+    )
+
+
+def use_daejeon_tourapi_provider(monkeypatch):
+    with SessionLocal() as db:
+        seed_test_ldong_catalog(db)
+    monkeypatch.setattr(
+        "app.agents.workflow.get_tourism_provider",
+        lambda: DaejeonTourApiProvider(),
+    )
+    monkeypatch.setattr(
+        "app.api.routes_data.get_tourism_provider",
+        lambda: DaejeonTourApiProvider(),
     )
 
 
@@ -311,6 +614,7 @@ def test_create_and_read_workflow_run(monkeypatch):
     assert len(result["products"]) == 5
     assert {step["agent_name"] for step in steps} >= {
         "PlannerAgent",
+        "GeoResolverAgent",
         "DataAgent",
         "ResearchAgent",
         "ProductAgent",
@@ -324,7 +628,129 @@ def test_create_and_read_workflow_run(monkeypatch):
         "tourapi_search_stay",
         "vector_search",
     }
-    assert len(llm_calls) >= 6
+    assert len(llm_calls) >= 7
+
+
+def test_workflow_resolves_non_busan_ldong_scope_from_prompt(monkeypatch):
+    use_daejeon_tourapi_provider(monkeypatch)
+    payload = {
+        "template_id": "default_product_planning",
+        "input": {
+            "message": "이번 달 대전에서 외국인 대상 액티비티 상품을 3개 기획해줘",
+            "region": "대전",
+            "period": "2026-05",
+            "target_customer": "외국인",
+            "product_count": 3,
+            "preferences": ["야간 관광", "축제"],
+        },
+    }
+
+    with TestClient(app) as client:
+        created = unwrap(client.post("/api/workflow-runs", json=payload))
+        tool_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/tool-calls"))
+        result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
+
+    calls_by_name = {}
+    for call in tool_calls:
+        calls_by_name.setdefault(call["tool_name"], []).append(call)
+
+    assert calls_by_name["tourapi_search_keyword"][0]["arguments"]["ldong_regn_cd"] == "30"
+    assert calls_by_name["tourapi_search_festival"][0]["arguments"]["ldong_regn_cd"] == "30"
+    assert calls_by_name["tourapi_search_stay"][0]["arguments"]["ldong_regn_cd"] == "30"
+    assert calls_by_name["vector_search"][0]["arguments"]["filters"]["ldong_regn_cd"] == "30"
+    assert result["normalized_request"]["ldong_regn_cd"] == "30"
+    assert result["geo_scope"]["locations"][0]["ldong_regn_cd"] == "30"
+    assert result["retrieved_documents"]
+    assert {
+        document["metadata"]["ldong_regn_cd"]
+        for document in result["retrieved_documents"]
+    } == {"30"}
+
+
+def test_workflow_blocks_unresolved_region_without_nationwide_fallback(monkeypatch):
+    use_test_tourapi_provider(monkeypatch)
+    payload = {
+        "template_id": "default_product_planning",
+        "input": {
+            "message": "없는지역에서 외국인 대상 액티비티 상품을 1개 기획해줘",
+            "period": "2026-05",
+            "target_customer": "외국인",
+            "product_count": 1,
+            "preferences": ["야간 관광"],
+        },
+    }
+
+    with TestClient(app) as client:
+        created = unwrap(client.post("/api/workflow-runs", json=payload))
+        fetched = unwrap(client.get(f"/api/workflow-runs/{created['id']}"))
+        result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
+        steps = unwrap(client.get(f"/api/workflow-runs/{created['id']}/steps"))
+        tool_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/tool-calls"))
+
+    assert fetched["status"] == "failed"
+    assert fetched["error"] is None
+    assert result["status"] == "failed"
+    assert result["geo_scope"]["needs_clarification"] is True
+    assert any(step["step_type"] == "geo_scope_exit" for step in steps)
+    assert all(not call["tool_name"].startswith("tourapi_search") for call in tool_calls)
+
+
+def test_workflow_shows_candidates_for_ambiguous_region_with_failed_status(monkeypatch):
+    use_test_tourapi_provider(monkeypatch)
+    payload = {
+        "template_id": "default_product_planning",
+        "input": {
+            "message": "중구 야간 관광 상품을 만들어줘",
+            "period": "2026-05",
+            "target_customer": "외국인",
+            "product_count": 1,
+            "preferences": ["야간 관광"],
+        },
+    }
+
+    with TestClient(app) as client:
+        created = unwrap(client.post("/api/workflow-runs", json=payload))
+        fetched = unwrap(client.get(f"/api/workflow-runs/{created['id']}"))
+        result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
+        tool_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/tool-calls"))
+
+    assert fetched["status"] == "failed"
+    assert fetched["error"] is None
+    assert result["status"] == "failed"
+    assert result["user_message"]["title"] == "지역을 하나로 좁혀 주세요"
+    assert result["geo_scope"]["needs_clarification"] is True
+    assert len(result["geo_scope"]["candidates"]) >= 2
+    assert all(not call["tool_name"].startswith("tourapi_search") for call in tool_calls)
+
+
+def test_workflow_blocks_foreign_destination_before_tourapi_search(monkeypatch):
+    use_test_tourapi_provider(monkeypatch)
+    payload = {
+        "template_id": "default_product_planning",
+        "input": {
+            "message": "도쿄에서 외국인 대상 액티비티 상품을 1개 기획해줘",
+            "period": "2026-05",
+            "target_customer": "외국인",
+            "product_count": 1,
+            "preferences": ["야간 관광"],
+        },
+    }
+
+    with TestClient(app) as client:
+        created = unwrap(client.post("/api/workflow-runs", json=payload))
+        fetched = unwrap(client.get(f"/api/workflow-runs/{created['id']}"))
+        result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
+        steps = unwrap(client.get(f"/api/workflow-runs/{created['id']}/steps"))
+        tool_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/tool-calls"))
+
+    assert fetched["status"] == "unsupported"
+    assert fetched["error"] is None
+    assert result["status"] == "unsupported"
+    assert result["user_message"]["message"] == "PARAVOCA는 현재 국내 관광 데이터만 지원합니다."
+    geo_step = next(step for step in steps if step["agent_name"] == "GeoResolverAgent")
+    assert geo_step["output"]["geo_scope"]["status"] == "unsupported"
+    assert any(step["step_type"] == "geo_scope_exit" for step in steps)
+    assert all(not call["tool_name"].startswith("tourapi_search") for call in tool_calls)
 
 
 def test_create_workflow_run_rejects_invalid_period():
@@ -772,5 +1198,5 @@ def test_gemini_mode_fails_and_logs_when_key_missing(monkeypatch):
     assert body["data"]["status"] == "pending"
     assert run["status"] == "failed"
     assert run["error"]["message"] == "GEMINI_API_KEY is not configured"
-    assert any(step["agent_name"] == "ProductAgent" and step["status"] == "failed" for step in steps)
-    assert any(call["provider"] == "gemini" and call["purpose"] == "product_generation_failed" for call in llm_calls)
+    assert any(step["agent_name"] == "GeoResolverAgent" and step["status"] == "failed" for step in steps)
+    assert any(call["provider"] == "gemini" and call["purpose"] == "geo_resolution_failed" for call in llm_calls)

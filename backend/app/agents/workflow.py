@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from typing import Any
 from langgraph.graph import END, StateGraph
 from sqlalchemy.orm import Session
 
+from app.agents.geo_resolver import resolve_geo_scope, save_geo_resolution
 from app.agents.state import GraphState
 from app.core.config import get_settings
 from app.db import models
@@ -19,6 +21,9 @@ from app.rag.chroma_store import index_source_documents, search_source_documents
 from app.rag.source_documents import upsert_source_documents_from_items
 from app.tools.tourism import get_tourism_provider, log_tool_call, upsert_tourism_items
 from app.tools.tourism_enrichment import enrich_items_with_tourapi_details
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def run_product_planning_workflow(db: Session, run_id: str) -> dict[str, Any]:
@@ -97,11 +102,12 @@ def _complete_run(
     started: float,
     final_state: GraphState,
 ) -> dict[str, Any]:
-    run.status = "awaiting_approval"
+    final_report = final_state.get("final_report") or {}
+    run.status = str(final_state.get("run_status") or final_report.get("run_status") or "awaiting_approval")
     run.normalized_input = final_state.get("normalized_request")
-    run.final_output = final_state.get("final_report")
+    run.final_output = final_report
     _finish_run(db, run, started)
-    return final_state.get("final_report") or {}
+    return final_report
 
 
 def _finish_run(db: Session, run: models.WorkflowRun, started: float) -> None:
@@ -249,6 +255,8 @@ def _run_revision_metadata(db: Session, run_id: str, state: GraphState) -> dict[
 def _build_graph(db: Session):
     graph = StateGraph(GraphState)
     graph.add_node("planner", lambda state: planner_agent(db, state))
+    graph.add_node("geo_resolver", lambda state: geo_resolver_agent(db, state))
+    graph.add_node("geo_exit", lambda state: geo_exit_node(db, state))
     graph.add_node("data", lambda state: data_agent(db, state))
     graph.add_node("research", lambda state: research_agent(db, state))
     graph.add_node("product", lambda state: product_agent(db, state))
@@ -257,7 +265,16 @@ def _build_graph(db: Session):
     graph.add_node("human_approval", lambda state: human_approval_node(db, state))
 
     graph.set_entry_point("planner")
-    graph.add_edge("planner", "data")
+    graph.add_edge("planner", "geo_resolver")
+    graph.add_conditional_edges(
+        "geo_resolver",
+        _route_after_geo_resolution,
+        {
+            "geo_exit": "geo_exit",
+            "data": "data",
+        },
+    )
+    graph.add_edge("geo_exit", END)
     graph.add_edge("data", "research")
     graph.add_edge("research", "product")
     graph.add_edge("product", "marketing")
@@ -267,13 +284,23 @@ def _build_graph(db: Session):
     return graph.compile()
 
 
+def _route_after_geo_resolution(state: GraphState) -> str:
+    geo_scope = state.get("geo_scope") or (state.get("normalized_request") or {}).get("geo_scope") or {}
+    if (
+        geo_scope.get("status") == "unsupported"
+        or geo_scope.get("mode") == "unsupported_region"
+        or geo_scope.get("needs_clarification")
+    ):
+        return "geo_exit"
+    return "data"
+
+
 def planner_agent(db: Session, state: GraphState) -> GraphState:
     with step_log(db, state["run_id"], "PlannerAgent", "planner", state.get("user_request")) as step:
         request = state["user_request"]
-        region = request.get("region") or "부산"
+        region = request.get("region")
         normalized = {
             "region_name": region,
-            "region_code": "6" if region in {"부산", "부산광역시", "Busan", "busan"} else None,
             "start_date": _period_start(request.get("period")),
             "end_date": _period_end(request.get("period")),
             "target_customer": request.get("target_customer") or "외국인",
@@ -283,7 +310,7 @@ def planner_agent(db: Session, state: GraphState) -> GraphState:
             "output_language": request.get("output_language") or "ko",
         }
         plan = [
-            {"id": "resolve_region", "tool": "tourapi_area_code"},
+            {"id": "resolve_geo_scope", "agent": "GeoResolverAgent"},
             {"id": "search_attractions", "tool": "tourapi_search_keyword"},
             {"id": "search_events", "tool": "tourapi_search_festival"},
             {"id": "search_stays", "tool": "tourapi_search_stay"},
@@ -299,67 +326,234 @@ def planner_agent(db: Session, state: GraphState) -> GraphState:
         return {"normalized_request": normalized, "plan": plan}
 
 
+def geo_resolver_agent(db: Session, state: GraphState) -> GraphState:
+    normalized = dict(state["normalized_request"])
+    request = state["user_request"]
+    resolver_input = {
+        "message": request.get("message"),
+        "region_hint": request.get("region"),
+    }
+    with step_log(db, state["run_id"], "GeoResolverAgent", "geo_resolution", resolver_input) as step:
+        settings = get_settings()
+        llm_hints: dict[str, Any] | None = None
+        if settings.llm_enabled:
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose="geo_resolution",
+                prompt=_geo_resolution_prompt(resolver_input),
+                response_schema=GEO_RESOLUTION_RESPONSE_SCHEMA,
+                max_output_tokens=2048,
+                temperature=0.05,
+                settings=settings,
+            )
+            llm_hints = validate_geo_resolution_hints(gemini_result.data)
+            meta = _gemini_generation_meta("GeoResolverAgent", "geo_resolution", gemini_result)
+            step.model = gemini_result.model
+        else:
+            meta = _rule_based_generation_meta("GeoResolverAgent", "geo_resolution")
+            step.model = "rule-based-v1"
+        geo_scope = resolve_geo_scope(
+            db,
+            message=request.get("message"),
+            region=request.get("region"),
+            llm_hints=llm_hints,
+        )
+        record = save_geo_resolution(db, run_id=state["run_id"], geo_scope=geo_scope)
+        geo_scope["resolution_id"] = record.id
+        normalized["geo_scope"] = geo_scope
+        if geo_scope.get("locations"):
+            first_location = geo_scope["locations"][0]
+            normalized["region_name"] = first_location.get("name")
+            normalized["ldong_regn_cd"] = first_location.get("ldong_regn_cd")
+            normalized["ldong_signgu_cd"] = first_location.get("ldong_signgu_cd")
+        normalized["allow_nationwide"] = bool(geo_scope.get("allow_nationwide"))
+        step.output = {
+            "geo_scope": geo_scope,
+            "normalized_request": normalized,
+            "geo_intent": llm_hints,
+            "generation": meta,
+        }
+        if not settings.llm_enabled:
+            record_rule_based_llm_call(db, state["run_id"], step.id, "geo_resolution", resolver_input, step.output)
+        return {
+            "normalized_request": normalized,
+            "geo_scope": geo_scope,
+            "agent_execution": _append_agent_execution(state, meta),
+        }
+
+
+def geo_exit_node(db: Session, state: GraphState) -> GraphState:
+    normalized = state.get("normalized_request") or {}
+    geo_scope = state.get("geo_scope") or normalized.get("geo_scope") or {}
+    is_clarification = bool(geo_scope.get("needs_clarification"))
+    status = "failed" if is_clarification else "unsupported"
+    run_status = status
+    if is_clarification:
+        message = str(
+            geo_scope.get("clarification_question")
+            or "지역을 하나로 확정할 수 없습니다. 후보 중 원하는 지역을 선택해 주세요."
+        )
+        title = "지역을 하나로 좁혀 주세요"
+        detail = "아래 후보 중 원하는 지역명을 포함해서 다시 요청하면 검색과 상품 기획을 진행합니다."
+        qa_summary = "지역 확인이 필요해 QA 검수를 실행하지 않았습니다."
+    else:
+        message = str(
+            geo_scope.get("unsupported_reason")
+            or "PARAVOCA는 현재 국내 관광 데이터만 지원합니다."
+        )
+        title = "지원 범위 안내"
+        detail = "국내 지역을 포함해 다시 요청하면 관광 데이터 수집과 상품 기획을 진행할 수 있습니다."
+        qa_summary = "지원 범위 밖 요청이라 QA 검수를 실행하지 않았습니다."
+    with step_log(db, state["run_id"], "GeoResolverAgent", "geo_scope_exit", geo_scope) as step:
+        report = {
+            "status": status,
+            "run_status": run_status,
+            "normalized_request": normalized,
+            "geo_scope": geo_scope,
+            "user_message": {
+                "title": title,
+                "message": message,
+                "detail": detail,
+            },
+            "source_items": [],
+            "retrieved_documents": [],
+            "research_summary": {},
+            "products": [],
+            "marketing_assets": [],
+            "qa_report": {
+                "overall_status": "not_run",
+                "summary": qa_summary,
+                "issues": [],
+                "pass_count": 0,
+                "needs_review_count": 0,
+                "fail_count": 0,
+            },
+            "agent_execution": state.get("agent_execution", []),
+            "cost_summary": _cost_summary(db, state["run_id"]),
+            "revision": _run_revision_metadata(db, state["run_id"], state),
+            "approval": {
+                "required": False,
+                "status": "not_required",
+                "message": message,
+            },
+        }
+        step.output = report
+        record_rule_based_llm_call(db, state["run_id"], step.id, "geo_scope_exit", geo_scope, report)
+        return {
+            "run_status": run_status,
+            "final_report": report,
+            "approval": report["approval"],
+        }
+
+
 def data_agent(db: Session, state: GraphState) -> GraphState:
     normalized = state["normalized_request"]
     with step_log(db, state["run_id"], "DataAgent", "data_collection", normalized) as step:
         provider = get_tourism_provider()
         provider_source = "tourapi"
         run_id = state["run_id"]
-        region = normalized.get("region_name")
-        region_code = normalized.get("region_code")
-        if not region_code:
-            regions = log_tool_call(
+        geo_scope = state.get("geo_scope") or normalized.get("geo_scope") or {}
+        if geo_scope.get("status") == "unsupported" or geo_scope.get("mode") == "unsupported_region":
+            raise RuntimeError(
+                str(geo_scope.get("unsupported_reason") or "PARAVOCA는 현재 국내 관광 데이터만 지원합니다.")
+            )
+        if geo_scope.get("needs_clarification"):
+            raise RuntimeError(
+                "Geo scope needs clarification before TourAPI search: "
+                f"{geo_scope.get('clarification_question') or geo_scope.get('unresolved_locations')}"
+            )
+
+        locations = _locations_for_tourapi_search(geo_scope)
+        if not locations and not geo_scope.get("allow_nationwide"):
+            raise RuntimeError("Geo scope was not resolved. Nationwide fallback is disabled.")
+
+        all_items: list[Any] = []
+        primary_keyword = _keyword_for_geo_scope(normalized, geo_scope)
+        for location in locations:
+            geo_kwargs = _tourapi_geo_kwargs(location)
+            keyword = _keyword_for_geo_scope(normalized, geo_scope, location)
+            arguments_base = {
+                **geo_kwargs,
+                "geo_role": location.get("role") if location else None,
+                "location_name": location.get("name") if location else "nationwide",
+            }
+            attractions = log_tool_call(
                 db=db,
                 run_id=run_id,
                 step_id=step.id,
-                tool_name="tourapi_area_code",
-                arguments={"region": region},
+                tool_name="tourapi_search_keyword",
+                arguments={**arguments_base, "query": keyword, "limit": 20},
                 source=provider_source,
-                call=lambda: provider.area_code(region),
+                call=lambda keyword=keyword, geo_kwargs=geo_kwargs: provider.search_keyword(
+                    query=keyword,
+                    limit=20,
+                    **geo_kwargs,
+                ),
             )
-            region_code = regions[0].get("region_code") if regions else None
+            area_attractions = log_tool_call(
+                db=db,
+                run_id=run_id,
+                step_id=step.id,
+                tool_name="tourapi_area_based_list",
+                arguments={**arguments_base, "content_type": "12", "limit": 20},
+                source=provider_source,
+                call=lambda geo_kwargs=geo_kwargs: provider.area_based_list(
+                    content_type="12",
+                    limit=20,
+                    **geo_kwargs,
+                ),
+            )
+            area_leisure = log_tool_call(
+                db=db,
+                run_id=run_id,
+                step_id=step.id,
+                tool_name="tourapi_area_based_list",
+                arguments={**arguments_base, "content_type": "28", "limit": 20},
+                source=provider_source,
+                call=lambda geo_kwargs=geo_kwargs: provider.area_based_list(
+                    content_type="28",
+                    limit=20,
+                    **geo_kwargs,
+                ),
+            )
+            events = log_tool_call(
+                db=db,
+                run_id=run_id,
+                step_id=step.id,
+                tool_name="tourapi_search_festival",
+                arguments={
+                    **arguments_base,
+                    "start_date": normalized.get("start_date"),
+                    "end_date": normalized.get("end_date"),
+                    "limit": 20,
+                },
+                source=provider_source,
+                call=lambda geo_kwargs=geo_kwargs: provider.search_festival(
+                    start_date=date.fromisoformat(normalized["start_date"]),
+                    end_date=date.fromisoformat(normalized["end_date"]),
+                    limit=20,
+                    **geo_kwargs,
+                ),
+            )
+            stays = log_tool_call(
+                db=db,
+                run_id=run_id,
+                step_id=step.id,
+                tool_name="tourapi_search_stay",
+                arguments={**arguments_base, "limit": 10},
+                source=provider_source,
+                call=lambda geo_kwargs=geo_kwargs: provider.search_stay(limit=10, **geo_kwargs),
+            )
+            all_items.extend([*attractions, *area_attractions, *area_leisure, *events, *stays])
 
-        keyword = " ".join([region or "", "외국인", "야경", "전통시장", "요트", "액티비티"]).strip()
-        attractions = log_tool_call(
-            db=db,
-            run_id=run_id,
-            step_id=step.id,
-            tool_name="tourapi_search_keyword",
-            arguments={"query": keyword, "region_code": region_code, "limit": 20},
-            source=provider_source,
-            call=lambda: provider.search_keyword(query=keyword, region_code=region_code, limit=20),
-        )
-        events = log_tool_call(
-            db=db,
-            run_id=run_id,
-            step_id=step.id,
-            tool_name="tourapi_search_festival",
-            arguments={
-                "region_code": region_code,
-                "start_date": normalized.get("start_date"),
-                "end_date": normalized.get("end_date"),
-                "limit": 20,
-            },
-            source=provider_source,
-            call=lambda: provider.search_festival(
-                region_code=region_code,
-                start_date=date.fromisoformat(normalized["start_date"]),
-                end_date=date.fromisoformat(normalized["end_date"]),
-                limit=20,
-            ),
-        )
-        stays = log_tool_call(
-            db=db,
-            run_id=run_id,
-            step_id=step.id,
-            tool_name="tourapi_search_stay",
-            arguments={"region_code": region_code, "limit": 10},
-            source=provider_source,
-            call=lambda: provider.search_stay(region_code=region_code, limit=10),
-        )
-        items = _dedupe_items([*attractions, *events, *stays])
+        items = _dedupe_items(all_items)
+        items = _filter_items_by_geo_scope(items, geo_scope=geo_scope, run_id=run_id)
         if not items:
-            raise RuntimeError("TourAPI returned no tourism items for the workflow input")
+            raise RuntimeError(
+                f"TourAPI returned no tourism items for resolved geo_scope={geo_scope!r}"
+            )
         upsert_tourism_items(db, items)
         settings = get_settings()
         detail_limit = min(settings.tourapi_detail_enrichment_limit, len(items))
@@ -376,26 +570,35 @@ def data_agent(db: Session, state: GraphState) -> GraphState:
             items = [enriched_by_id.get(item.id, item) for item in items]
         source_documents = upsert_source_documents_from_items(db, items)
         indexed_count = index_source_documents(db, source_documents)
+        vector_filters = _vector_filters_for_geo_scope(geo_scope, source=provider_source)
         retrieved = log_tool_call(
             db=db,
             run_id=run_id,
             step_id=step.id,
             tool_name="vector_search",
             arguments={
-                "query": keyword,
+                "query": primary_keyword,
                 "top_k": 10,
-                "filters": {"region_code": region_code, "source": provider_source},
+                "filters": vector_filters,
             },
             source="chroma",
             call=lambda: search_source_documents(
-                query=keyword,
+                query=primary_keyword,
                 top_k=10,
-                filters={"region_code": region_code, "source": provider_source},
+                filters=vector_filters,
             ),
         )
+        retrieved = _filter_retrieved_documents_by_geo_scope(
+            retrieved,
+            geo_scope=geo_scope,
+            run_id=run_id,
+        )
         if not retrieved:
-            raise RuntimeError("No TourAPI source documents were retrieved from vector search")
+            raise RuntimeError(
+                f"No TourAPI source documents were retrieved from vector search for geo_scope={geo_scope!r}"
+            )
         output = {
+            "geo_scope": geo_scope,
             "source_items": [_tourism_item_to_dict(item) for item in items],
             "retrieved_documents": retrieved,
             "indexed_documents": indexed_count,
@@ -404,27 +607,250 @@ def data_agent(db: Session, state: GraphState) -> GraphState:
         step.output = output
         record_rule_based_llm_call(db, run_id, step.id, "data_summary", normalized, output)
         return {
+            "geo_scope": geo_scope,
             "source_items": output["source_items"],
             "retrieved_documents": retrieved,
         }
+
+
+def _region_code_from_area_result(item: dict[str, Any] | None) -> str | None:
+    if not item:
+        return None
+    value = item.get("region_code") or item.get("code") or item.get("areaCode") or item.get("areacode")
+    if value is None:
+        return None
+    region_code = str(value).strip()
+    return region_code or None
+
+
+LEGACY_AREA_TO_LDONG_REGN = {
+    "1": "11",
+    "2": "28",
+    "3": "30",
+    "4": "27",
+    "5": "29",
+    "6": "26",
+    "7": "31",
+    "8": "36",
+    "31": "41",
+    "32": "51",
+    "33": "43",
+    "34": "44",
+    "35": "52",
+    "36": "46",
+    "37": "47",
+    "38": "48",
+    "39": "50",
+}
+
+
+def _locations_for_tourapi_search(geo_scope: dict[str, Any]) -> list[dict[str, Any]]:
+    if geo_scope.get("allow_nationwide"):
+        return [{}]
+    locations = geo_scope.get("locations")
+    return locations if isinstance(locations, list) else []
+
+
+def _tourapi_geo_kwargs(location: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "ldong_regn_cd",
+        "ldong_signgu_cd",
+        "lcls_systm_1",
+        "lcls_systm_2",
+        "lcls_systm_3",
+    ]
+    return {key: location.get(key) for key in keys if location.get(key)}
+
+
+def _keyword_for_geo_scope(
+    normalized: dict[str, Any],
+    geo_scope: dict[str, Any],
+    location: dict[str, Any] | None = None,
+) -> str:
+    location_name = (location or {}).get("keyword") or (location or {}).get("name")
+    if not location_name:
+        locations = geo_scope.get("locations") if isinstance(geo_scope.get("locations"), list) else []
+        location_name = " ".join(str(item.get("keyword") or item.get("name") or "") for item in locations)
+    keywords = geo_scope.get("keywords") if isinstance(geo_scope.get("keywords"), list) else []
+    local_terms = (
+        (location or {}).get("sub_area_terms")
+        if isinstance((location or {}).get("sub_area_terms"), list)
+        else []
+    )
+    themes = normalized.get("preferred_themes") if isinstance(normalized.get("preferred_themes"), list) else []
+    parts = [
+        str(location_name or ""),
+        str(normalized.get("target_customer") or "외국인"),
+        *[str(term) for term in local_terms[:3]],
+        *[str(keyword) for keyword in keywords[:3]],
+        *[str(theme) for theme in themes[:3]],
+        "액티비티",
+    ]
+    return " ".join(part for part in parts if part).strip()
+
+
+def _vector_filters_for_geo_scope(geo_scope: dict[str, Any], *, source: str) -> dict[str, Any]:
+    filters: dict[str, Any] = {"source": source}
+    if geo_scope.get("allow_nationwide"):
+        return filters
+    locations = _locations_for_tourapi_search(geo_scope)
+    regn_codes = sorted(
+        {str(location.get("ldong_regn_cd")) for location in locations if location.get("ldong_regn_cd")}
+    )
+    signgu_codes = sorted(
+        {str(location.get("ldong_signgu_cd")) for location in locations if location.get("ldong_signgu_cd")}
+    )
+    if regn_codes:
+        filters["ldong_regn_cd"] = regn_codes if len(regn_codes) > 1 else regn_codes[0]
+    if signgu_codes and len(signgu_codes) == len(locations):
+        filters["ldong_signgu_cd"] = signgu_codes if len(signgu_codes) > 1 else signgu_codes[0]
+    return filters
+
+
+def _filter_items_by_geo_scope(
+    items: list[Any],
+    *,
+    geo_scope: dict[str, Any],
+    run_id: str | None,
+) -> list[Any]:
+    if geo_scope.get("allow_nationwide"):
+        return items
+    locations = _locations_for_tourapi_search(geo_scope)
+    if not locations:
+        return []
+    filtered = [item for item in items if _item_matches_geo_scope(item, locations)]
+    dropped = len(items) - len(filtered)
+    if dropped:
+        logger.warning(
+            "Dropped %s off-region TourAPI items for run_id=%s geo_scope=%s",
+            dropped,
+            run_id,
+            geo_scope,
+        )
+    return filtered
+
+
+def _filter_retrieved_documents_by_geo_scope(
+    documents: list[dict[str, Any]],
+    *,
+    geo_scope: dict[str, Any],
+    run_id: str | None,
+) -> list[dict[str, Any]]:
+    if geo_scope.get("allow_nationwide"):
+        return documents
+    locations = _locations_for_tourapi_search(geo_scope)
+    if not locations:
+        return []
+    filtered = [
+        document
+        for document in documents
+        if _metadata_matches_geo_scope(document.get("metadata") or {}, locations)
+    ]
+    dropped = len(documents) - len(filtered)
+    if dropped:
+        logger.warning(
+            "Dropped %s off-region retrieved documents for run_id=%s geo_scope=%s",
+            dropped,
+            run_id,
+            geo_scope,
+        )
+    return filtered
+
+
+def _item_matches_geo_scope(item: Any, locations: list[dict[str, Any]]) -> bool:
+    item_regn = _item_ldong_regn_cd(item)
+    item_signgu = _item_ldong_signgu_cd(item)
+    for location in locations:
+        expected_regn = str(location.get("ldong_regn_cd") or "")
+        expected_signgu = str(location.get("ldong_signgu_cd") or "")
+        if not expected_regn:
+            continue
+        if item_regn != expected_regn:
+            continue
+        if expected_signgu and item_signgu and item_signgu != expected_signgu:
+            continue
+        sub_area_terms = location.get("sub_area_terms")
+        if isinstance(sub_area_terms, list) and sub_area_terms:
+            item_text = " ".join(
+                str(value or "")
+                for value in [
+                    getattr(item, "title", None),
+                    getattr(item, "address", None),
+                    getattr(item, "overview", None),
+                    getattr(item, "raw", None),
+                ]
+            )
+            if not any(str(term) in item_text for term in sub_area_terms):
+                continue
+        return True
+    return False
+
+
+def _metadata_matches_geo_scope(metadata: dict[str, Any], locations: list[dict[str, Any]]) -> bool:
+    metadata_regn = _metadata_ldong_regn_cd(metadata)
+    metadata_signgu = _string_or_empty(metadata.get("ldong_signgu_cd"))
+    for location in locations:
+        expected_regn = str(location.get("ldong_regn_cd") or "")
+        expected_signgu = str(location.get("ldong_signgu_cd") or "")
+        if not expected_regn:
+            continue
+        if metadata_regn != expected_regn:
+            continue
+        if expected_signgu and metadata_signgu and metadata_signgu != expected_signgu:
+            continue
+        sub_area_terms = location.get("sub_area_terms")
+        if isinstance(sub_area_terms, list) and sub_area_terms:
+            metadata_text = " ".join(str(value or "") for value in metadata.values())
+            if not any(str(term) in metadata_text for term in sub_area_terms):
+                continue
+        return True
+    return False
+
+
+def _item_ldong_regn_cd(item: Any) -> str:
+    value = getattr(item, "ldong_regn_cd", None)
+    if value:
+        return str(value)
+    legacy_area = getattr(item, "legacy_area_code", None) or getattr(item, "region_code", None)
+    return LEGACY_AREA_TO_LDONG_REGN.get(str(legacy_area or ""), str(legacy_area or ""))
+
+
+def _item_ldong_signgu_cd(item: Any) -> str:
+    value = getattr(item, "ldong_signgu_cd", None)
+    if value:
+        return str(value)
+    return str(getattr(item, "legacy_sigungu_code", None) or getattr(item, "sigungu_code", None) or "")
+
+
+def _metadata_ldong_regn_cd(metadata: dict[str, Any]) -> str:
+    value = metadata.get("ldong_regn_cd")
+    if value:
+        return str(value)
+    legacy_area = metadata.get("legacy_area_code") or metadata.get("region_code")
+    return LEGACY_AREA_TO_LDONG_REGN.get(str(legacy_area or ""), str(legacy_area or ""))
+
+
+def _string_or_empty(value: Any) -> str:
+    return str(value or "")
 
 
 def research_agent(db: Session, state: GraphState) -> GraphState:
     with step_log(db, state["run_id"], "ResearchAgent", "research", state.get("retrieved_documents")) as step:
         docs = state.get("retrieved_documents", [])
         source_ids = [doc["doc_id"] for doc in docs[:5]]
+        region_label = _region_label_from_normalized(state.get("normalized_request", {}))
         summary = {
             "region_insights": [
                 {
-                    "claim": "부산은 해변, 야경, 시장 먹거리, 해양 액티비티를 조합하기 좋습니다.",
+                    "claim": f"{region_label}은 수집된 TourAPI 근거를 기준으로 액티비티 동선을 검토할 수 있습니다.",
                     "evidence_source_ids": source_ids,
                     "confidence": 0.78,
                 }
             ],
             "recommended_themes": [
-                {"theme": "night_food_tour", "reason": "야경과 전통시장 검색 근거가 있습니다."},
-                {"theme": "yacht_photo_course", "reason": "해운대 요트와 야간 사진 포인트를 묶을 수 있습니다."},
-                {"theme": "festival_plus_beach", "reason": "요청 기간 내 행사 후보가 있습니다."},
+                {"theme": "local_activity_route", "reason": "지역 기반 후보지가 검색 근거에 포함되어 있습니다."},
+                {"theme": "seasonal_event_plus_place", "reason": "요청 기간 내 행사와 주변 관광지를 함께 검토할 수 있습니다."},
+                {"theme": "foreigner_friendly_short_course", "reason": "외국인 대상 짧은 이동 동선으로 재구성할 수 있습니다."},
             ],
             "constraints": [
                 "가격, 예약 가능 여부, 운영 시간은 운영자가 최종 확인해야 합니다.",
@@ -434,6 +860,17 @@ def research_agent(db: Session, state: GraphState) -> GraphState:
         step.output = summary
         record_rule_based_llm_call(db, state["run_id"], step.id, "research", docs, summary)
         return {"research_summary": summary}
+
+
+def _region_label_from_normalized(normalized: dict[str, Any]) -> str:
+    geo_scope = normalized.get("geo_scope") if isinstance(normalized.get("geo_scope"), dict) else {}
+    locations = geo_scope.get("locations") if isinstance(geo_scope.get("locations"), list) else []
+    names = [str(location.get("name")) for location in locations if location.get("name")]
+    if names:
+        return " - ".join(names)
+    if geo_scope.get("allow_nationwide"):
+        return "전국"
+    return str(normalized.get("region_name") or "요청 지역")
 
 
 def product_agent(db: Session, state: GraphState) -> GraphState:
@@ -615,6 +1052,7 @@ def human_approval_node(db: Session, state: GraphState) -> GraphState:
         report = {
             "status": "awaiting_approval",
             "normalized_request": state.get("normalized_request"),
+            "geo_scope": state.get("geo_scope") or (state.get("normalized_request") or {}).get("geo_scope"),
             "source_items": state.get("source_items", []),
             "retrieved_documents": state.get("retrieved_documents", []),
             "research_summary": state.get("research_summary", {}),
@@ -632,6 +1070,25 @@ def human_approval_node(db: Session, state: GraphState) -> GraphState:
         }
         step.output = report
         return {"approval": report["approval"], "final_report": report}
+
+
+GEO_RESOLUTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "required": ["locations", "excluded_locations", "allow_nationwide", "unsupported_locations"],
+    "properties": {
+        "locations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["text", "role", "normalized_text", "is_foreign"],
+            },
+        },
+        "excluded_locations": {"type": "array"},
+        "allow_nationwide": {"type": "boolean"},
+        "unsupported_locations": {"type": "array"},
+        "notes": {"type": "array"},
+    },
+}
 
 
 PRODUCT_RESPONSE_SCHEMA = {
@@ -699,12 +1156,13 @@ QA_RESPONSE_SCHEMA = {
 
 def build_rule_based_products(normalized: dict[str, Any], docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     count = normalized.get("product_count", 3)
+    region_label = _region_label_from_normalized(normalized)
     templates = [
-        ("부산 야경 + 전통시장 푸드투어", ["야경", "로컬 음식", "짧은 동선"]),
-        ("해운대 요트 + 야간 사진 코스", ["해양 액티비티", "사진", "야간 관광"]),
-        ("부산 축제 + 해변 산책 패키지", ["축제", "해변", "시즌성"]),
-        ("광안리 선셋 워크 + 로컬 카페 투어", ["해변", "카페", "가벼운 도보"]),
-        ("부산 시장 먹거리 입문 클래스", ["전통시장", "푸드투어", "문화 체험"]),
+        (f"{region_label} 야간 로컬 미식 투어", ["야경", "로컬 음식", "짧은 동선"]),
+        (f"{region_label} 대표 액티비티 사진 코스", ["액티비티", "사진", "야간 관광"]),
+        (f"{region_label} 시즌 행사 연계 패키지", ["축제", "관광지", "시즌성"]),
+        (f"{region_label} 로컬 산책 + 카페 투어", ["로컬 산책", "카페", "가벼운 도보"]),
+        (f"{region_label} 문화 체험 입문 클래스", ["문화 체험", "푸드투어", "현장 확인"]),
     ]
     source_ids = [doc["doc_id"] for doc in docs[:5]]
     if not source_ids:
@@ -716,7 +1174,7 @@ def build_rule_based_products(normalized: dict[str, Any], docs: list[dict[str, A
             {
                 "id": f"product_{index + 1}",
                 "title": title,
-                "one_liner": f"{normalized['region_name']}에서 {normalized['target_customer']} 대상 운영자가 검토할 수 있는 액티비티 초안입니다.",
+                "one_liner": f"{region_label}에서 {normalized['target_customer']} 대상 운영자가 검토할 수 있는 액티비티 초안입니다.",
                 "target_customer": normalized["target_customer"],
                 "core_value": core,
                 "itinerary": [
@@ -758,10 +1216,10 @@ def build_rule_based_marketing(products: list[dict[str, Any]]) -> list[dict[str,
                 ],
                 "sns_posts": [
                     f"{product['title']} 초안",
-                    "부산의 야경과 로컬 경험을 묶은 액티비티 후보",
+                    "요청 지역의 로컬 경험을 묶은 액티비티 후보",
                     "운영 확정 전 일정과 포함사항을 확인하세요",
                 ],
-                "search_keywords": ["부산", "외국인", "액티비티", "야경", "푸드투어", "축제", "해운대", "광안리", "요트", "전통시장"],
+                "search_keywords": [product["title"], "외국인", "액티비티", "야경", "푸드투어", "축제", "로컬", "전통시장"],
             }
         )
     return assets
@@ -814,6 +1272,35 @@ def build_rule_based_revision_patch(
         "product_patches": product_patches,
         "marketing_patches": [],
         "notes": ["규칙 기반 revision patch는 명확한 제목 정리만 처리합니다."],
+    }
+
+
+def validate_geo_resolution_hints(payload: dict[str, Any]) -> dict[str, Any]:
+    locations: list[dict[str, Any]] = []
+    for item in payload.get("locations") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        normalized_text = str(item.get("normalized_text") or text).strip()
+        if not text and not normalized_text:
+            continue
+        role = str(item.get("role") or "primary").strip()
+        if role not in {"primary", "origin", "destination", "stopover", "nearby_anchor", "comparison", "excluded"}:
+            role = "primary"
+        locations.append(
+            {
+                "text": text,
+                "normalized_text": normalized_text,
+                "role": role,
+                "is_foreign": item.get("is_foreign") is True,
+            }
+        )
+    return {
+        "locations": locations[:12],
+        "excluded_locations": _string_list(payload.get("excluded_locations"))[:12],
+        "allow_nationwide": payload.get("allow_nationwide") is True,
+        "unsupported_locations": _string_list(payload.get("unsupported_locations"))[:12],
+        "notes": _string_list(payload.get("notes"))[:12],
     }
 
 
@@ -1071,6 +1558,41 @@ def validate_qa_report(payload: dict[str, Any], products: list[dict[str, Any]]) 
         "needs_review_count": int(payload.get("needs_review_count") or (len(products) if validated_issues else 0)),
         "fail_count": int(payload.get("fail_count") or 0),
     }
+
+
+def _geo_resolution_prompt(resolver_input: dict[str, Any]) -> str:
+    context = {
+        "요청": resolver_input,
+        "역할": "사용자 자연어에서 지역 의도만 추출합니다. TourAPI 코드 확정은 별도 catalog resolver가 수행합니다.",
+        "출력_규칙": [
+            "locations에는 요청 문장에 실제로 등장한 국내/해외 장소 표현만 넣으세요.",
+            "text는 원문에 등장한 장소 span 그대로 쓰세요. 오타가 있으면 text에는 오타 원문을, normalized_text에는 교정 후보를 쓰세요.",
+            "role은 primary, origin, destination, stopover, nearby_anchor, comparison, excluded 중 하나만 쓰세요.",
+            "부산에서 시작해서 양산에서 끝나는 요청은 부산 origin, 양산 destination으로 분리하세요.",
+            "전국, 국내 전체처럼 사용자가 명시한 경우에만 allow_nationwide=true로 쓰세요.",
+            "도쿄, 오사카, 파리처럼 해외 목적지를 요청하면 unsupported_locations에 넣고 해당 location의 is_foreign=true로 표시하세요.",
+            "외국인, 해외 관광객, 인바운드처럼 고객 대상을 뜻하는 표현은 해외 목적지로 취급하지 마세요.",
+            "TourAPI 코드, 법정동 코드, confidence, 후보 목록은 만들지 마세요.",
+            "장소가 애매해도 억지로 특정 행정구역을 선택하지 말고 원문 span만 추출하세요.",
+        ],
+        "예시": [
+            {
+                "input": "부산에서 시작해서 양산에서 끝나는 상품",
+                "locations": [
+                    {"text": "부산", "normalized_text": "부산광역시", "role": "origin", "is_foreign": False},
+                    {"text": "양산", "normalized_text": "양산시", "role": "destination", "is_foreign": False},
+                ],
+            },
+            {
+                "input": "도쿄에서 외국인 대상 액티비티 상품",
+                "locations": [
+                    {"text": "도쿄", "normalized_text": "도쿄", "role": "primary", "is_foreign": True},
+                ],
+                "unsupported_locations": ["도쿄"],
+            },
+        ],
+    }
+    return json.dumps(context, ensure_ascii=False)
 
 
 def _product_prompt(
@@ -1777,6 +2299,13 @@ def _tourism_item_to_dict(item: Any) -> dict[str, Any]:
         "title": item.title,
         "region_code": item.region_code,
         "sigungu_code": item.sigungu_code,
+        "legacy_area_code": item.legacy_area_code,
+        "legacy_sigungu_code": item.legacy_sigungu_code,
+        "ldong_regn_cd": item.ldong_regn_cd,
+        "ldong_signgu_cd": item.ldong_signgu_cd,
+        "lcls_systm_1": item.lcls_systm_1,
+        "lcls_systm_2": item.lcls_systm_2,
+        "lcls_systm_3": item.lcls_systm_3,
         "address": item.address,
         "map_x": float(item.map_x) if item.map_x is not None else None,
         "map_y": float(item.map_y) if item.map_y is not None else None,

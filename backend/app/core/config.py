@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     )
     vector_db: str = "chroma"
     chroma_path: str = "./data/chroma"
+    embedding_provider: str = "legacy_hash"
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embedding_device: str = "cpu"
+    embedding_batch_size: int = 32
     tourapi_enabled: bool = True
     tourapi_service_key: str | None = None
     tourapi_base_url: str = "https://apis.data.go.kr/B551011/KorService2"

@@ -19,8 +19,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+local-embeddings = [
+  "sentence-transformers>=3.0"
+]
 dev = [
-  "pytest>=8.0"
+  "pytest>=8.0",
+  "sentence-transformers>=3.0"
 ]
 
 [tool.setuptools.packages.find]

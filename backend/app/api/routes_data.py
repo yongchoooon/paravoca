@@ -32,6 +32,11 @@ router = APIRouter(prefix="/data/tourism", tags=["tourism-data"])
 def search_tourism(
     region: str | None = Query(default=None),
     region_code: str | None = Query(default=None),
+    ldong_regn_cd: str | None = Query(default=None),
+    ldong_signgu_cd: str | None = Query(default=None),
+    lcls_systm_1: str | None = Query(default=None),
+    lcls_systm_2: str | None = Query(default=None),
+    lcls_systm_3: str | None = Query(default=None),
     keyword: str | None = Query(default=None),
     content_type: str | None = Query(default=None),
     start_date: date | None = Query(default=None),
@@ -44,18 +49,28 @@ def search_tourism(
 ) -> dict:
     provider = get_tourism_provider()
     provider_name = "tourapi"
-    resolved_region_code = region_code or _resolve_region_code(
-        provider=provider,
-        db=db,
-        run_id=run_id,
-        region=region,
-        source=provider_name,
-    )
+    resolved_region_code = region_code
+    if not ldong_regn_cd:
+        resolved_region_code = region_code or _resolve_region_code(
+            provider=provider,
+            db=db,
+            run_id=run_id,
+            region=region,
+            source=provider_name,
+        )
+    geo_kwargs = {
+        "ldong_regn_cd": ldong_regn_cd,
+        "ldong_signgu_cd": ldong_signgu_cd,
+        "lcls_systm_1": lcls_systm_1,
+        "lcls_systm_2": lcls_systm_2,
+        "lcls_systm_3": lcls_systm_3,
+    }
 
     tool_name = _select_tool_name(content_type=content_type, keyword=keyword)
     arguments = {
         "region": region,
         "region_code": resolved_region_code,
+        **geo_kwargs,
         "keyword": keyword,
         "content_type": content_type,
         "start_date": start_date.isoformat() if start_date else None,
@@ -70,19 +85,26 @@ def search_tourism(
                 start_date=start_date,
                 end_date=end_date,
                 limit=limit,
+                **geo_kwargs,
             )
         if content_type == "accommodation":
-            return provider.search_stay(region_code=resolved_region_code, limit=limit)
+            return provider.search_stay(
+                region_code=resolved_region_code,
+                limit=limit,
+                **geo_kwargs,
+            )
         if keyword:
             return provider.search_keyword(
                 query=keyword,
                 region_code=resolved_region_code,
                 limit=limit,
+                **geo_kwargs,
             )
         return provider.area_based_list(
             region_code=resolved_region_code,
             content_type=content_type,
             limit=limit,
+            **geo_kwargs,
         )
 
     items = log_tool_call(
@@ -111,6 +133,11 @@ def search_tourism(
         {
             "provider": provider_name,
             "region_code": resolved_region_code,
+            "ldong_regn_cd": ldong_regn_cd,
+            "ldong_signgu_cd": ldong_signgu_cd,
+            "lcls_systm_1": lcls_systm_1,
+            "lcls_systm_2": lcls_systm_2,
+            "lcls_systm_3": lcls_systm_3,
             "items": data,
             "source_documents": len(source_documents),
             "indexed_documents": indexed_count,

@@ -20,3 +20,4 @@ dist/
 frontend/vite.config.js
 frontend/vite.config.d.ts
 .DS_Store
+API명세서/
