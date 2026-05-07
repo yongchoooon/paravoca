@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -104,7 +105,7 @@ def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         elif isinstance(value, (str, int, float, bool)):
             cleaned[key] = value
         else:
-            cleaned[key] = str(value)
+            cleaned[key] = json.dumps(value, ensure_ascii=False)
     if "title" not in cleaned:
         cleaned["title"] = cleaned.get("source_item_id", "")
     return cleaned
@@ -121,4 +122,3 @@ def _matches_filters(metadata: dict[str, Any], filters: dict[str, Any]) -> bool:
         elif actual != expected:
             return False
     return True
-

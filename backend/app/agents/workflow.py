@@ -18,6 +18,7 @@ from app.llm.usage_log import safe_write_llm_usage_log
 from app.rag.chroma_store import index_source_documents, search_source_documents
 from app.rag.source_documents import upsert_source_documents_from_items
 from app.tools.tourism import get_tourism_provider, log_tool_call, upsert_tourism_items
+from app.tools.tourism_enrichment import enrich_items_with_tourapi_details
 
 
 def run_product_planning_workflow(db: Session, run_id: str) -> dict[str, Any]:
@@ -360,6 +361,19 @@ def data_agent(db: Session, state: GraphState) -> GraphState:
         if not items:
             raise RuntimeError("TourAPI returned no tourism items for the workflow input")
         upsert_tourism_items(db, items)
+        settings = get_settings()
+        detail_limit = min(settings.tourapi_detail_enrichment_limit, len(items))
+        detail_enrichment = enrich_items_with_tourapi_details(
+            db=db,
+            provider=provider,
+            items=items,
+            run_id=run_id,
+            step_id=step.id,
+            limit=detail_limit,
+        )
+        if detail_enrichment["items"]:
+            enriched_by_id = {item.id: item for item in detail_enrichment["items"]}
+            items = [enriched_by_id.get(item.id, item) for item in items]
         source_documents = upsert_source_documents_from_items(db, items)
         indexed_count = index_source_documents(db, source_documents)
         retrieved = log_tool_call(
@@ -382,9 +396,10 @@ def data_agent(db: Session, state: GraphState) -> GraphState:
         if not retrieved:
             raise RuntimeError("No TourAPI source documents were retrieved from vector search")
         output = {
-            "source_items": [item.to_dict() for item in items],
+            "source_items": [_tourism_item_to_dict(item) for item in items],
             "retrieved_documents": retrieved,
             "indexed_documents": indexed_count,
+            "detail_enrichment": detail_enrichment["summary"],
         }
         step.output = output
         record_rule_based_llm_call(db, run_id, step.id, "data_summary", normalized, output)
@@ -1749,6 +1764,31 @@ def _dedupe_items(items):
         seen.add(item.id)
         deduped.append(item)
     return deduped
+
+
+def _tourism_item_to_dict(item: Any) -> dict[str, Any]:
+    if hasattr(item, "to_dict"):
+        return item.to_dict()
+    return {
+        "id": item.id,
+        "source": item.source,
+        "content_id": item.content_id,
+        "content_type": item.content_type,
+        "title": item.title,
+        "region_code": item.region_code,
+        "sigungu_code": item.sigungu_code,
+        "address": item.address,
+        "map_x": float(item.map_x) if item.map_x is not None else None,
+        "map_y": float(item.map_y) if item.map_y is not None else None,
+        "tel": item.tel,
+        "homepage": item.homepage,
+        "overview": item.overview,
+        "image_url": item.image_url,
+        "license_type": item.license_type,
+        "event_start_date": item.event_start_date,
+        "event_end_date": item.event_end_date,
+        "raw": item.raw,
+    }
 
 
 def _estimate_tokens(payload: Any) -> int:

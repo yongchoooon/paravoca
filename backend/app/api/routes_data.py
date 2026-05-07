@@ -2,19 +2,28 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.responses import ok
+from app.db import models
 from app.db.session import get_db
-from app.schemas.tourism import TourismItemRead
+from app.schemas.tourism import (
+    TourismDetailEnrichmentRequest,
+    TourismDetailEnrichmentResult,
+    TourismEntityRead,
+    TourismItemRead,
+    TourismVisualAssetRead,
+)
 from app.rag.chroma_store import index_source_documents
 from app.rag.source_documents import upsert_source_documents_from_items
 from app.tools.tourism import (
+    TourismItem,
     get_tourism_provider,
     log_tool_call,
     upsert_tourism_items,
 )
+from app.tools.tourism_enrichment import enrich_items_with_tourapi_details
 
 router = APIRouter(prefix="/data/tourism", tags=["tourism-data"])
 
@@ -29,6 +38,8 @@ def search_tourism(
     end_date: date | None = Query(default=None),
     run_id: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
+    enrich_details: bool = Query(default=False),
+    detail_limit: int = Query(default=5, ge=1, le=20),
     db: Session = Depends(get_db),
 ) -> dict:
     provider = get_tourism_provider()
@@ -83,6 +94,16 @@ def search_tourism(
         call=call_provider,
     )
     upsert_tourism_items(db, items)
+    detail_enrichment = None
+    if enrich_details and items:
+        detail_enrichment = enrich_items_with_tourapi_details(
+            db=db,
+            provider=provider,
+            items=items,
+            run_id=run_id,
+            limit=min(detail_limit, len(items)),
+        )
+        items = detail_enrichment["items"]
     source_documents = upsert_source_documents_from_items(db, items)
     indexed_count = index_source_documents(db, source_documents)
     data = [TourismItemRead.model_validate(item).model_dump(mode="json") for item in items]
@@ -93,9 +114,43 @@ def search_tourism(
             "items": data,
             "source_documents": len(source_documents),
             "indexed_documents": indexed_count,
+            "detail_enrichment": _detail_enrichment_summary(detail_enrichment),
         },
         count=len(data),
     )
+
+
+@router.post("/details/enrich")
+def enrich_tourism_details(
+    payload: TourismDetailEnrichmentRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    items = _load_items_for_detail_enrichment(db, payload)
+    if not items:
+        raise HTTPException(status_code=404, detail="No tourism items found for detail enrichment")
+
+    provider = get_tourism_provider()
+    result = enrich_items_with_tourapi_details(
+        db=db,
+        provider=provider,
+        items=items,
+        run_id=payload.run_id,
+        limit=payload.limit,
+    )
+    source_documents = upsert_source_documents_from_items(db, result["items"])
+    indexed_count = index_source_documents(db, source_documents)
+    response = TourismDetailEnrichmentResult(
+        items=[TourismItemRead.model_validate(item) for item in result["items"]],
+        entities=[TourismEntityRead.model_validate(entity) for entity in result["entities"]],
+        visual_assets=[
+            TourismVisualAssetRead.model_validate(asset)
+            for asset in result["visual_assets"]
+        ],
+        source_documents=len(source_documents),
+        indexed_documents=indexed_count,
+        summary=result["summary"],
+    )
+    return ok(response.model_dump(mode="json"), count=len(response.items))
 
 
 def _resolve_region_code(
@@ -131,3 +186,47 @@ def _select_tool_name(content_type: str | None, keyword: str | None) -> str:
     if keyword:
         return "tourapi_search_keyword"
     return "tourapi_area_based_list"
+
+
+def _load_items_for_detail_enrichment(
+    db: Session,
+    payload: TourismDetailEnrichmentRequest,
+) -> list[models.TourismItem | TourismItem]:
+    query = db.query(models.TourismItem)
+    if payload.item_ids:
+        return query.filter(models.TourismItem.id.in_(payload.item_ids)).limit(payload.limit).all()
+    if payload.content_ids:
+        existing = (
+            query.filter(models.TourismItem.content_id.in_(payload.content_ids))
+            .limit(payload.limit)
+            .all()
+        )
+        existing_content_ids = {item.content_id for item in existing}
+        placeholders = [
+            TourismItem(
+                id=f"tourapi:content:{content_id}",
+                source="tourapi",
+                content_id=content_id,
+                content_type="attraction",
+                title=content_id,
+                region_code="",
+            )
+            for content_id in payload.content_ids[: payload.limit]
+            if content_id not in existing_content_ids
+        ]
+        return [*existing, *placeholders][: payload.limit]
+    return query.order_by(models.TourismItem.updated_at.desc()).limit(payload.limit).all()
+
+
+def _detail_enrichment_summary(result: dict | None) -> dict:
+    if not result:
+        return {
+            "enabled": False,
+            "enriched_items": 0,
+            "entities": 0,
+            "visual_assets": 0,
+        }
+    return {
+        "enabled": True,
+        **result.get("summary", {}),
+    }

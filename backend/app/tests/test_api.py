@@ -1,13 +1,15 @@
 from fastapi.testclient import TestClient
 import pytest
 import httpx
+from sqlalchemy import inspect
 
 from app.agents.workflow import validate_qa_report
 from app.core.config import get_settings
 from app.db import models
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, engine
 from app.llm.gemini_gateway import _is_retryable_response, _parse_json, _retry_delay_seconds
 from app.main import app
+from app.rag.source_documents import build_source_document
 from app.tools.tourism import TourismItem
 
 
@@ -80,10 +82,79 @@ class TestTourApiProvider:
             )
         ][:limit]
 
+    def detail_common(self, *, content_id):
+        content_type_id = {
+            "TEST-BUSAN-001": "12",
+            "TEST-BUSAN-002": "15",
+            "TEST-BUSAN-003": "32",
+        }.get(content_id, "12")
+        title = {
+            "TEST-BUSAN-001": "부산 전통시장 야간 먹거리 골목",
+            "TEST-BUSAN-002": "광안리 M 드론 라이트쇼",
+            "TEST-BUSAN-003": "그랜드 조선 부산",
+        }.get(content_id, "부산 관광 후보")
+        return {
+            "contentid": content_id,
+            "contenttypeid": content_type_id,
+            "title": title,
+            "areacode": "6",
+            "sigungucode": "16",
+            "addr1": "부산광역시 테스트구",
+            "addr2": "상세 주소",
+            "mapx": "129.1",
+            "mapy": "35.1",
+            "tel": "051-000-0000",
+            "homepage": "https://example.com",
+            "overview": f"{title} 상세 개요입니다.",
+            "firstimage": f"https://example.com/{content_id}.jpg",
+        }
+
+    def detail_intro(self, *, content_id, content_type_id):
+        return {
+            "contentid": content_id,
+            "contenttypeid": content_type_id,
+            "infocenter": "문의처 확인 필요",
+            "usetime": "운영 시간은 공식 안내 확인 필요",
+        }
+
+    def detail_info(self, *, content_id, content_type_id):
+        return [
+            {"infoname": "이용시간", "infotext": "운영 시간은 공식 안내 확인 필요"},
+            {"infoname": "주차", "infotext": "주차 가능 여부 확인 필요"},
+        ]
+
+    def detail_images(self, *, content_id):
+        return [
+            {
+                "serialnum": "1",
+                "imgname": "대표 이미지 후보",
+                "originimgurl": f"https://example.com/{content_id}-detail.jpg",
+                "smallimageurl": f"https://example.com/{content_id}-thumb.jpg",
+            }
+        ]
+
+    def category_code(self, *, cat1=None, cat2=None, cat3=None, limit=100):
+        return [{"code": "A01", "name": "자연"}]
+
+    def location_based_list(
+        self,
+        *,
+        map_x,
+        map_y,
+        radius=1000,
+        content_type=None,
+        limit=20,
+    ):
+        return self.search_keyword(query="주변", region_code="6", limit=limit)
+
 
 def use_test_tourapi_provider(monkeypatch):
     monkeypatch.setattr(
         "app.agents.workflow.get_tourism_provider",
+        lambda: TestTourApiProvider(),
+    )
+    monkeypatch.setattr(
+        "app.api.routes_data.get_tourism_provider",
         lambda: TestTourApiProvider(),
     )
 
@@ -93,6 +164,122 @@ def test_health():
         data = unwrap(client.get("/api/health"))
     assert data["status"] == "ok"
     assert data["db"] == "ok"
+
+
+def test_data_source_capabilities_show_phase8_foundation(monkeypatch):
+    monkeypatch.setenv("TOURAPI_ENABLED", "true")
+    monkeypatch.setenv("TOURAPI_SERVICE_KEY", "")
+    monkeypatch.setenv("KTO_PHOTO_CONTEST_ENABLED", "false")
+    monkeypatch.setenv("OFFICIAL_WEB_SEARCH_ENABLED", "false")
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        data = unwrap(client.get("/api/data/sources/capabilities"))
+
+    get_settings.cache_clear()
+
+    source_families = {source["source_family"]: source for source in data["sources"]}
+    assert "kto_tourapi_kor" in source_families
+    assert "kto_photo_contest" in source_families
+    assert "official_web" in source_families
+
+    tourapi = source_families["kto_tourapi_kor"]
+    assert tourapi["enabled"] is False
+    assert tourapi["missing_env_vars"] == ["TOURAPI_SERVICE_KEY"]
+    assert any(
+        operation["tool_name"] == "tourapi_search_keyword"
+        and operation["implemented"] is True
+        for operation in tourapi["operations"]
+    )
+    assert any(
+        operation["tool_name"] == "kto_tour_detail_common"
+        and operation["implemented"] is True
+        and operation["workflow_enabled"] is False
+        for operation in tourapi["operations"]
+    )
+    assert data["implemented_operation_count"] >= 11
+
+
+def test_phase8_tables_are_created():
+    with TestClient(app):
+        table_names = set(inspect(engine).get_table_names())
+
+    assert {
+        "tourism_entities",
+        "tourism_visual_assets",
+        "tourism_route_assets",
+        "tourism_signal_records",
+        "enrichment_runs",
+        "enrichment_tool_calls",
+        "web_evidence_documents",
+    } <= table_names
+
+
+def test_source_document_includes_enrichment_metadata():
+    document = build_source_document(
+        TourismItem(
+            id="tourapi:test:source-doc",
+            source="tourapi",
+            content_id="TEST-001",
+            content_type="event",
+            title="테스트 행사",
+            region_code="6",
+            sigungu_code="16",
+            address="부산광역시",
+            overview="테스트 개요",
+            event_start_date="2026-05-01",
+            license_type="TourAPI test response",
+        )
+    )
+
+    metadata = document["document_metadata"]
+    assert metadata["source_family"] == "kto_tourapi_kor"
+    assert metadata["trust_level"] == 0.9
+    assert metadata["retrieved_at"]
+    assert "missing_image_asset" in metadata["data_quality_flags"]
+    assert metadata["license_note"] == "TourAPI test response"
+
+
+def test_tourism_detail_enrichment_api_stores_entity_visual_asset_and_source_doc(monkeypatch):
+    use_test_tourapi_provider(monkeypatch)
+
+    with SessionLocal() as db:
+        item = models.TourismItem(
+            id="tourapi:test:phase9",
+            source="tourapi",
+            content_id="TEST-BUSAN-001",
+            content_type="attraction",
+            title="부산 전통시장 야간 먹거리 골목",
+            region_code="6",
+            sigungu_code="16",
+            address="부산광역시 중구",
+            overview="기본 개요",
+            raw={},
+        )
+        db.merge(item)
+        db.commit()
+
+    with TestClient(app) as client:
+        data = unwrap(
+            client.post(
+                "/api/data/tourism/details/enrich",
+                json={"item_ids": ["tourapi:test:phase9"], "limit": 1},
+            )
+        )
+
+    assert data["summary"]["enriched_items"] == 1
+    assert data["summary"]["visual_assets"] == 1
+    assert data["entities"][0]["canonical_name"] == "부산 전통시장 야간 먹거리 골목"
+    assert data["visual_assets"][0]["usage_status"] == "candidate"
+    assert data["source_documents"] == 1
+
+    with SessionLocal() as db:
+        stored_item = db.get(models.TourismItem, "tourapi:test:phase9")
+        source_doc = db.get(models.SourceDocument, "doc:tourapi:test:phase9")
+        assert stored_item.raw["detail_common"]["contentid"] == "TEST-BUSAN-001"
+        assert stored_item.raw["detail_info"][0]["infoname"] == "이용시간"
+        assert source_doc.document_metadata["detail_common_available"] is True
+        assert source_doc.document_metadata["detail_info_count"] == 2
 
 
 def test_create_and_read_workflow_run(monkeypatch):

@@ -78,15 +78,74 @@ class TourismDataProvider(Protocol):
     ) -> list[TourismItem]:
         ...
 
+    def detail_common(self, *, content_id: str) -> dict[str, Any]:
+        ...
+
+    def detail_intro(
+        self,
+        *,
+        content_id: str,
+        content_type_id: str,
+    ) -> dict[str, Any]:
+        ...
+
+    def detail_info(
+        self,
+        *,
+        content_id: str,
+        content_type_id: str,
+    ) -> list[dict[str, Any]]:
+        ...
+
+    def detail_images(self, *, content_id: str) -> list[dict[str, Any]]:
+        ...
+
+    def category_code(
+        self,
+        *,
+        cat1: str | None = None,
+        cat2: str | None = None,
+        cat3: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        ...
+
+    def location_based_list(
+        self,
+        *,
+        map_x: float,
+        map_y: float,
+        radius: int = 1000,
+        content_type: str | None = None,
+        limit: int = 20,
+    ) -> list[TourismItem]:
+        ...
+
 
 class TourApiProvider:
+    source_family = "kto_tourapi_kor"
+    operation_names = {
+        "area_code": "areaCode2",
+        "area_based_list": "areaBasedList2",
+        "search_keyword": "searchKeyword2",
+        "search_festival": "searchFestival2",
+        "search_stay": "searchStay2",
+        "detail_common": "detailCommon2",
+        "detail_intro": "detailIntro2",
+        "detail_info": "detailInfo2",
+        "detail_images": "detailImage2",
+        "category_code": "categoryCode2",
+        "location_based_list": "locationBasedList2",
+    }
+
     def __init__(self, service_key: str | None = None) -> None:
         settings = get_settings()
+        self.enabled = settings.tourapi_enabled
         self.service_key = service_key or settings.tourapi_service_key
         self.base_url = settings.tourapi_base_url
 
     def area_code(self, region: str | None = None) -> list[dict[str, Any]]:
-        data = self._get("areaCode2", {"numOfRows": 50})
+        data = self.request_operation(self.operation_names["area_code"], {"numOfRows": 50})
         items = _extract_response_items(data)
         if not region:
             return items
@@ -103,7 +162,7 @@ class TourApiProvider:
         params: dict[str, Any] = {"numOfRows": limit, "areaCode": region_code}
         if content_type:
             params["contentTypeId"] = content_type
-        data = self._get("areaBasedList2", params)
+        data = self.request_operation(self.operation_names["area_based_list"], params)
         return [_tourapi_raw_to_item(item) for item in _extract_response_items(data)]
 
     def search_keyword(
@@ -114,7 +173,7 @@ class TourApiProvider:
         limit: int = 20,
     ) -> list[TourismItem]:
         params: dict[str, Any] = {"numOfRows": limit, "keyword": query, "areaCode": region_code}
-        data = self._get("searchKeyword2", params)
+        data = self.request_operation(self.operation_names["search_keyword"], params)
         return [_tourapi_raw_to_item(item) for item in _extract_response_items(data)]
 
     def search_festival(
@@ -130,7 +189,7 @@ class TourApiProvider:
             "areaCode": region_code,
             "eventStartDate": start_date.strftime("%Y%m%d") if start_date else None,
         }
-        data = self._get("searchFestival2", params)
+        data = self.request_operation(self.operation_names["search_festival"], params)
         return [_tourapi_raw_to_item(item, content_type="event") for item in _extract_response_items(data)]
 
     def search_stay(
@@ -140,25 +199,124 @@ class TourApiProvider:
         limit: int = 20,
     ) -> list[TourismItem]:
         params: dict[str, Any] = {"numOfRows": limit, "areaCode": region_code}
-        data = self._get("searchStay2", params)
+        data = self.request_operation(self.operation_names["search_stay"], params)
         return [
             _tourapi_raw_to_item(item, content_type="accommodation")
             for item in _extract_response_items(data)
         ]
 
+    def detail_common(self, *, content_id: str) -> dict[str, Any]:
+        data = self.request_operation(
+            self.operation_names["detail_common"],
+            {"contentId": content_id},
+        )
+        items = _extract_response_items(data)
+        return items[0] if items else {}
+
+    def detail_intro(
+        self,
+        *,
+        content_id: str,
+        content_type_id: str,
+    ) -> dict[str, Any]:
+        data = self.request_operation(
+            self.operation_names["detail_intro"],
+            {
+                "contentId": content_id,
+                "contentTypeId": content_type_id,
+                "numOfRows": 10,
+            },
+        )
+        items = _extract_response_items(data)
+        return items[0] if items else {}
+
+    def detail_info(
+        self,
+        *,
+        content_id: str,
+        content_type_id: str,
+    ) -> list[dict[str, Any]]:
+        data = self.request_operation(
+            self.operation_names["detail_info"],
+            {
+                "contentId": content_id,
+                "contentTypeId": content_type_id,
+                "numOfRows": 100,
+            },
+        )
+        return _extract_response_items(data)
+
+    def detail_images(self, *, content_id: str) -> list[dict[str, Any]]:
+        data = self.request_operation(
+            self.operation_names["detail_images"],
+            {
+                "contentId": content_id,
+                "imageYN": "Y",
+                "numOfRows": 50,
+            },
+        )
+        return _extract_response_items(data)
+
+    def category_code(
+        self,
+        *,
+        cat1: str | None = None,
+        cat2: str | None = None,
+        cat3: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        data = self.request_operation(
+            self.operation_names["category_code"],
+            {"cat1": cat1, "cat2": cat2, "cat3": cat3, "numOfRows": limit},
+        )
+        return _extract_response_items(data)
+
+    def location_based_list(
+        self,
+        *,
+        map_x: float,
+        map_y: float,
+        radius: int = 1000,
+        content_type: str | None = None,
+        limit: int = 20,
+    ) -> list[TourismItem]:
+        params: dict[str, Any] = {
+            "mapX": map_x,
+            "mapY": map_y,
+            "radius": radius,
+            "contentTypeId": content_type,
+            "numOfRows": limit,
+        }
+        data = self.request_operation(self.operation_names["location_based_list"], params)
+        return [_tourapi_raw_to_item(item) for item in _extract_response_items(data)]
+
+    def request_operation(self, operation: str, params: dict[str, Any]) -> dict[str, Any]:
+        return self._get(operation, params)
+
+    def operation_url(self, operation: str) -> str:
+        return f"{self.base_url}/{operation}"
+
     def _get(self, operation: str, params: dict[str, Any]) -> dict[str, Any]:
+        if not self.enabled:
+            raise RuntimeError("TOURAPI_ENABLED is false")
         if not self.service_key:
             raise RuntimeError("TOURAPI_SERVICE_KEY is required for TourApiProvider")
         clean_params = {
             "serviceKey": self.service_key,
             "MobileOS": "ETC",
-            "MobileApp": "TravelOpsAX",
+            "MobileApp": "PARAVOCAAX",
             "_type": "json",
             **{key: value for key, value in params.items() if value is not None},
         }
-        response = httpx.get(f"{self.base_url}/{operation}", params=clean_params, timeout=10)
+        response = httpx.get(self.operation_url(operation), params=clean_params, timeout=10)
         response.raise_for_status()
         data = response.json()
+        top_level_code = str(data.get("resultCode", ""))
+        if top_level_code and top_level_code != "0000":
+            result_message = data.get("resultMsg") or "Unknown TourAPI error"
+            raise RuntimeError(
+                f"TourAPI {operation} failed with resultCode={top_level_code}: {result_message}"
+            )
         header = data.get("response", {}).get("header", {})
         result_code = str(header.get("resultCode", ""))
         if result_code and result_code != "0000":
@@ -274,7 +432,7 @@ def _tourapi_raw_to_item(raw: dict[str, Any], content_type: str | None = None) -
         title=str(raw.get("title", "")),
         region_code=str(raw.get("areacode", "")),
         sigungu_code=str(raw.get("sigungucode")) if raw.get("sigungucode") is not None else None,
-        address=raw.get("addr1"),
+        address=_join_address(raw.get("addr1"), raw.get("addr2")),
         map_x=_float_or_none(raw.get("mapx")),
         map_y=_float_or_none(raw.get("mapy")),
         tel=raw.get("tel"),
@@ -301,6 +459,26 @@ def _content_type_from_id(content_type_id: str) -> str:
     }.get(content_type_id, "attraction")
 
 
+def content_type_to_tourapi_id(content_type: str | None, raw: dict[str, Any] | None = None) -> str:
+    raw_content_type = str((raw or {}).get("contenttypeid") or "")
+    if raw_content_type:
+        return raw_content_type
+    return {
+        "attraction": "12",
+        "culture": "14",
+        "event": "15",
+        "course": "25",
+        "leisure": "28",
+        "accommodation": "32",
+        "shopping": "38",
+        "restaurant": "39",
+    }.get(str(content_type or ""), "12")
+
+
+def tourapi_id_to_content_type(content_type_id: str | None) -> str:
+    return _content_type_from_id(str(content_type_id or ""))
+
+
 def _normalize_yyyymmdd(value: Any) -> str | None:
     text = str(value or "")
     if len(text) != 8:
@@ -313,3 +491,8 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _join_address(addr1: Any, addr2: Any) -> str | None:
+    parts = [str(part).strip() for part in [addr1, addr2] if str(part or "").strip()]
+    return " ".join(parts) if parts else None
