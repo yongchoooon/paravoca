@@ -9,6 +9,7 @@ import {
   Divider,
   Drawer,
   Group,
+  Image,
   Loader,
   Modal,
   MultiSelect,
@@ -800,10 +801,15 @@ export function RunDetail({
       >
         {selectedEvidence ? (
           <Stack gap="sm">
-            <Badge variant="light">{String(selectedEvidence.metadata.content_type ?? "source")}</Badge>
+            <Group gap="xs">
+              <Badge variant="light">{String(selectedEvidence.metadata.content_type ?? "source")}</Badge>
+              <EvidenceDetailBadge row={selectedEvidence} />
+            </Group>
             <Text size="sm" c="dimmed">
               {selectedEvidence.doc_id}
             </Text>
+            <EvidenceImageCandidates row={selectedEvidence} />
+            <EvidenceMetadataSummary row={selectedEvidence} />
             <Text size="sm">{selectedEvidence.content}</Text>
             <Divider />
             <Code block>
@@ -1495,6 +1501,8 @@ function EvidenceTable({
             <Table.Tr>
               <Table.Th>Source</Table.Th>
               <Table.Th>Type</Table.Th>
+              <Table.Th>Detail</Table.Th>
+              <Table.Th>Images</Table.Th>
               <Table.Th>Score</Table.Th>
               <Table.Th>Snippet</Table.Th>
               <Table.Th>Action</Table.Th>
@@ -1509,6 +1517,14 @@ function EvidenceTable({
                 </Table.Td>
                 <Table.Td>
                   <Badge variant="light">{String(row.metadata.content_type ?? "-")}</Badge>
+                </Table.Td>
+                <Table.Td>
+                  <EvidenceDetailBadge row={row} />
+                </Table.Td>
+                <Table.Td>
+                  <Badge variant="light" color={evidenceImageCandidates(row).length > 0 ? "green" : "gray"}>
+                    {evidenceImageCandidates(row).length}
+                  </Badge>
                 </Table.Td>
                 <Table.Td>{row.score}</Table.Td>
                 <Table.Td maw={420}>
@@ -1532,6 +1548,147 @@ function EvidenceTable({
       </ScrollArea>
     </Paper>
   );
+}
+
+type EvidenceImageCandidate = {
+  image_url: string;
+  thumbnail_url?: string;
+  title?: string;
+  usage_status?: string;
+  source?: string;
+};
+
+function EvidenceDetailBadge({ row }: { row: EvidenceDocument }) {
+  const hasDetail = row.metadata.detail_common_available === true || row.metadata.detail_common_available === "true";
+  const detailInfoCount = numberFromMetadata(row.metadata.detail_info_count);
+  if (!hasDetail && detailInfoCount === 0) {
+    return <Badge variant="light" color="gray">basic</Badge>;
+  }
+  return (
+    <Badge variant="light" color="green">
+      detail {detailInfoCount > 0 ? `+ info ${detailInfoCount}` : ""}
+    </Badge>
+  );
+}
+
+function EvidenceMetadataSummary({ row }: { row: EvidenceDocument }) {
+  const detailInfoCount = numberFromMetadata(row.metadata.detail_info_count);
+  const imageCount = evidenceImageCandidates(row).length;
+  const notes = stringListFromMetadata(row.metadata.interpretation_notes);
+  const flags = stringListFromMetadata(row.metadata.data_quality_flags);
+  return (
+    <Paper withBorder p="sm">
+      <Stack gap="xs">
+        <Group gap="xs">
+          <Badge variant="light">content_id: {String(row.metadata.content_id ?? "-")}</Badge>
+          <Badge variant="light">detail info: {detailInfoCount}</Badge>
+          <Badge variant="light">images: {imageCount}</Badge>
+        </Group>
+        {flags.length > 0 ? (
+          <Text size="xs" c="dimmed">Data flags: {flags.join(", ")}</Text>
+        ) : null}
+        {notes.length > 0 ? (
+          <Text size="xs" c="dimmed">{notes.join(" ")}</Text>
+        ) : null}
+      </Stack>
+    </Paper>
+  );
+}
+
+function EvidenceImageCandidates({ row }: { row: EvidenceDocument }) {
+  const candidates = evidenceImageCandidates(row);
+  if (candidates.length === 0) return null;
+
+  return (
+    <Stack gap="xs">
+      <Text fw={700} size="sm">Image candidates</Text>
+      <SimpleGrid cols={{ base: 1, sm: 2 }}>
+        {candidates.slice(0, 4).map((candidate) => (
+          <Paper key={candidate.image_url} withBorder p="xs">
+            <Stack gap={6}>
+              <Image
+                src={candidate.thumbnail_url || candidate.image_url}
+                alt={candidate.title || row.title}
+                h={120}
+                fit="cover"
+                radius="sm"
+              />
+              <Text size="xs" fw={600} lineClamp={1}>
+                {candidate.title || row.title}
+              </Text>
+              <Group gap={6}>
+                <Badge size="xs" variant="light" color="yellow">
+                  {candidate.usage_status || "candidate"}
+                </Badge>
+                <Badge size="xs" variant="light">
+                  {candidate.source || "TourAPI"}
+                </Badge>
+              </Group>
+            </Stack>
+          </Paper>
+        ))}
+      </SimpleGrid>
+    </Stack>
+  );
+}
+
+function evidenceImageCandidates(row: EvidenceDocument): EvidenceImageCandidate[] {
+  const rawCandidates = parseMetadataJson(row.metadata.image_candidates);
+  const candidates = Array.isArray(rawCandidates) ? rawCandidates : [];
+  const normalized = candidates
+    .map((candidate) => {
+      if (!candidate || typeof candidate !== "object") return null;
+      const record = candidate as Record<string, unknown>;
+      const imageUrl = String(record.image_url || "");
+      if (!imageUrl) return null;
+      return {
+        image_url: imageUrl,
+        thumbnail_url: String(record.thumbnail_url || imageUrl),
+        title: record.title ? String(record.title) : row.title,
+        usage_status: record.usage_status ? String(record.usage_status) : "candidate",
+        source: record.source ? String(record.source) : "TourAPI",
+      };
+    })
+    .filter(Boolean) as EvidenceImageCandidate[];
+
+  if (normalized.length > 0) return normalized;
+  const imageUrl = row.metadata.image_url ? String(row.metadata.image_url) : "";
+  return imageUrl
+    ? [
+        {
+          image_url: imageUrl,
+          thumbnail_url: imageUrl,
+          title: row.title,
+          usage_status: "candidate",
+          source: "detail_common",
+        },
+      ]
+    : [];
+}
+
+function parseMetadataJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function stringListFromMetadata(value: unknown): string[] {
+  const parsed = parseMetadataJson(value);
+  if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+  if (typeof parsed === "string" && parsed.trim()) return [parsed.trim()];
+  return [];
+}
+
+function numberFromMetadata(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
 function QASection({

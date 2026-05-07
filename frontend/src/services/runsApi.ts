@@ -62,7 +62,7 @@ export type EvidenceDocument = {
   content: string;
   snippet: string;
   score: number;
-  metadata: Record<string, string | number | boolean>;
+  metadata: Record<string, unknown>;
 };
 
 export type QAIssue = {
