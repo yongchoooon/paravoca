@@ -1,6 +1,6 @@
 # 구현 로드맵
 
-이 문서는 초기 end-to-end 구현 로드맵입니다. Phase 7 이후 실제 구현 순서는 KTO 데이터 보강 계획이 추가되면서 `14_POST_PHASE7_IMPLEMENTATION_PLAN.md`를 우선합니다. 현재 코드 기준으로는 Phase 10.1/10.2까지 구현되어 있고, 다음 단계는 Phase 10.5 UI/운영 화면 정리입니다.
+이 문서는 초기 end-to-end 구현 로드맵입니다. Phase 7 이후 실제 구현 순서는 KTO 데이터 보강 계획이 추가되면서 `14_POST_PHASE7_IMPLEMENTATION_PLAN.md`를 우선합니다. 현재 코드 기준으로는 Phase 10.1/10.2/10.5까지 구현되어 있고, 다음 단계는 Phase 11 evidence 기반 ProductAgent 전환입니다.
 
 ## 구현 원칙
 

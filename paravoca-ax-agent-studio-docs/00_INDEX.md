@@ -16,7 +16,7 @@
 - 평가 자동화: RAG, agent tool call, workflow success, 비용, latency를 측정합니다.
 - 비용 거버넌스: Gemini gateway 사용량 추적, 저가 모델 라우팅, 샘플 기반 eval, batch 실행을 설계합니다.
 
-현재 코드 구현 기준은 Phase 10.1/10.2까지입니다. TourAPI 기본 검색, KorService2 상세 보강, source document/Chroma 색인, local semantic embedding provider, Gemini 기반 Product/Marketing/QA, revision workflow, KTO capability catalog, Run Detail Evidence의 상세 정보/이미지 후보 표시까지 구현되어 있습니다. Phase 9.6에서는 `GeoResolverAgent`를 추가해 자연어 요청에서 지역 의도를 해석하고, TourAPI v4.4 `ldongCode2?lDongListYn=Y`/`lclsSystmCode2` catalog를 기준으로 `lDongRegnCd`/`lDongSignguCd` 검색을 수행합니다. 지역이 애매하면 run status는 `failed`로 저장하고 지역 후보 안내를 표시하며, 해외 목적지는 PARAVOCA 국내 지원 범위 안내로 종료합니다. Phase 10에서는 Data 단계를 `BaselineDataAgent`, `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 4개 API family planner, `EnrichmentExecutor`, `EvidenceFusionAgent`로 분리해 필요한 데이터 보강만 실행하고, Product/Marketing/QA에 넘길 `evidence_profile`, `productization_advice`, `data_coverage`, `unresolved_gaps`를 생성합니다. Phase 10.2에서는 DataGap/Router/Planner/Fusion 판단을 Gemini prompt + JSON schema 기반으로 전환했고, raw 후보 shortlist, compact capability brief, KorService2 상세 보강 전체 처리, 후보별 EvidenceFusion card, prompt debug log, Dashboard task 삭제, QA Review Avoid 표시를 반영했습니다. Phase 10.1에서는 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation shell을 추가했고, Dashboard 안에 summary와 Runs table을 유지한 채 Workflow Preview와 후속 placeholder 화면을 전역 navigation으로 분리했습니다.
+현재 코드 구현 기준은 Phase 10.1/10.2/10.5까지입니다. TourAPI 기본 검색, KorService2 상세 보강, source document/Chroma 색인, local semantic embedding provider, Gemini 기반 Product/Marketing/QA, revision workflow, KTO capability catalog, Run Detail Evidence의 상세 정보/이미지 후보 표시까지 구현되어 있습니다. Phase 9.6에서는 `GeoResolverAgent`를 추가해 자연어 요청에서 지역 의도를 해석하고, TourAPI v4.4 `ldongCode2?lDongListYn=Y`/`lclsSystmCode2` catalog를 기준으로 `lDongRegnCd`/`lDongSignguCd` 검색을 수행합니다. 지역이 애매하면 run status는 `failed`로 저장하고 지역 후보 안내를 표시하며, 해외 목적지는 PARAVOCA 국내 지원 범위 안내로 종료합니다. Phase 10에서는 Data 단계를 `BaselineDataAgent`, `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 4개 API family planner, `EnrichmentExecutor`, `EvidenceFusionAgent`로 분리해 필요한 데이터 보강만 실행하고, Product/Marketing/QA에 넘길 `evidence_profile`, `productization_advice`, `data_coverage`, `unresolved_gaps`를 생성합니다. Phase 10.2에서는 DataGap/Router/Planner/Fusion 판단을 Gemini prompt + JSON schema 기반으로 전환했고, raw 후보 shortlist, compact capability brief, KorService2 상세 보강 전체 처리, 후보별 EvidenceFusion card, prompt debug log, Dashboard task 삭제, QA Review Avoid 표시를 반영했습니다. Phase 10.1에서는 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation shell을 추가했고, Dashboard 안에 summary와 Runs table을 유지한 채 Workflow Preview와 후속 placeholder 화면을 전역 navigation으로 분리했습니다. Phase 10.5에서는 Run Detail의 사용자용 화면과 Developer debug 화면을 분리하고, Data Coverage / Enrichment / Evidence 표시를 운영자가 읽기 쉬운 상태와 문장 중심으로 정리했습니다.
 
 ## 문서 목록
 
@@ -79,6 +79,9 @@
 
 17. [17_PHASE_10_1_APPSHELL_NAVIGATION.md](./17_PHASE_10_1_APPSHELL_NAVIGATION.md)
    - Mantine AppShell Header/Navbar 기반 전역 navigation, Dashboard/Runs table 유지, Workflow Preview 분리, 후속 화면 placeholder 구성
+
+18. [18_PHASE_10_5_UI_OPERATIONS_CLEANUP.md](./18_PHASE_10_5_UI_OPERATIONS_CLEANUP.md)
+   - Run Detail 사용자용/개발자용 화면 분리, Data Coverage/Enrichment/Evidence 표시 정리, placeholder 후속 Phase 문구 정리
 
 99. [99_00_KTO_API_SPEC_INDEX.md](./99_00_KTO_API_SPEC_INDEX.md)
     - KTO/TourAPI API 명세 canonical 인덱스, 99-01부터 99-13까지 서비스별 endpoint/response schema 정규화 문서

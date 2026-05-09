@@ -429,6 +429,8 @@ Agent별 역할:
 
 ## Phase 10.5: UI and Operations Surface Cleanup
 
+구현 상태: 완료. Phase 10.5는 backend workflow를 변경하지 않고 Run Detail과 AppShell placeholder의 정보 구조를 정리한 frontend UI phase입니다.
+
 목표:
 
 - AppShell 전환 이후 사용자용 운영 화면을 정리하고, 개발자용 debug 정보와 일반 사용자용 진행/근거 화면을 분리한다.
@@ -457,6 +459,16 @@ Agent별 역할:
 - Evidence/Data Coverage/Enrichment 패널이 상품화 판단 관점에서 읽히도록 정리된다.
 - placeholder 화면은 future 상태임이 명확하다.
 - frontend build가 통과한다.
+
+구현 결과:
+
+- Run Detail 탭을 `Result Review`, `Evidence + QA`, `Developer`로 정리했습니다.
+- 사용자용 진행 단계는 `요청 확인`, `지역 해석`, `관광 데이터 확인`, `보강 정보 확인`, `상품 초안 생성`, `검수 및 승인`으로 묶었습니다.
+- 상세 agent step, tool call, LLM call, Raw JSON은 `Developer` 탭과 accordion 안으로 이동했습니다.
+- Data Coverage는 충분/일부 부족/부족/정보 없음/확인 필요 상태로 표시합니다.
+- Recommended Data Calls는 호출됨/보류됨/향후 연결 예정/실패함 기준으로 표시합니다.
+- Evidence table은 출처, 지역, 유형, 보강 여부, 이미지 후보, 운영자 확인 여부 중심으로 정리했고 raw geo/lcls code는 기본 화면에서 숨깁니다.
+- Data Sources, Evaluation, Costs, Poster Studio, Settings placeholder 문구를 후속 Phase 기준으로 정리했습니다.
 
 ## Phase 11: Planner, Research, Product Evidence Actualization
 
@@ -733,19 +745,19 @@ Approved or Reviewable Run
 
 ## 다음 구현 시작점
 
-바로 다음 구현은 Phase 10.5 UI and Operations Surface Cleanup부터 시작합니다. Phase 10 Data Enrichment Workflow, Phase 10.1 AppShell Navbar and Global Navigation, Phase 10.2 Gemini Data Enrichment Agent 전환은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 작업은 Phase 12에서 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 진행합니다.
+바로 다음 구현은 Phase 11 Planner, Research, Product Evidence Actualization부터 시작합니다. Phase 10 Data Enrichment Workflow, Phase 10.1 AppShell Navbar and Global Navigation, Phase 10.2 Gemini Data Enrichment Agent 전환, Phase 10.5 UI and Operations Surface Cleanup은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 작업은 Phase 12에서 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 진행합니다.
 
 Codex에게 줄 첫 작업 범위:
 
 ```text
-Phase 10.5: UI and Operations Surface Cleanup을 구현해줘.
+Phase 11: Planner, Research, Product Evidence Actualization을 구현해줘.
 
 범위:
-- Run Detail의 사용자용 진행 단계와 개발자용 상세 단계 분리
-- Data Coverage / Enrichment / Evidence 표시 방식 정리
-- Recommended Data Calls를 사용자가 이해할 수 있는 문장 중심으로 개선
-- debug prompt log, llm_calls, tool_calls는 개발자용 영역으로 분리
-- AppShell placeholder 화면의 future 상태와 후속 연결 계획 정리
+- ProductAgent를 `evidence_profile`, `productization_advice`, `unresolved_gaps` 기반 생성으로 전환
+- ResearchAgent가 evidence profile을 읽고 지역/시즌/타깃/리스크를 요약
+- 근거 없는 운영시간/요금/예약 가능 여부 claim 제한
+- QA가 unresolved gaps와 claim risk를 기준으로 검수하도록 강화
+- 상품 카드와 Result Review가 evidence coverage를 반영하도록 개선
 - backend test와 frontend build로 확인
 
 주의:

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ActionIcon,
+  Accordion,
   Alert,
   Badge,
   Button,
@@ -93,7 +94,7 @@ import {
 } from "./runDetailUtils";
 
 type ApprovalAction = "approve" | "reject" | "request_changes";
-type RunDetailTab = "review" | "evidence" | "logs" | "json";
+type RunDetailTab = "review" | "evidence" | "developer";
 
 type ApprovalModalState = {
   action: ApprovalAction;
@@ -624,14 +625,21 @@ export function RunDetail({
             {run.error ? errorMessage(run.error) : "아직 생성된 result가 없습니다."}
           </Alert>
           <GeoClarificationFromSteps steps={steps} />
-          <WorkflowProgress steps={steps} />
-          <RunLogs
-            run={run}
-            steps={steps}
-            toolCalls={toolCalls}
-            llmCalls={llmCalls}
-            agentExecution={[]}
-          />
+          <UserWorkflowProgress steps={steps} run={run} result={null} />
+          <Accordion variant="contained">
+            <Accordion.Item value="developer">
+              <Accordion.Control>Developer debug</Accordion.Control>
+              <Accordion.Panel>
+                <RunLogs
+                  run={run}
+                  steps={steps}
+                  toolCalls={toolCalls}
+                  llmCalls={llmCalls}
+                  agentExecution={[]}
+                />
+              </Accordion.Panel>
+            </Accordion.Item>
+          </Accordion>
         </Stack>
       </Paper>
     );
@@ -701,7 +709,7 @@ export function RunDetail({
               <Loader size="sm" type="oval" mt={2} />
               <div>
                 <Text fw={700}>Workflow is running</Text>
-                <WorkflowProgress steps={steps} />
+                <UserWorkflowProgress steps={steps} run={run} result={result} />
               </div>
             </Group>
           </Alert>
@@ -709,7 +717,7 @@ export function RunDetail({
 
         {run.status === "failed" && !isGeoClarificationResult(result) ? (
           <Alert color="red" title="Workflow failed">
-            {run.error ? errorMessage(run.error) : "Run Logs의 Errors 탭에서 실패한 step을 확인하세요."}
+            {run.error ? errorMessage(run.error) : "Developer 탭에서 실패한 step과 error log를 확인하세요."}
           </Alert>
         ) : null}
 
@@ -738,11 +746,11 @@ export function RunDetail({
           <Tabs.List>
             <Tabs.Tab value="review">Result Review</Tabs.Tab>
             <Tabs.Tab value="evidence">Evidence + QA</Tabs.Tab>
-            <Tabs.Tab value="logs">Run Logs</Tabs.Tab>
-            <Tabs.Tab value="json">Raw JSON</Tabs.Tab>
+            <Tabs.Tab value="developer">Developer</Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="review" pt="md">
+            <ReviewQaSummary report={result.qa_report} avoidRules={qaAvoidRules} />
             {result.products.length > 0 ? (
               <div className={classes.detailGrid}>
                 <Paper withBorder p="sm" className={classes.productList}>
@@ -783,7 +791,7 @@ export function RunDetail({
                     <Text size="sm">
                       {isActiveRun
                         ? "Workflow output을 아직 생성하고 있습니다."
-                        : "이 run은 실패했을 수 있습니다. 상태와 에러는 Run Logs 또는 Raw JSON에서 확인하세요."}
+                        : "이 run은 실패했을 수 있습니다. 상태와 에러는 Developer 탭에서 확인하세요."}
                     </Text>
                   </div>
                 </Group>
@@ -795,12 +803,12 @@ export function RunDetail({
             <Stack gap="md">
               <Group justify="space-between" align="flex-start">
                 <div>
-                  <Text fw={700} size="sm">Evidence documents</Text>
+                  <Text fw={700} size="sm">근거와 보강 데이터</Text>
                   <Text size="sm" c="dimmed">
-                    Showing {selectedEvidenceRows.length} of {result.retrieved_documents.length}
+                    상품 생성과 QA 검수에 사용된 근거입니다. {selectedEvidenceRows.length} / {result.retrieved_documents.length}건 표시 중입니다.
                     {showSelectedProductEvidenceOnly && selectedProduct
-                      ? ` linked to ${selectedProduct.title}`
-                      : " retrieved documents"}
+                      ? ` 선택한 상품: ${selectedProduct.title}`
+                      : ""}
                   </Text>
                 </div>
                 <Checkbox
@@ -859,38 +867,16 @@ export function RunDetail({
             </Stack>
           </Tabs.Panel>
 
-          <Tabs.Panel value="logs" pt="md">
-            <RunLogs
+          <Tabs.Panel value="developer" pt="md">
+            <DeveloperDebugPanel
               run={run}
+              result={result}
               steps={steps}
               toolCalls={toolCalls}
               llmCalls={llmCalls}
-              agentExecution={result.agent_execution}
+              approvals={approvals}
+              enrichment={enrichment}
             />
-          </Tabs.Panel>
-
-          <Tabs.Panel value="json" pt="md">
-            <Code block className={classes.jsonBlock}>
-              {JSON.stringify(
-                {
-                  run,
-                  result,
-                  revision: {
-                    ...(result?.revision ?? {}),
-                    parent_run_id: run.parent_run_id,
-                    revision_number: run.revision_number,
-                    revision_mode: run.revision_mode,
-                  },
-                  steps,
-                  enrichment,
-                  toolCalls,
-                  llmCalls,
-                  approvals,
-                },
-                null,
-                2
-              )}
-            </Code>
           </Tabs.Panel>
         </Tabs>
       </Stack>
@@ -906,18 +892,24 @@ export function RunDetail({
           <Stack gap="sm">
             <Group gap="xs">
               <Badge variant="light">{evidenceTypeLabel(selectedEvidence)}</Badge>
+              <Badge variant="light" color="blue">{evidenceSourceLabel(selectedEvidence)}</Badge>
+              <Badge variant="light" color="gray">{evidenceRegionLabel(selectedEvidence)}</Badge>
               <EvidenceDetailBadge row={selectedEvidence} />
             </Group>
-            <Text size="sm" c="dimmed">
-              {selectedEvidence.doc_id}
-            </Text>
+            <Text size="sm" c="dimmed">{evidenceSourceDescription(selectedEvidence)}</Text>
             <EvidenceImageCandidates row={selectedEvidence} />
             <EvidenceMetadataSummary row={selectedEvidence} />
             <Text size="sm">{selectedEvidence.content}</Text>
-            <Divider />
-            <Code block>
-              {JSON.stringify(selectedEvidence.metadata, null, 2)}
-            </Code>
+            <Accordion variant="contained">
+              <Accordion.Item value="metadata">
+                <Accordion.Control>Developer metadata</Accordion.Control>
+                <Accordion.Panel>
+                  <Code block>
+                    {JSON.stringify(selectedEvidence.metadata, null, 2)}
+                  </Code>
+                </Accordion.Panel>
+              </Accordion.Item>
+            </Accordion>
           </Stack>
         ) : null}
       </Drawer>
@@ -1161,6 +1153,13 @@ function EnrichmentOverview({
   const gapReasoning = String(recordOrNull(result.data_gap_report)?.reasoning_summary ?? "");
   const routingReasoning = String(recordOrNull(result.enrichment_plan)?.routing_reasoning ?? "");
   const highlights = arrayOfRecords(result.ui_highlights);
+  const coverageCards = [
+    ["상세정보", coverage.detail_info_coverage, "장소 설명과 기본 상세가 충분한지"],
+    ["이미지", coverage.image_coverage, "상품 카드에 쓸 이미지 후보가 있는지"],
+    ["운영시간", coverage.operating_hours_coverage, "방문 가능 시간 정보를 확인했는지"],
+    ["요금", coverage.price_or_fee_coverage, "요금/입장료를 단정할 수 있는지"],
+    ["예약정보", coverage.booking_info_coverage, "예약/문의 조건을 확인했는지"],
+  ] as const;
   if (!latest && !hasCoverage && unresolved.length === 0 && highlights.length === 0) return null;
 
   return (
@@ -1178,22 +1177,30 @@ function EnrichmentOverview({
               신뢰도 {Math.round((result.source_confidence || 0) * 100)}%
             </Badge>
           </Group>
-          <SimpleGrid cols={{ base: 2, sm: 3 }}>
-            <Metric label="상세정보" value={formatCoveragePercent(coverage.detail_info_coverage)} />
-            <Metric label="이미지" value={formatCoveragePercent(coverage.image_coverage)} />
-            <Metric label="운영시간" value={formatCoveragePercent(coverage.operating_hours_coverage)} />
-            <Metric label="요금" value={formatCoveragePercent(coverage.price_or_fee_coverage)} />
-            <Metric label="예약정보" value={formatCoveragePercent(coverage.booking_info_coverage)} />
-            <Metric label="미해결 공백" value={String(unresolved.length)} />
+          <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
+            {coverageCards.map(([label, value, description]) => (
+              <CoverageMetric
+                key={label}
+                label={label}
+                value={value}
+                description={description}
+              />
+            ))}
+            <Paper withBorder p="sm">
+              <Group justify="space-between" align="flex-start" gap="xs">
+                <div>
+                  <Text c="dimmed" size="xs">운영자 확인</Text>
+                  <Text fw={700}>{unresolved.length}</Text>
+                </div>
+                <Badge size="xs" variant="light" color={unresolved.length > 0 ? "yellow" : "green"}>
+                  {unresolved.length > 0 ? "확인 필요" : "추가 확인 없음"}
+                </Badge>
+              </Group>
+              <Text size="xs" c="dimmed" mt={4}>상품에 단정해서 쓰면 안 되는 정보 공백입니다.</Text>
+            </Paper>
           </SimpleGrid>
           {unresolved.length > 0 ? (
-            <Group gap="xs">
-              {gapTypeCounts(unresolved).map(([type, count]) => (
-                <Badge key={type} variant="light" color="yellow">
-                  {gapTypeLabel(type)} {count}
-                </Badge>
-              ))}
-            </Group>
+            <UnresolvedGapSummary gaps={unresolved} />
           ) : (
             <Text size="sm" c="dimmed">현재 Product/QA로 전달할 차단 수준의 미해결 공백은 없습니다.</Text>
           )}
@@ -1231,10 +1238,10 @@ function EnrichmentOverview({
               <Table verticalSpacing="sm">
                 <Table.Thead>
                   <Table.Tr>
-                    <Table.Th>상태</Table.Th>
-                    <Table.Th>출처</Table.Th>
-                    <Table.Th>호출</Table.Th>
-                    <Table.Th>이유</Table.Th>
+                    <Table.Th>처리 상태</Table.Th>
+                    <Table.Th>데이터 종류</Table.Th>
+                    <Table.Th>처리 내용</Table.Th>
+                    <Table.Th>이유와 활용</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
@@ -1242,13 +1249,14 @@ function EnrichmentOverview({
                     <Table.Tr key={row.id}>
                       <Table.Td>
                         <Badge variant="light" color={callStatusColor(row.status)}>
-                          {callStatusLabel(row.status)}
+                          {callStatusLabel(row)}
                         </Badge>
                       </Table.Td>
                       <Table.Td>{sourceFamilyLabel(row.source_family)}</Table.Td>
                       <Table.Td>{toolLabel(row.tool_name)}</Table.Td>
                       <Table.Td>
-                        <Text size="sm" lineClamp={2}>{row.reason}</Text>
+                        <Text size="sm" lineClamp={2}>{humanReadableCallReason(row)}</Text>
+                        <Text size="xs" c="dimmed" lineClamp={1}>{callBusinessValue(row)}</Text>
                       </Table.Td>
                     </Table.Tr>
                   ))}
@@ -1342,6 +1350,133 @@ function RevisionMeta({
   );
 }
 
+function UserWorkflowProgress({
+  steps,
+  run,
+  result,
+}: {
+  steps: AgentStep[];
+  run: WorkflowRun;
+  result: WorkflowResult | null;
+}) {
+  const stages = userWorkflowStages(steps, run, result);
+  return (
+    <Stack gap={6} mt={6}>
+      {stages.map((stage) => (
+        <Group key={stage.key} gap="xs" align="center" wrap="nowrap">
+          <StageIndicator status={stage.status} />
+          <Text size="sm" fw={stage.status === "running" ? 650 : 500}>
+            {stage.label}
+          </Text>
+          <Badge size="xs" color={userStageColor(stage.status)} variant="light">
+            {userStageStatusLabel(stage.status)}
+          </Badge>
+          <Text size="sm" c="dimmed" lineClamp={1}>
+            {stage.description}
+          </Text>
+        </Group>
+      ))}
+    </Stack>
+  );
+}
+
+function userWorkflowStages(
+  steps: AgentStep[],
+  run: WorkflowRun,
+  result: WorkflowResult | null,
+) {
+  const stageGroups = [
+    {
+      key: "request",
+      label: "요청 확인",
+      description: "요청 범위와 상품 개수를 확인합니다.",
+      stepTypes: ["preflight_validation", "planner", "revision_context"],
+    },
+    {
+      key: "geo",
+      label: "지역 해석",
+      description: "자연어 요청에서 국내 지역 범위를 정합니다.",
+      stepTypes: ["geo_resolution"],
+    },
+    {
+      key: "data",
+      label: "관광 데이터 확인",
+      description: "확정된 지역의 기본 관광 데이터를 확인합니다.",
+      stepTypes: ["baseline_data_collection", "research"],
+    },
+    {
+      key: "enrichment",
+      label: "보강 정보 확인",
+      description: "상세 정보, 이미지, 운영 확인 항목을 정리합니다.",
+      stepTypes: [
+        "data_gap_profile",
+        "api_capability_routing",
+        "tourapi_detail_planning",
+        "visual_data_planning",
+        "route_signal_planning",
+        "theme_data_planning",
+        "data_enrichment",
+        "evidence_fusion",
+      ],
+    },
+    {
+      key: "draft",
+      label: "상품 초안 생성",
+      description: "상품안과 마케팅 문구를 생성합니다.",
+      stepTypes: ["product_generation", "marketing_generation", "revision_patch"],
+    },
+    {
+      key: "qa",
+      label: "검수 및 승인",
+      description: "QA 검수 후 사람 검토 단계로 넘깁니다.",
+      stepTypes: ["qa_review", "human_approval"],
+    },
+  ];
+
+  return stageGroups.map((stage) => {
+    const matched = steps.filter((step) => stage.stepTypes.includes(step.step_type));
+    let status = aggregateUserStageStatus(matched, run, result, stage.key);
+    if (run.status === "failed" && stage.key === "qa" && result?.products.length === 0) {
+      status = "pending";
+    }
+    return { ...stage, status };
+  });
+}
+
+function aggregateUserStageStatus(
+  steps: AgentStep[],
+  run: WorkflowRun,
+  result: WorkflowResult | null,
+  key: string,
+) {
+  if (steps.some((step) => step.status === "running")) return "running";
+  if (steps.some((step) => step.status === "failed")) return "failed";
+  if (steps.some((step) => step.status === "succeeded")) return "succeeded";
+  if (key === "request") return "succeeded";
+  if (key === "qa" && result && result.products.length > 0 && run.status !== "running") {
+    return "succeeded";
+  }
+  return "pending";
+}
+
+function userStageStatusLabel(status: string) {
+  return {
+    pending: "대기",
+    running: "진행 중",
+    succeeded: "완료",
+    failed: "확인 필요",
+  }[status] ?? status;
+}
+
+function userStageColor(status: string) {
+  return {
+    pending: "gray",
+    running: "blue",
+    succeeded: "green",
+    failed: "red",
+  }[status] ?? "gray";
+}
+
 function WorkflowProgress({ steps }: { steps: AgentStep[] }) {
   const visibleStages = workflowStages
     .map((stage) => {
@@ -1383,6 +1518,102 @@ function WorkflowProgress({ steps }: { steps: AgentStep[] }) {
       })}
     </Stack>
   );
+}
+
+function DeveloperDebugPanel({
+  run,
+  result,
+  steps,
+  toolCalls,
+  llmCalls,
+  approvals,
+  enrichment,
+}: {
+  run: WorkflowRun;
+  result: WorkflowResult;
+  steps: AgentStep[];
+  toolCalls: ToolCall[];
+  llmCalls: LLMCall[];
+  approvals: Approval[];
+  enrichment: WorkflowEnrichmentSummary | null;
+}) {
+  return (
+    <Stack gap="md">
+      <Alert color="gray">
+        <Text fw={700}>Developer debug</Text>
+        <Text size="sm">
+          이 영역은 내부 agent step, tool call, LLM call, Raw JSON을 확인하기 위한 개발자용 정보입니다.
+          사용자 검토 흐름은 Result Review와 Evidence + QA 탭을 기준으로 확인하세요.
+        </Text>
+      </Alert>
+      <Accordion variant="contained" multiple defaultValue={["logs"]}>
+        <Accordion.Item value="progress">
+          <Accordion.Control>Detailed agent progress</Accordion.Control>
+          <Accordion.Panel>
+            <WorkflowProgress steps={steps} />
+          </Accordion.Panel>
+        </Accordion.Item>
+        <Accordion.Item value="logs">
+          <Accordion.Control>Run logs, tool calls, LLM calls</Accordion.Control>
+          <Accordion.Panel>
+            <RunLogs
+              run={run}
+              steps={steps}
+              toolCalls={toolCalls}
+              llmCalls={llmCalls}
+              agentExecution={result.agent_execution}
+            />
+          </Accordion.Panel>
+        </Accordion.Item>
+        <Accordion.Item value="json">
+          <Accordion.Control>Raw JSON</Accordion.Control>
+          <Accordion.Panel>
+            <Code block className={classes.jsonBlock}>
+              {JSON.stringify(
+                runDebugPayload({ run, result, steps, enrichment, toolCalls, llmCalls, approvals }),
+                null,
+                2
+              )}
+            </Code>
+          </Accordion.Panel>
+        </Accordion.Item>
+      </Accordion>
+    </Stack>
+  );
+}
+
+function runDebugPayload({
+  run,
+  result,
+  steps,
+  enrichment,
+  toolCalls,
+  llmCalls,
+  approvals,
+}: {
+  run: WorkflowRun;
+  result: WorkflowResult;
+  steps: AgentStep[];
+  enrichment: WorkflowEnrichmentSummary | null;
+  toolCalls: ToolCall[];
+  llmCalls: LLMCall[];
+  approvals: Approval[];
+}) {
+  return {
+    run,
+    result,
+    revision: {
+      ...(result.revision ?? {}),
+      parent_run_id: run.parent_run_id,
+      revision_number: run.revision_number,
+      revision_mode: run.revision_mode,
+    },
+    steps,
+    enrichment,
+    toolCalls,
+    llmCalls,
+    approvals,
+  };
 }
 
 function GeoClarificationFromSteps({ steps }: { steps: AgentStep[] }) {
@@ -1529,6 +1760,7 @@ type EnrichmentCallRow = {
   source_family: string;
   tool_name: string;
   reason: string;
+  skip_reason?: string;
 };
 
 function enrichmentCallRows(
@@ -1550,6 +1782,7 @@ function enrichmentCallRows(
           String(error?.message ?? "") ||
           String(summary?.display_name ?? "") ||
           "선택된 보강 계획에 따라 처리했습니다.",
+        skip_reason: String(summary?.skip_reason ?? ""),
       };
     });
   }
@@ -1561,6 +1794,7 @@ function enrichmentCallRows(
     source_family: String(call.source_family ?? ""),
     tool_name: String(call.tool_name ?? ""),
     reason: String(call.reason ?? "보강 후보로 계획되었습니다."),
+    skip_reason: String(call.skip_reason ?? ""),
   }));
   const skipped = arrayOfRecords(plan.skipped_calls).map((call, index) => ({
     id: String(call.id ?? `skipped-${index}`),
@@ -1568,6 +1802,7 @@ function enrichmentCallRows(
     source_family: String(call.source_family ?? ""),
     tool_name: String(call.tool_name ?? ""),
     reason: String(call.reason ?? "") || skipReasonLabel(call.skip_reason),
+    skip_reason: String(call.skip_reason ?? ""),
   }));
   return [...planned, ...skipped];
 }
@@ -1587,6 +1822,68 @@ function formatCoveragePercent(value: unknown) {
   return `${Math.round(numeric * 100)}%`;
 }
 
+function coverageNumeric(value: unknown) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function coverageStatus(value: unknown) {
+  const numeric = coverageNumeric(value);
+  if (numeric === null) return { label: "정보 없음", color: "gray" };
+  if (numeric >= 0.75) return { label: "충분", color: "green" };
+  if (numeric >= 0.35) return { label: "일부 부족", color: "yellow" };
+  return { label: "부족", color: "red" };
+}
+
+function CoverageMetric({
+  label,
+  value,
+  description,
+}: {
+  label: string;
+  value: unknown;
+  description: string;
+}) {
+  const status = coverageStatus(value);
+  return (
+    <Paper withBorder p="sm">
+      <Group justify="space-between" align="flex-start" gap="xs">
+        <div>
+          <Text c="dimmed" size="xs">{label}</Text>
+          <Text fw={700}>{formatCoveragePercent(value)}</Text>
+        </div>
+        <Badge size="xs" variant="light" color={status.color}>
+          {status.label}
+        </Badge>
+      </Group>
+      <Text size="xs" c="dimmed" mt={4}>{description}</Text>
+    </Paper>
+  );
+}
+
+function UnresolvedGapSummary({ gaps }: { gaps: Array<Record<string, unknown>> }) {
+  const visible = gaps.slice(0, 4);
+  return (
+    <Stack gap="xs">
+      <Group gap="xs">
+        {gapTypeCounts(gaps).map(([type, count]) => (
+          <Badge key={type} variant="light" color="yellow">
+            {gapTypeLabel(type)} {count}
+          </Badge>
+        ))}
+      </Group>
+      {visible.map((gap, index) => (
+        <Alert key={`${String(gap.gap_type ?? "gap")}-${index}`} color="yellow">
+          <Text fw={600} size="sm">{gapTypeLabel(String(gap.gap_type ?? "unknown"))}</Text>
+          <Text size="sm">
+            {String(gap.reason ?? gap.description ?? "운영자가 확인해야 하는 정보 공백입니다.")}
+          </Text>
+        </Alert>
+      ))}
+    </Stack>
+  );
+}
+
 function sourceConfidenceColor(value: number) {
   if (value >= 0.75) return "green";
   if (value >= 0.5) return "yellow";
@@ -1603,14 +1900,22 @@ function enrichmentStatusLabel(value: string) {
   }[value] ?? value;
 }
 
-function callStatusLabel(value: string) {
+function callStatusLabel(row: EnrichmentCallRow) {
+  const value = row.status;
+  const skipReason = row.skip_reason || row.reason;
+  if (value === "skipped" && String(skipReason).includes("future_provider_not_implemented")) {
+    return "향후 연결 예정";
+  }
+  if (value === "skipped" && row.source_family !== "kto_tourapi_kor") {
+    return "향후 연결 예정";
+  }
+  if (value === "skipped") return "보류됨";
   return {
-    planned: "계획",
+    planned: "보류됨",
     running: "진행 중",
-    succeeded: "실행",
-    completed: "완료",
-    skipped: "보류",
-    failed: "실패",
+    succeeded: "호출됨",
+    completed: "호출됨",
+    failed: "실패함",
   }[value] ?? value;
 }
 
@@ -1623,6 +1928,38 @@ function callStatusColor(value: string) {
     skipped: "gray",
     failed: "red",
   }[value] ?? "gray";
+}
+
+function humanReadableCallReason(row: EnrichmentCallRow) {
+  if (row.status === "skipped") {
+    return skipReasonLabel(row.skip_reason) || row.reason;
+  }
+  if (row.status === "failed") {
+    return row.reason || "호출 중 오류가 발생했습니다. Developer 탭에서 상세 로그를 확인하세요.";
+  }
+  return row.reason || "부족한 정보를 보강하기 위해 호출했습니다.";
+}
+
+function callBusinessValue(row: EnrichmentCallRow) {
+  if (row.source_family === "kto_tourapi_kor") {
+    return "상세 설명, 이미지 후보, 운영 확인 항목을 상품화 판단에 연결합니다.";
+  }
+  if (row.source_family === "kto_photo_contest" || row.source_family === "kto_tourism_photo") {
+    return "상품 카드와 홍보 소재에 쓸 시각 자료 후보입니다.";
+  }
+  if (
+    row.source_family === "kto_durunubi" ||
+    row.source_family === "kto_related_places" ||
+    row.source_family === "kto_tourism_bigdata" ||
+    row.source_family === "kto_crowding_forecast" ||
+    row.source_family === "kto_regional_tourism_demand"
+  ) {
+    return "동선, 연관 장소, 수요/혼잡 판단에 쓰일 데이터입니다.";
+  }
+  if (row.source_family === "kto_medical") {
+    return "의료관광은 feature flag가 켜진 경우에만 검토합니다.";
+  }
+  return "테마형 상품 구성에 쓸 수 있는 보강 데이터입니다.";
 }
 
 function highlightSeverityColor(value: unknown) {
@@ -2152,13 +2489,15 @@ function EvidenceTable({
         <Table striped highlightOnHover verticalSpacing="sm">
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>Source</Table.Th>
-              <Table.Th>Type</Table.Th>
-              <Table.Th>Detail</Table.Th>
-              <Table.Th>Images</Table.Th>
-              <Table.Th>Score</Table.Th>
-              <Table.Th>Snippet</Table.Th>
-              <Table.Th>Action</Table.Th>
+              <Table.Th>근거</Table.Th>
+              <Table.Th>출처</Table.Th>
+              <Table.Th>지역</Table.Th>
+              <Table.Th>유형</Table.Th>
+              <Table.Th>보강</Table.Th>
+              <Table.Th>이미지</Table.Th>
+              <Table.Th>확인</Table.Th>
+              <Table.Th>요약</Table.Th>
+              <Table.Th></Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -2166,7 +2505,11 @@ function EvidenceTable({
               <Table.Tr key={row.doc_id}>
                 <Table.Td>
                   <Text fw={600} size="sm">{row.title}</Text>
-                  <Text ff="monospace" size="xs" c="dimmed">{row.doc_id}</Text>
+                  <Text size="xs" c="dimmed" lineClamp={1}>{evidenceSourceDescription(row)}</Text>
+                </Table.Td>
+                <Table.Td>{evidenceSourceLabel(row)}</Table.Td>
+                <Table.Td>
+                  <Text size="sm" lineClamp={1}>{evidenceRegionLabel(row)}</Text>
                 </Table.Td>
                 <Table.Td>
                   <Badge variant="light">{evidenceTypeLabel(row)}</Badge>
@@ -2179,7 +2522,9 @@ function EvidenceTable({
                     {evidenceImageCandidates(row).length}
                   </Badge>
                 </Table.Td>
-                <Table.Td>{row.score}</Table.Td>
+                <Table.Td>
+                  <EvidenceReviewBadge row={row} />
+                </Table.Td>
                 <Table.Td maw={420}>
                   <Text size="sm" lineClamp={2}>{row.snippet}</Text>
                 </Table.Td>
@@ -2215,13 +2560,56 @@ function EvidenceDetailBadge({ row }: { row: EvidenceDocument }) {
   const hasDetail = row.metadata.detail_common_available === true || row.metadata.detail_common_available === "true";
   const detailInfoCount = numberFromMetadata(row.metadata.detail_info_count);
   if (!hasDetail && detailInfoCount === 0) {
-    return <Badge variant="light" color="gray">basic</Badge>;
+    return <Badge variant="light" color="gray">기본 정보</Badge>;
   }
   return (
     <Badge variant="light" color="green">
-      detail {detailInfoCount > 0 ? `+ info ${detailInfoCount}` : ""}
+      상세 보강{detailInfoCount > 0 ? ` ${detailInfoCount}` : ""}
     </Badge>
   );
+}
+
+function EvidenceReviewBadge({ row }: { row: EvidenceDocument }) {
+  const flags = stringListFromMetadata(row.metadata.data_quality_flags);
+  const needsReview = flags.length > 0 || String(row.metadata.needs_review ?? "") === "true";
+  if (!needsReview) {
+    return <Badge variant="light" color="green">확인 완료</Badge>;
+  }
+  return <Badge variant="light" color="yellow">확인 필요</Badge>;
+}
+
+function evidenceSourceLabel(row: EvidenceDocument) {
+  const family = String(row.metadata.source_family ?? "");
+  if (family) return sourceFamilyLabel(family);
+  const source = String(row.metadata.source ?? "").toLowerCase();
+  if (source === "tourapi") return "TourAPI";
+  return source || "저장 근거";
+}
+
+function evidenceSourceDescription(row: EvidenceDocument) {
+  const trust = row.metadata.trust_level;
+  const retrievedAt = row.metadata.retrieved_at ? formatKstDateTime(String(row.metadata.retrieved_at)) : "";
+  const trustNumber = Number(trust);
+  const trustLabel = Number.isFinite(trustNumber)
+    ? `신뢰도 ${Math.round(trustNumber * 100)}%`
+    : "신뢰도 확인 필요";
+  return [trustLabel, retrievedAt ? `수집 ${retrievedAt}` : ""].filter(Boolean).join(" · ");
+}
+
+function evidenceRegionLabel(row: EvidenceDocument) {
+  const explicit = String(
+    row.metadata.region_name ??
+      row.metadata.location_name ??
+      row.metadata.area_name ??
+      row.metadata.ldong_name ??
+      ""
+  ).trim();
+  if (explicit) return explicit;
+  const address = String(row.metadata.address ?? "").trim();
+  if (address) {
+    return address.split(/\s+/).slice(0, 2).join(" ");
+  }
+  return "-";
 }
 
 function EvidenceMetadataSummary({ row }: { row: EvidenceDocument }) {
@@ -2233,12 +2621,13 @@ function EvidenceMetadataSummary({ row }: { row: EvidenceDocument }) {
     <Paper withBorder p="sm">
       <Stack gap="xs">
         <Group gap="xs">
-          <Badge variant="light">content_id: {String(row.metadata.content_id ?? "-")}</Badge>
-          <Badge variant="light">detail info: {detailInfoCount}</Badge>
-          <Badge variant="light">images: {imageCount}</Badge>
+          <Badge variant="light">{evidenceSourceLabel(row)}</Badge>
+          <Badge variant="light">{evidenceRegionLabel(row)}</Badge>
+          <Badge variant="light">상세 항목 {detailInfoCount}</Badge>
+          <Badge variant="light">이미지 후보 {imageCount}</Badge>
         </Group>
         {flags.length > 0 ? (
-          <Text size="xs" c="dimmed">Data flags: {flags.join(", ")}</Text>
+          <Text size="xs" c="dimmed">운영자 확인: {flags.map(gapTypeLabel).join(", ")}</Text>
         ) : null}
         {notes.length > 0 ? (
           <Text size="xs" c="dimmed">{notes.join(" ")}</Text>
@@ -2344,6 +2733,45 @@ function numberFromMetadata(value: unknown): number {
   return 0;
 }
 
+function ReviewQaSummary({
+  report,
+  avoidRules,
+}: {
+  report: QAReport;
+  avoidRules: string[];
+}) {
+  return (
+    <Paper withBorder p="md" mb="md">
+      <Group justify="space-between" align="flex-start">
+        <div>
+          <Text fw={700}>QA 요약</Text>
+          <Text size="sm" c="dimmed">{report.summary}</Text>
+          {avoidRules.length > 0 ? (
+            <Group gap="xs" mt={6}>
+              <Text size="xs" c="dimmed" fw={600}>Avoid</Text>
+              {avoidRules.map((rule) => (
+                <Badge key={rule} size="sm" variant="light" color="gray">
+                  {rule}
+                </Badge>
+              ))}
+            </Group>
+          ) : null}
+        </div>
+        <Group gap="xs">
+          <Badge color={report.overall_status === "pass" ? "green" : "yellow"} variant="light">
+            {report.overall_status}
+          </Badge>
+          {report.issues.length > 0 ? (
+            <Badge color="yellow" variant="light">
+              확인 {report.issues.length}
+            </Badge>
+          ) : null}
+        </Group>
+      </Group>
+    </Paper>
+  );
+}
+
 function QASection({
   report,
   products,
@@ -2421,7 +2849,7 @@ function QASection({
       {report.issues.length === 0 ? (
         <Alert color={hasSummaryFailure ? "yellow" : "green"}>
           {hasSummaryFailure
-            ? "QA 요약에는 이슈가 있다고 표시되었지만 상세 이슈가 없습니다. Raw JSON에서 qa_report를 확인하세요."
+            ? "QA 요약에는 이슈가 있다고 표시되었지만 상세 이슈가 없습니다. Developer 탭에서 qa_report를 확인하세요."
             : "검수에서 차단 수준의 이슈가 없습니다."}
         </Alert>
       ) : (

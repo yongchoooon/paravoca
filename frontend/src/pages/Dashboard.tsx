@@ -1348,43 +1348,43 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
 
   const placeholderCopy: Partial<Record<AppSection, { phase: string; items: string[] }>> = {
     "data-sources": {
-      phase: "Phase 12 이후",
+      phase: "Phase 12",
       items: [
-        "KTO 추가 API 연결 상태",
-        "source family별 활성화 여부",
-        "catalog sync와 데이터 보강 이력",
+        "Visual, Route/Signal, Theme 계열 KTO API 실제 연결",
+        "source family별 활성화 상태와 보강 이력",
+        "catalog sync, cache, reindex 상태 표시",
       ],
     },
     evaluation: {
       phase: "Phase 11 이후",
       items: [
-        "근거 기반 상품 생성 품질 평가",
-        "QA risk와 unresolved gap 추적",
+        "evidence 기반 상품 생성 품질 평가",
+        "claim risk와 unresolved gap 추적",
         "revision 전후 비교",
       ],
     },
     costs: {
-      phase: "후속 운영 단계",
+      phase: "Phase 13 또는 운영 단계",
       items: [
         "LLM provider별 토큰 사용량",
         "run별 비용 추적",
-        "debug prompt log와 비용 분석 연결",
+        "prompt debug log와 비용 분석 연결",
       ],
     },
     "poster-studio": {
-      phase: "후속 콘텐츠 단계",
+      phase: "Phase 13 이후 또는 별도 후속 단계",
       items: [
         "승인된 상품의 포스터 초안",
-        "이미지 asset과 카피 조합",
+        "이미지 asset과 홍보 문구 조합",
         "채널별 홍보 소재 변형",
       ],
     },
     settings: {
-      phase: "후속 운영 단계",
+      phase: "Phase 13 운영 설정",
       items: [
         "feature flag와 API 활성화 설정",
         "Agent별 token budget",
-        "workflow 표시 수준 설정",
+        "사용자용/개발자용 workflow 표시 수준 설정",
       ],
     },
   };
@@ -1401,7 +1401,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
           </Badge>
         </Group>
         <Text size="sm" c="dimmed">
-          이 화면은 아직 실제 기능이 연결되지 않았습니다. 현재는 AppShell navigation 구조를 먼저 잡아둔 상태입니다.
+          이 화면은 아직 실제 기능이 연결되지 않았습니다. 현재는 AppShell navigation에서 후속 Phase 진입점을 명확히 보여주기 위한 placeholder입니다.
         </Text>
         <Text size="sm" fw={700}>예정 범위: {placeholder.phase}</Text>
         <Stack gap={4}>

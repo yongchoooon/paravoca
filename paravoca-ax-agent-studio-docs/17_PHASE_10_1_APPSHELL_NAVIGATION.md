@@ -118,8 +118,8 @@ PATH=/Users/yongchoooon/miniforge3/envs/paravoca-ax-agent-studio/bin:$PATH npm r
 
 backend는 변경하지 않았으므로 backend test는 생략했습니다.
 
-## 다음 단계
+## 후속 진행
 
-다음 구현은 Phase 10.5입니다.
+Phase 10.5는 이후 구현 완료되었습니다.
 
-Phase 10.5에서는 AppShell 이후 사용자용 운영 화면을 다듬고, 개발자용 debug 정보와 일반 사용자용 진행/근거 화면을 분리합니다. Run Detail에서 내부 agent 단계가 과도하게 보이는 문제, Data Coverage / Enrichment / Evidence 표시 방식, 후속 Data Sources/Evaluation/Costs 화면으로 연결될 정보 구조를 정리합니다.
+Phase 10.5에서는 AppShell 이후 사용자용 운영 화면을 다듬고, 개발자용 debug 정보와 일반 사용자용 진행/근거 화면을 분리했습니다. Run Detail에서 내부 agent 단계가 과도하게 보이는 문제, Data Coverage / Enrichment / Evidence 표시 방식, 후속 Data Sources/Evaluation/Costs 화면으로 연결될 정보 구조를 정리했습니다.
