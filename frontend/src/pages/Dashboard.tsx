@@ -13,7 +13,6 @@ import {
   SimpleGrid,
   Stack,
   Table,
-  Tabs,
   Text,
   TextInput,
   Textarea,
@@ -36,6 +35,7 @@ import { ApiError } from "../services/apiClient";
 import { StatusBadge } from "../components/StatusBadge";
 import { RunDetail } from "./RunDetail";
 import { formatKstDateTime } from "../utils/datetime";
+import type { AppSection } from "../components/AppShellLayout/AppShellLayout";
 import classes from "./Dashboard.module.css";
 
 function WorkflowNodeLabel({
@@ -767,7 +767,7 @@ function RunTableRow({
   );
 }
 
-export function Dashboard() {
+export function Dashboard({ activeSection }: { activeSection: AppSection }) {
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [templateCount, setTemplateCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -778,7 +778,6 @@ export function Dashboard() {
   const [selectedDeleteRunIds, setSelectedDeleteRunIds] = useState<string[]>([]);
   const [deletingRuns, setDeletingRuns] = useState(false);
   const [expandedRootIds, setExpandedRootIds] = useState<string[]>([]);
-  const [activeTab, setActiveTab] = useState("runs");
   const [workflowFlow, setWorkflowFlow] = useState<ReactFlowInstance | null>(null);
   const workflowPreviewRef = useRef<HTMLDivElement | null>(null);
   const workflowCenterTimers = useRef<number[]>([]);
@@ -951,13 +950,13 @@ export function Dashboard() {
   }
 
   useEffect(() => {
-    if (activeTab !== "workflow" || !workflowFlow) return;
+    if (activeSection !== "workflow" || !workflowFlow) return;
     scheduleWorkflowCenter(workflowFlow);
     return () => {
       workflowCenterTimers.current.forEach((timer) => window.clearTimeout(timer));
       workflowCenterTimers.current = [];
     };
-  }, [activeTab, workflowFlow]);
+  }, [activeSection, workflowFlow]);
 
   async function handleCreateRun(values: typeof form.values) {
     try {
@@ -1115,20 +1114,76 @@ export function Dashboard() {
     );
   });
 
-  return (
-    <Stack gap="md">
-      <Group className={classes.toolbar} justify="space-between">
-        <div>
-          <Title order={2}>Dashboard</Title>
-          <Text c="dimmed" size="sm">
-            공공 관광 데이터를 상품 초안, 근거 문서, QA 검수, 승인 흐름으로 연결합니다.
-          </Text>
-        </div>
+  const sectionCopy: Record<AppSection, { title: string; description: string }> = {
+    dashboard: {
+      title: "Dashboard",
+      description: "공공 관광 데이터를 상품 초안, 근거 문서, QA 검수, 승인 흐름으로 연결합니다.",
+    },
+    workflow: {
+      title: "Workflow Preview",
+      description: "현재 코드에 구현된 agent 실행 흐름과 조건부 데이터 보강 경로를 확인합니다.",
+    },
+    "data-sources": {
+      title: "Data Sources",
+      description: "KTO/TourAPI와 향후 연결할 데이터 소스 상태를 관리할 화면입니다.",
+    },
+    evaluation: {
+      title: "Evaluation",
+      description: "상품 초안과 근거 품질 평가를 모아 볼 화면입니다.",
+    },
+    costs: {
+      title: "Costs",
+      description: "LLM 호출 비용과 토큰 사용량을 운영 관점에서 볼 화면입니다.",
+    },
+    "poster-studio": {
+      title: "Poster Studio",
+      description: "승인된 상품을 포스터와 홍보 소재로 확장할 화면입니다.",
+    },
+    settings: {
+      title: "Settings",
+      description: "Agent, API, workflow 실행 옵션을 관리할 화면입니다.",
+    },
+  };
+
+  const currentSection = sectionCopy[activeSection];
+
+  const sectionHeader = (
+    <Group className={classes.toolbar} justify="space-between">
+      <div>
+        <Title order={2}>{currentSection.title}</Title>
+        <Text c="dimmed" size="sm">
+          {currentSection.description}
+        </Text>
+      </div>
+      {activeSection === "dashboard" ? (
         <Button leftSection={<IconPlayerPlay size={16} />} onClick={openCreateRunModal}>
           New run
         </Button>
-      </Group>
+      ) : null}
+    </Group>
+  );
 
+  const statusAlerts = (
+    <>
+      {error ? (
+        <Alert color="red" icon={<IconAlertCircle size={16} />}>
+          {error}
+        </Alert>
+      ) : null}
+
+      {selectedRun && ACTIVE_RUN_STATUSES.has(selectedRun.status) ? (
+        <Alert color="blue">
+          <Text fw={700}>Workflow is running</Text>
+          <Text size="sm">
+            {getRunTitle(selectedRun)} is being processed. Status will refresh automatically.
+          </Text>
+        </Alert>
+      ) : null}
+    </>
+  );
+
+  const dashboardSummary = (
+    <Stack gap="md">
       <Paper withBorder p="md" className={classes.overviewPanel}>
         <Group justify="space-between" align="flex-start">
           <div>
@@ -1147,20 +1202,7 @@ export function Dashboard() {
         </Group>
       </Paper>
 
-      {error ? (
-        <Alert color="red" icon={<IconAlertCircle size={16} />}>
-          {error}
-        </Alert>
-      ) : null}
-
-      {selectedRun && ACTIVE_RUN_STATUSES.has(selectedRun.status) ? (
-        <Alert color="blue">
-          <Text fw={700}>Workflow is running</Text>
-          <Text size="sm">
-            {getRunTitle(selectedRun)} is being processed. Status will refresh automatically.
-          </Text>
-        </Alert>
-      ) : null}
+      {statusAlerts}
 
       <SimpleGrid cols={{ base: 1, sm: 3 }}>
         <Paper withBorder p="md">
@@ -1176,137 +1218,219 @@ export function Dashboard() {
           <Title order={3}>{loading ? "-" : templateCount}</Title>
         </Paper>
       </SimpleGrid>
+    </Stack>
+  );
 
-      <Tabs value={activeTab} onChange={(value) => setActiveTab(value ?? "runs")}>
-        <Tabs.List>
-          <Tabs.Tab value="runs">Runs</Tabs.Tab>
-          <Tabs.Tab value="workflow">Workflow preview</Tabs.Tab>
-        </Tabs.List>
-
-        <Tabs.Panel value="runs" pt="md">
-          <Group justify="space-between" mb="xs">
-            <Checkbox
-              label="전체 선택"
-              checked={allVisibleSelected}
-              indeterminate={someVisibleSelected}
-              disabled={selectableRunIds.length === 0}
-              onChange={(event) => toggleSelectAllVisible(event.currentTarget.checked)}
-            />
-            <Button
-              color="red"
-              variant="light"
-              leftSection={<IconTrash size={16} />}
-              disabled={selectedDeleteCount === 0}
-              loading={deletingRuns}
-              onClick={deleteSelectedRuns}
-            >
-              선택 삭제{selectedDeleteCount > 0 ? ` (${selectedDeleteCount})` : ""}
-            </Button>
-          </Group>
-          <Paper withBorder className={classes.tablePanel}>
-            <Table striped highlightOnHover verticalSpacing="sm" className={classes.runsTable}>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th className={classes.selectColumn}>
-                    <Checkbox
-                      size="xs"
-                      checked={allVisibleSelected}
-                      indeterminate={someVisibleSelected}
-                      disabled={selectableRunIds.length === 0}
-                      aria-label="보이는 task 전체 선택"
-                      onChange={(event) => toggleSelectAllVisible(event.currentTarget.checked)}
-                    />
-                  </Table.Th>
-                  <Table.Th className={classes.taskColumn}>Task</Table.Th>
-                  <Table.Th className={classes.statusColumn}>Status</Table.Th>
-                  <Table.Th className={classes.regionColumn}>Geo</Table.Th>
-                  <Table.Th className={classes.productsColumn}>Products</Table.Th>
-                  <Table.Th className={classes.revisionsColumn}>Revisions</Table.Th>
-                  <Table.Th className={classes.createdColumn}>Created</Table.Th>
-                  <Table.Th className={classes.actionColumn}>Action</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {rows.length > 0 ? rows : (
-                  <Table.Tr>
-                    <Table.Td colSpan={8}>
-                      <Text c="dimmed" ta="center" py="lg">
-                        No workflow runs yet.
-                      </Text>
-                    </Table.Td>
-                  </Table.Tr>
-                )}
-              </Table.Tbody>
-            </Table>
-          </Paper>
-        </Tabs.Panel>
-
-        <Tabs.Panel value="workflow" pt="md">
-          <Stack gap="sm">
-            <Paper withBorder p="md">
-              <Group justify="space-between" align="flex-start">
-                <div>
-                  <Text fw={700}>Implemented workflow map</Text>
-                  <Text size="sm" c="dimmed">
-                    이 preview는 현재 구현된 실행 흐름을 요약합니다. 점선은 조건이 맞을 때만 실행되는 선택 경로입니다.
+  const runsTable = (
+    <Stack gap="md">
+      <Group justify="space-between" mb="xs">
+        <Checkbox
+          label="전체 선택"
+          checked={allVisibleSelected}
+          indeterminate={someVisibleSelected}
+          disabled={selectableRunIds.length === 0}
+          onChange={(event) => toggleSelectAllVisible(event.currentTarget.checked)}
+        />
+        <Button
+          color="red"
+          variant="light"
+          leftSection={<IconTrash size={16} />}
+          disabled={selectedDeleteCount === 0}
+          loading={deletingRuns}
+          onClick={deleteSelectedRuns}
+        >
+          선택 삭제{selectedDeleteCount > 0 ? ` (${selectedDeleteCount})` : ""}
+        </Button>
+      </Group>
+      <Paper withBorder className={classes.tablePanel}>
+        <Table striped highlightOnHover verticalSpacing="sm" className={classes.runsTable}>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th className={classes.selectColumn}>
+                <Checkbox
+                  size="xs"
+                  checked={allVisibleSelected}
+                  indeterminate={someVisibleSelected}
+                  disabled={selectableRunIds.length === 0}
+                  aria-label="보이는 task 전체 선택"
+                  onChange={(event) => toggleSelectAllVisible(event.currentTarget.checked)}
+                />
+              </Table.Th>
+              <Table.Th className={classes.taskColumn}>Task</Table.Th>
+              <Table.Th className={classes.statusColumn}>Status</Table.Th>
+              <Table.Th className={classes.regionColumn}>Geo</Table.Th>
+              <Table.Th className={classes.productsColumn}>Products</Table.Th>
+              <Table.Th className={classes.revisionsColumn}>Revisions</Table.Th>
+              <Table.Th className={classes.createdColumn}>Created</Table.Th>
+              <Table.Th className={classes.actionColumn}>Action</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {rows.length > 0 ? rows : (
+              <Table.Tr>
+                <Table.Td colSpan={8}>
+                  <Text c="dimmed" ta="center" py="lg">
+                    No workflow runs yet.
                   </Text>
-                </div>
-                <Group gap="xs">
-                  <Badge variant="light" color="opsBlue">Agent</Badge>
-                  <Badge variant="light" color="teal">Decision</Badge>
-                  <Badge variant="light" color="red">Exit action</Badge>
-                  <Badge variant="light" color="grape">Revision</Badge>
-                  <Badge variant="outline" color="gray">Dashed = exit/revision</Badge>
-                </Group>
-              </Group>
-            </Paper>
+                </Table.Td>
+              </Table.Tr>
+            )}
+          </Table.Tbody>
+        </Table>
+      </Paper>
+    </Stack>
+  );
 
-            <Paper withBorder className={classes.workflowPreview} ref={workflowPreviewRef}>
-              {activeTab === "workflow" ? (
-                <ReactFlow
-                  nodes={workflowNodes}
-                  edges={workflowEdges}
-                  nodeTypes={workflowNodeTypes}
-                  defaultViewport={{ x: 60, y: 48, zoom: 0.7 }}
-                  onInit={(instance) => {
-                    setWorkflowFlow(instance);
-                    scheduleWorkflowCenter(instance);
-                  }}
-                  minZoom={0.25}
-                  maxZoom={1.3}
-                  nodesDraggable={false}
-                  nodesConnectable={false}
-                  elementsSelectable={false}
-                >
-                  <Background />
-                  <Controls showInteractive={false} />
-                </ReactFlow>
-              ) : null}
-            </Paper>
+  const workflowPreview = (
+    <Stack gap="sm">
+      <Paper withBorder p="md">
+        <Group justify="space-between" align="flex-start">
+          <div>
+            <Text fw={700}>Implemented workflow map</Text>
+            <Text size="sm" c="dimmed">
+              이 preview는 현재 구현된 실행 흐름을 요약합니다. 일부 데이터 보강 경로는 필요한 경우에만 실행됩니다.
+            </Text>
+          </div>
+          <Group gap="xs">
+            <Badge variant="light" color="opsBlue">Agent</Badge>
+            <Badge variant="light" color="teal">Decision</Badge>
+            <Badge variant="light" color="red">Exit action</Badge>
+            <Badge variant="light" color="grape">Revision</Badge>
+          </Group>
+        </Group>
+      </Paper>
 
-            <SimpleGrid cols={{ base: 1, md: 3 }}>
-              <Paper withBorder p="md">
-                <Text fw={700} size="sm">Normal run</Text>
-                <Text size="sm" c="dimmed">
-                  새 요청은 지역 확정, 기본 관광 데이터 수집, 부족한 정보 판단을 거친 뒤 필요한 경우에만 보강 API 계획과 근거 병합 경로를 탑니다.
-                </Text>
-              </Paper>
-              <Paper withBorder p="md">
-                <Text fw={700} size="sm">Geo exits</Text>
-                <Text size="sm" c="dimmed">
-                  `중구`처럼 후보가 여러 개인 요청은 실패 상태로 멈추고 후보를 보여줍니다. 해외 목적지는 PARAVOCA 국내 지원 안내로 종료하며, 사용자는 지역명을 보강해 새 run을 만들 수 있습니다.
-                </Text>
-              </Paper>
-              <Paper withBorder p="md">
-                <Text fw={700} size="sm">Revision run</Text>
-                <Text size="sm" c="dimmed">
-                  기존 run은 덮어쓰지 않습니다. 직접 수정은 QA만 다시 실행하고, AI 수정은 선택한 QA 이슈를 patch한 뒤 QA와 승인을 다시 거칩니다.
-                </Text>
-              </Paper>
-            </SimpleGrid>
-          </Stack>
-        </Tabs.Panel>
-      </Tabs>
+      <Paper withBorder className={classes.workflowPreview} ref={workflowPreviewRef}>
+        {activeSection === "workflow" ? (
+          <ReactFlow
+            nodes={workflowNodes}
+            edges={workflowEdges}
+            nodeTypes={workflowNodeTypes}
+            defaultViewport={{ x: 60, y: 48, zoom: 0.7 }}
+            onInit={(instance) => {
+              setWorkflowFlow(instance);
+              scheduleWorkflowCenter(instance);
+            }}
+            minZoom={0.25}
+            maxZoom={1.3}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            elementsSelectable={false}
+          >
+            <Background />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+        ) : null}
+      </Paper>
+
+      <SimpleGrid cols={{ base: 1, md: 3 }}>
+        <Paper withBorder p="md">
+          <Text fw={700} size="sm">Normal run</Text>
+          <Text size="sm" c="dimmed">
+            새 요청은 사전 검증, 지역 확정, 기본 관광 데이터 수집, 부족한 정보 판단을 거친 뒤 필요한 경우에만 보강 API 계획과 근거 병합 경로를 탑니다.
+          </Text>
+        </Paper>
+        <Paper withBorder p="md">
+          <Text fw={700} size="sm">Geo exits</Text>
+          <Text size="sm" c="dimmed">
+            `중구`처럼 후보가 여러 개인 요청은 실패 상태로 멈추고 후보를 보여줍니다. 해외 목적지는 PARAVOCA 국내 지원 안내로 종료하며, 사용자는 지역명을 보강해 새 run을 만들 수 있습니다.
+          </Text>
+        </Paper>
+        <Paper withBorder p="md">
+          <Text fw={700} size="sm">Revision run</Text>
+          <Text size="sm" c="dimmed">
+            기존 run은 덮어쓰지 않습니다. 직접 수정은 QA만 다시 실행하고, AI 수정은 선택한 QA 이슈를 patch한 뒤 QA와 승인을 다시 거칩니다.
+          </Text>
+        </Paper>
+      </SimpleGrid>
+    </Stack>
+  );
+
+  const placeholderCopy: Partial<Record<AppSection, { phase: string; items: string[] }>> = {
+    "data-sources": {
+      phase: "Phase 12 이후",
+      items: [
+        "KTO 추가 API 연결 상태",
+        "source family별 활성화 여부",
+        "catalog sync와 데이터 보강 이력",
+      ],
+    },
+    evaluation: {
+      phase: "Phase 11 이후",
+      items: [
+        "근거 기반 상품 생성 품질 평가",
+        "QA risk와 unresolved gap 추적",
+        "revision 전후 비교",
+      ],
+    },
+    costs: {
+      phase: "후속 운영 단계",
+      items: [
+        "LLM provider별 토큰 사용량",
+        "run별 비용 추적",
+        "debug prompt log와 비용 분석 연결",
+      ],
+    },
+    "poster-studio": {
+      phase: "후속 콘텐츠 단계",
+      items: [
+        "승인된 상품의 포스터 초안",
+        "이미지 asset과 카피 조합",
+        "채널별 홍보 소재 변형",
+      ],
+    },
+    settings: {
+      phase: "후속 운영 단계",
+      items: [
+        "feature flag와 API 활성화 설정",
+        "Agent별 token budget",
+        "workflow 표시 수준 설정",
+      ],
+    },
+  };
+
+  const placeholder = placeholderCopy[activeSection];
+
+  const plannedView = placeholder ? (
+    <Paper withBorder p="md">
+      <Stack gap="sm">
+        <Group justify="space-between" align="center">
+          <Text fw={700}>{currentSection.title}</Text>
+          <Badge variant="light" color="gray">
+            향후 연결 예정
+          </Badge>
+        </Group>
+        <Text size="sm" c="dimmed">
+          이 화면은 아직 실제 기능이 연결되지 않았습니다. 현재는 AppShell navigation 구조를 먼저 잡아둔 상태입니다.
+        </Text>
+        <Text size="sm" fw={700}>예정 범위: {placeholder.phase}</Text>
+        <Stack gap={4}>
+          {placeholder.items.map((item) => (
+            <Text key={item} size="sm" c="dimmed">
+              - {item}
+            </Text>
+          ))}
+        </Stack>
+      </Stack>
+    </Paper>
+  ) : null;
+
+  const activeContent =
+    activeSection === "dashboard"
+      ? (
+        <Stack gap="md">
+          {dashboardSummary}
+          {runsTable}
+        </Stack>
+      )
+        : activeSection === "workflow"
+          ? workflowPreview
+          : plannedView;
+
+  return (
+    <Stack gap="md">
+      {sectionHeader}
+      {activeContent}
 
       <Drawer
         opened={selectedRunId !== null}

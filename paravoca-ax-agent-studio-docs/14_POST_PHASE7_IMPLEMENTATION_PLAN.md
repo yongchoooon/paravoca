@@ -385,18 +385,18 @@ Agent별 역할:
 
 작업:
 
-- `frontend/src/layouts/AppShellLayout/` 또는 동등한 공통 layout module 추가
+- `frontend/src/components/AppShellLayout/` 공통 layout module 추가
 - Mantine `AppShell.Header`, `AppShell.Navbar`, `AppShell.Main`, mobile `Burger` 구현
 - 좌측 navigation item 구성:
   - Dashboard
-  - Runs
-  - Workflow Preview 또는 Workflows
+  - Workflow Preview
   - Data Sources
   - Evaluation
   - Costs
   - Poster Studio
   - Settings
 - 현재 Dashboard 기능을 `AppShell.Main` 안으로 이동하되 기존 run 생성, run table, Run Detail drawer, workflow preview 동작은 유지
+- `Runs`는 별도 전역 nav item으로 두지 않고 Dashboard 안에 summary와 table을 함께 유지
 - 아직 구현되지 않은 화면은 빈 route 또는 disabled/future nav item으로 표시하고, 실제 기능을 만든 것처럼 보이게 하지 않음
 - active route highlight, collapsed mobile state, header action area, notification 영역 정리
 - Dashboard 내부에서만 쓰던 navigation성 탭은 전역 navbar와 역할이 겹치지 않도록 재정리
@@ -412,72 +412,51 @@ Agent별 역할:
 완료 기준:
 
 - 첫 화면 진입 시 Mantine `AppShell.Navbar`가 표시된다.
-- Dashboard, Runs, Workflow Preview의 기존 사용 흐름이 깨지지 않는다.
+- Dashboard 안에서 summary와 Runs table의 기존 사용 흐름이 깨지지 않는다.
+- Workflow Preview는 전역 Navbar에서 독립적으로 접근할 수 있다.
 - mobile width에서는 navbar가 `Burger`로 접히고 펼쳐진다.
 - 아직 미구현인 화면은 명확히 future/disabled 상태로 보인다.
 - `npm run build`가 통과한다.
 
-## Phase 10.5: Cached Fetch and Scheduled Sync
+구현 결과:
+
+- Phase 10.1은 구현 완료되었습니다.
+- `AppShellLayout`이 `activeSection`을 받아 Header/Navbar/Main을 렌더링합니다.
+- Dashboard는 기존처럼 summary와 Runs table을 함께 보여줍니다.
+- Dashboard 내부 `Tabs`는 제거했고, Workflow Preview는 전역 Navbar에서 접근합니다.
+- Data Sources, Evaluation, Costs, Poster Studio, Settings는 `향후 연결 예정` placeholder입니다.
+- frontend production build가 통과했습니다.
+
+## Phase 10.5: UI and Operations Surface Cleanup
 
 목표:
 
-- 사용자가 실행할 때마다 모든 데이터를 새로 가져오는 구조에서 벗어나, 자주 쓰는 지역과 데이터는 미리 쌓아두고 갱신한다.
+- AppShell 전환 이후 사용자용 운영 화면을 정리하고, 개발자용 debug 정보와 일반 사용자용 진행/근거 화면을 분리한다.
 
 원칙:
 
-- 전국 전체 데이터를 처음부터 모두 수집하지 않는다.
-- 데모와 상품 품질에 중요한 지역부터 사전 수집한다.
-- 사용자가 요청한 지역은 on-demand로 수집하고, 반복 사용되는 지역은 scheduled sync 대상으로 승격한다.
-- TTL이 유효한 데이터는 API를 다시 호출하지 않고 cache를 사용한다.
-
-우선 지역:
-
-- 부산
-- 서울
-- 제주
-- 강원
-- 경주
-
-권장 TTL:
-
-| 데이터 | TTL |
-|---|---:|
-| 지역코드 | 30일 |
-| 분류코드 | 30일 |
-| 관광지 상세 | 7일 |
-| 행사정보 | 1일 |
-| 이미지정보 | 7일 |
-| 관광사진/공모전 사진 | 7일 |
-| 연관 관광지 | 7일 |
-| 집중률 예측 | 1일 |
-| 수요 지표 | 원 데이터 갱신 주기에 맞춤 |
-| 공식 웹 근거 | 1일~7일, 가격/예약/취소 정책은 짧게 |
+- 일반 사용자는 내부 agent 이름과 planner lane을 모두 볼 필요가 없다.
+- 개발자와 운영자는 debug 모드에서 상세 단계, prompt log, tool call을 확인할 수 있어야 한다.
+- Evidence, Data Coverage, Enrichment 정보는 raw JSON보다 상품화 판단에 도움이 되는 문장과 상태 중심으로 보여준다.
+- 아직 연결되지 않은 Data Sources/Evaluation/Costs/Poster Studio/Settings는 실제 기능처럼 보이면 안 된다.
 
 작업:
 
-- cache lookup layer 추가
-- `last_synced_at`, `retrieved_at`, TTL 기준 stale 판단
-- 사전 수집 command 추가
-- scheduled sync command 추가
-- sync 대상 region/source family 설정 추가
-- sync 실행 결과를 `enrichment_runs`와 `enrichment_tool_calls`에 기록
-- 실패한 API 호출은 workflow 전체를 깨지 않되 sync log에 남김
-- frontend Data Sources 화면에서 cache/sync 상태 표시
-
-명령 후보:
-
-```text
-python -m app.data.sync --region-code 6 --source kto_tourapi_kor --mode detail
-python -m app.data.sync --region-code 6 --source kto_tourism_photo --mode visual
-python -m app.data.reindex --source source_documents
-```
+- Run Detail의 진행 단계 표시를 사용자용 요약 단계와 개발자용 상세 단계로 분리
+- Data Coverage / Enrichment / Evidence 표시 방식 정리
+- Evidence table에서 사용자에게 불필요한 raw geo/lcls code와 내부 field 노출 방지 정책 유지
+- Recommended Data Calls는 왜 호출했는지, 왜 보류했는지, 어떤 정보가 보강됐는지 중심으로 표시
+- unresolved gaps와 needs_review를 운영자가 실제로 확인해야 할 항목으로 정리
+- debug prompt log, llm_calls, tool_calls는 개발자용 영역으로 분리
+- Data Sources/Evaluation/Costs/Poster Studio/Settings placeholder 문구와 연결 계획 정리
 
 완료 기준:
 
-- 부산 기본 데이터는 workflow 실행 전에 미리 source document와 Chroma에 쌓을 수 있다.
-- workflow 실행 시 TTL이 유효한 데이터는 cache를 우선 사용한다.
-- 새 지역 요청은 on-demand로 수집되고 이후 cache에 남는다.
-- scheduled sync 결과와 실패 로그를 확인할 수 있다.
+- 일반 사용자 화면에서 내부 agent 단계가 과도하게 노출되지 않는다.
+- 개발자용 상세 정보는 필요할 때만 확인 가능하다.
+- Evidence/Data Coverage/Enrichment 패널이 상품화 판단 관점에서 읽히도록 정리된다.
+- placeholder 화면은 future 상태임이 명확하다.
+- frontend build가 통과한다.
 
 ## Phase 11: Planner, Research, Product Evidence Actualization
 
@@ -754,23 +733,24 @@ Approved or Reviewable Run
 
 ## 다음 구현 시작점
 
-바로 다음 구현은 Phase 10.1 AppShell Navbar and Global Navigation부터 시작합니다. Phase 10 Data Enrichment Workflow와 Phase 10.2 Gemini Data Enrichment Agent 전환은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 작업은 Phase 12에서 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 진행합니다.
+바로 다음 구현은 Phase 10.5 UI and Operations Surface Cleanup부터 시작합니다. Phase 10 Data Enrichment Workflow, Phase 10.1 AppShell Navbar and Global Navigation, Phase 10.2 Gemini Data Enrichment Agent 전환은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 작업은 Phase 12에서 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 진행합니다.
 
 Codex에게 줄 첫 작업 범위:
 
 ```text
-Phase 10.1: AppShell Navbar and Global Navigation을 구현해줘.
+Phase 10.5: UI and Operations Surface Cleanup을 구현해줘.
 
 범위:
-- 현재 Dashboard 중심 화면을 Mantine AppShell 기반 전역 layout으로 전환
-- Header/Navbar/primary navigation 추가
-- Runs, Workflow Preview, Data Sources, Evaluation, Costs, Settings placeholder route 구성
-- 기존 Run 생성, Run Detail drawer, Workflow preview, revision UI 동작 유지
-- mobile navbar collapse와 active nav 상태 구현
+- Run Detail의 사용자용 진행 단계와 개발자용 상세 단계 분리
+- Data Coverage / Enrichment / Evidence 표시 방식 정리
+- Recommended Data Calls를 사용자가 이해할 수 있는 문장 중심으로 개선
+- debug prompt log, llm_calls, tool_calls는 개발자용 영역으로 분리
+- AppShell placeholder 화면의 future 상태와 후속 연결 계획 정리
 - backend test와 frontend build로 확인
 
 주의:
 - Data Enrichment workflow 동작을 바꾸지 마.
 - 지역 resolve 실패 시 전국 fallback하지 마.
 - 불필요한 landing page를 만들지 말고 운영 dashboard를 첫 화면으로 유지해.
+- 구현되지 않은 기능을 실제 작동하는 것처럼 보이게 하지 마.
 ```

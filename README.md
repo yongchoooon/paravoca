@@ -598,7 +598,9 @@ Phase 10에서는 기존 Data 단계를 `BaselineDataAgent`로 분리하고, 수
 
 Run 생성 전에는 `PreflightValidationAgent`가 요청 범위와 상품 개수 상한을 먼저 확인합니다. 자연어 요청이 관광 상품 기획과 무관하거나, 자연어에서 6개 이상 상품 생성을 요구하면 workflow run을 만들지 않고 생성 modal에서 바로 안내합니다.
 
-다음 Phase는 Phase 10.1 AppShell Navbar and Global Navigation입니다. 현재 Dashboard 중심 화면을 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation shell로 전환합니다. 이 작업은 Data Enrichment 자체와 분리된 frontend architecture phase이며, Data Sources, Evaluation, Costs, Poster Studio, Settings 같은 후속 화면을 연결할 기본 앱 구조를 만듭니다.
+Phase 10.1 AppShell Navbar and Global Navigation은 구현 완료되었습니다. 현재 frontend는 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation shell을 사용합니다. Dashboard는 기존처럼 summary와 Runs table을 함께 보여주고, Workflow Preview는 전역 Navbar에서 독립적으로 접근합니다. Data Sources, Evaluation, Costs, Poster Studio, Settings는 아직 실제 기능이 연결되지 않은 `향후 연결 예정` placeholder입니다.
+
+다음 Phase는 Phase 10.5 UI and Operations Surface Cleanup입니다. AppShell 이후 사용자용 운영 화면을 정리하고, Run Detail에서 내부 agent/debug 단계가 과도하게 노출되는 문제를 줄이며, Data Coverage / Enrichment / Evidence 표시 방식을 사용자와 개발자 관점으로 분리합니다.
 
 이후 공식 웹 근거 수집, Planner/Data/Research Agent 실제화, 평가 자동화와 운영 지표를 강화합니다. RAG retrieval recall, faithfulness, tool call accuracy, task success rate, cost per task, latency를 dataset 기반으로 측정하고 Evaluation Dashboard에서 확인할 수 있게 만듭니다.
 
