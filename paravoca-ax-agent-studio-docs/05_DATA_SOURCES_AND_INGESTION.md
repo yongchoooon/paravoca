@@ -67,12 +67,14 @@ MVP에서 필요한 기능:
 현재 구현 상태:
 
 - Phase 9.6부터 workflow Data 단계는 GeoResolverAgent가 만든 `geo_scope`를 사용하고, primary 지역 필터는 `lDongRegnCd`/`lDongSignguCd`입니다.
+- Phase 10부터 기본 수집은 `BaselineDataAgent`가 담당하고, 상세/이미지 보강은 `DataGapProfilerAgent`와 `ApiCapabilityRouterAgent`가 필요하다고 판단한 항목만 `EnrichmentExecutor`에서 실행합니다.
 - `ldongCode2?lDongListYn=Y`와 `lclsSystmCode2`는 `python -m app.tools.sync_tourapi_catalogs`로 DB catalog에 동기화합니다.
 - `areaCode2`는 backward compatibility와 legacy 응답 해석용으로 유지합니다.
 - `areaBasedList2`, `searchKeyword2`, `searchFestival2`, `searchStay2`는 workflow Data 단계와 `/api/data/tourism/search`에서 사용하며, v4.4 `ldong/lcls` 파라미터를 우선 전달합니다.
-- `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2`는 Phase 9에서 workflow Data 단계의 상세 보강과 `/api/data/tourism/details/enrich`에 연결했습니다.
+- `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2`는 Phase 10에서 선택적 workflow 보강과 `/api/data/tourism/details/enrich`에 연결되어 있습니다.
 - `categoryCode2`, `locationBasedList2`는 provider method와 capability catalog에 추가되어 있으나, route planning이나 ranking workflow에는 아직 직접 연결하지 않았습니다.
-- 상세 보강 호출 수는 `TOURAPI_DETAIL_ENRICHMENT_LIMIT`로 제한합니다.
+- Baseline raw 후보는 `TOURAPI_CANDIDATE_SHORTLIST_LIMIT` 기준으로 shortlist를 만든 뒤 Agent 입력과 상세 보강 대상으로 사용합니다.
+- `ENRICHMENT_MAX_CALL_BUDGET`은 core KorService2 상세 보강을 6개로 자르는 용도가 아니라 future/non-core API 호출 예산 관리에 사용합니다. KorService2 상세 보강은 shortlist 안에서 실행 가능한 `contentId` 대상을 처리합니다. 수동 상세 보강 API의 기본 limit은 `TOURAPI_DETAIL_ENRICHMENT_LIMIT`를 유지합니다.
 
 ## 관광 수요 데이터
 
@@ -333,7 +335,7 @@ def normalize_yyyymmdd(value: str | None) -> date | None:
 - image/license chunk
 - event/date chunk
 
-현재 Phase 9.6 구현에서는 item 단위 source document를 유지하되, document content에 상세 소개와 이용정보를 함께 넣습니다. source document metadata에는 `ldong/lcls` 필드를 저장하고, 상세 소개/반복 정보가 충분히 길어지는 경우 chunk 분리는 후속 retrieval 품질 개선에서 조정합니다.
+현재 Phase 10 구현에서는 item 단위 source document를 유지하되, document content에 상세 소개와 이용정보를 함께 넣습니다. source document metadata에는 `ldong/lcls`, `source_family`, `trust_level`, `retrieved_at`, detail/image coverage 필드를 저장하고, 상세 소개/반복 정보가 충분히 길어지는 경우 chunk 분리는 후속 retrieval 품질 개선에서 조정합니다.
 
 ### Embedding text template
 

@@ -55,15 +55,17 @@ Base URL:
 
 ## API 엔드포인트
 
-이 섹션은 전체 제품 목표 API까지 포함합니다. 현재 Phase 9.6 코드에 구현된 API는 아래 범위입니다.
+이 섹션은 전체 제품 목표 API까지 포함합니다. 현재 Phase 10 코드에 구현된 API는 아래 범위입니다.
 
 - `GET /api/health`
 - `GET /api/workflows`
 - `POST /api/workflow-runs`
 - `GET /api/workflow-runs`
+- `POST /api/workflow-runs/delete`
 - `GET /api/workflow-runs/{run_id}`
 - `GET /api/workflow-runs/{run_id}/steps`
 - `GET /api/workflow-runs/{run_id}/tool-calls`
+- `GET /api/workflow-runs/{run_id}/enrichment`
 - `GET /api/workflow-runs/{run_id}/llm-calls`
 - `GET /api/workflow-runs/{run_id}/approvals`
 - `GET /api/workflow-runs/{run_id}/result`
@@ -189,6 +191,36 @@ GET /api/workflow-runs/{run_id}/tool-calls
 GET /api/workflow-runs/{run_id}/result
 GET /api/workflow-runs/{run_id}/report.md
 ```
+
+### Workflow run delete
+
+```http
+POST /api/workflow-runs/delete
+```
+
+Request:
+
+```json
+{
+  "run_ids": ["run_..."]
+}
+```
+
+Response:
+
+```json
+{
+  "deleted_run_ids": ["run_...", "run_revision_..."],
+  "deleted_count": 2
+}
+```
+
+동작:
+
+- Dashboard task table의 선택 삭제에서 사용합니다.
+- parent run을 삭제하면 연결된 revision run도 함께 삭제합니다.
+- `pending`, `running` 상태의 run은 삭제하지 않고 `409`를 반환합니다.
+- `agent_steps`, `tool_calls`, `llm_calls`, `approvals`, `enrichment_runs`, `web_evidence_documents`는 SQLAlchemy cascade로 함께 정리합니다.
 
 ### Approval
 
@@ -372,7 +404,7 @@ GET /api/data/sources/capabilities
 POST /api/data/tourism/details/enrich
 ```
 
-현재 Phase 9.6 구현 API는 `GET /api/data/tourism/search`, `GET /api/data/sources/capabilities`, `POST /api/data/tourism/details/enrich`입니다. TourAPI catalog sync는 API가 아니라 `python -m app.tools.sync_tourapi_catalogs` CLI로 제공합니다. 개별 item 조회와 API 기반 sync endpoint는 후속 Phase 목표입니다.
+현재 Phase 10 구현 API는 `GET /api/data/tourism/search`, `GET /api/data/sources/capabilities`, `POST /api/data/tourism/details/enrich`, `GET /api/workflow-runs/{run_id}/enrichment`입니다. TourAPI catalog sync는 API가 아니라 `python -m app.tools.sync_tourapi_catalogs` CLI로 제공합니다. 개별 item 조회와 API 기반 sync endpoint는 후속 Phase 목표입니다.
 
 Search query:
 
@@ -449,7 +481,7 @@ GET /api/costs/models
 
 아래는 SQLAlchemy 기준 주요 테이블입니다.
 
-현재 Phase 9.6 코드에 실제 구현된 core table은 workflow, approval, tourism item, source document, TourAPI `ldong/lcls` catalog, geo resolution, KTO data foundation, usage log 중심입니다. Poster, evaluation, cost dashboard 전용 table은 후속 Phase 목표입니다.
+현재 Phase 10 코드에 실제 구현된 core table은 workflow, approval, tourism item, source document, TourAPI `ldong/lcls` catalog, geo resolution, KTO data foundation, enrichment run/tool call, usage log 중심입니다. Poster, evaluation, cost dashboard 전용 table은 후속 Phase 목표입니다.
 
 ### users
 
@@ -533,6 +565,8 @@ latency_ms int nullable
 created_at datetime
 ```
 
+Phase 10부터 workflow 실행 중 생성됩니다. `enrichment_runs.gap_report_json`에는 data gap profiling 결과, `plan_json`에는 planned/skipped call, `result_summary_json`에는 executed/skipped/failed count와 enriched item id가 저장됩니다. `enrichment_tool_calls`는 실제 호출한 KorService2 상세 보강뿐 아니라 future/unsupported source family도 `skipped` 상태로 기록해 UI에서 실제 호출처럼 오해하지 않도록 합니다.
+
 ### llm_calls
 
 ```text
@@ -554,7 +588,7 @@ created_at datetime
 
 ### poster_assets
 
-후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 9.6 코드에는 아직 없습니다.
+후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 10 코드에는 아직 없습니다.
 
 ```text
 id string PK
@@ -593,7 +627,7 @@ Status:
 
 ### poster_image_calls
 
-후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 9.6 코드에는 아직 없습니다.
+후속 Poster Studio Phase에서 구현할 목표 테이블입니다. 현재 Phase 10 코드에는 아직 없습니다.
 
 ```text
 id string PK
@@ -640,7 +674,7 @@ Unique:
 
 ### tourism_events
 
-초기 설계의 분리 테이블 후보입니다. 현재 Phase 9.6 코드에서는 행사도 `tourism_items`에 저장하고 `content_type=event`, `event_start_date`, `event_end_date`, `raw`로 관리합니다.
+초기 설계의 분리 테이블 후보입니다. 현재 Phase 10 코드에서는 행사도 `tourism_items`에 저장하고 `content_type=event`, `event_start_date`, `event_end_date`, `raw`로 관리합니다.
 
 ```text
 id string PK

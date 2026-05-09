@@ -10,7 +10,15 @@
 User Input
   → Planner Agent
   → GeoResolver Agent
-  → Data Agent
+  → BaselineDataAgent
+  → DataGapProfilerAgent
+  → ApiCapabilityRouterAgent
+  → TourApiDetailPlannerAgent
+  → VisualDataPlannerAgent
+  → RouteSignalPlannerAgent
+  → ThemeDataPlannerAgent
+  → EnrichmentExecutor
+  → EvidenceFusionAgent
   → Research Agent
   → Product Agent
   → Marketing Agent
@@ -19,7 +27,13 @@ User Input
   → Save/Export Node
 ```
 
-Phase 9.6 기준으로 GeoResolver 단계에는 두 개의 조기 종료 경로가 있습니다.
+Run 생성 전에는 `PreflightValidationAgent`가 먼저 실행됩니다. 이 검증은 LangGraph run 내부 step으로 기록하지 않고, run 생성 API에서 동기적으로 처리합니다.
+
+- 자연어 요청이나 입력 필드가 상품 6개 이상 생성을 요구하면 run을 만들지 않고 생성 modal에서 최대 5개 안내를 표시합니다.
+- 관광 상품 기획과 무관한 요청은 run을 만들지 않고 지원 범위 안내를 표시합니다.
+- 검증을 통과한 요청만 `workflow_created` 이후 LangGraph workflow로 들어갑니다.
+
+Phase 10 기준으로 GeoResolver 단계에는 두 개의 조기 종료 경로가 있습니다.
 
 - 지역 후보 안내: `중구`처럼 후보가 여러 개인 경우 run status는 `failed`로 저장하고 후보를 UI에 보여주며 Data Agent로 넘어가지 않습니다.
 - `unsupported`: 해외 목적지처럼 PARAVOCA의 현재 국내 관광 데이터 지원 범위 밖인 경우 안내 메시지를 반환하고 Data Agent로 넘어가지 않습니다.
@@ -49,6 +63,14 @@ class GraphState(TypedDict):
     plan: list[dict]
     source_items: list[dict]
     retrieved_documents: list[dict]
+    data_gap_report: dict
+    enrichment_plan: dict
+    enrichment_summary: dict
+    evidence_profile: dict
+    productization_advice: dict
+    data_coverage: dict
+    unresolved_gaps: list[dict]
+    source_confidence: float
     research_summary: dict
     product_ideas: list[dict]
     marketing_assets: list[dict]
@@ -214,14 +236,18 @@ Planner가 만든 plan에 따라 외부/내부 데이터를 조회합니다.
 - `local_product_search`
 - `vector_search`
 
-현재 Phase 9.6 구현:
+현재 Phase 10 구현:
 
-- Data Agent는 GeoResolver가 만든 `geo_scope`를 기준으로 TourAPI v4.4 `lDongRegnCd`/`lDongSignguCd` 파라미터를 전달합니다.
-- Data Agent는 기본 TourAPI 검색 결과 일부를 `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2`로 보강합니다.
-- 보강된 상세/반복/이미지 metadata는 `source_documents`와 Chroma index에 반영됩니다.
+- `BaselineDataAgent`는 GeoResolver가 만든 `geo_scope`를 기준으로 TourAPI v4.4 `lDongRegnCd`/`lDongSignguCd` 파라미터를 전달하고 기본 후보만 수집합니다.
+- `DataGapProfilerAgent`는 기본 후보의 상세정보, 이미지, 운영시간, 요금, 예약정보, 연관 장소, 동선, 테마 특화 데이터 공백을 구조화합니다.
+- `ApiCapabilityRouterAgent`는 gap을 `backend/app/tools/kto_capabilities.py` capability catalog 기준의 API family planner lane으로 분배합니다.
+- `TourApiDetailPlannerAgent`, `VisualDataPlannerAgent`, `RouteSignalPlannerAgent`, `ThemeDataPlannerAgent`는 각자 배정된 gap과 자기 source family subset만 보고 짧은 call/skip 계획을 만듭니다.
+- `EnrichmentExecutor`는 Agent 판단자가 아니라 코드 실행 action입니다. 계획된 KorService2 상세 보강만 실행합니다. `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2`는 구현되어 있고, 아직 provider가 없는 KTO source family는 skipped/future로 기록합니다.
+- 보강된 상세/반복/이미지 metadata는 `tourism_entities`, `tourism_visual_assets`, `source_documents`, Chroma index, `enrichment_runs`, `enrichment_tool_calls`에 반영됩니다.
+- `EvidenceFusionAgent`는 같은 content_id/source item 기준으로 근거를 묶어 `evidence_profile`, 후보별 `candidate_evidence_cards`가 포함된 `productization_advice`, `data_coverage`, `unresolved_gaps`, `source_confidence`를 생성합니다.
 - `source_documents`와 Chroma metadata에는 `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3`가 저장됩니다.
 - 상세 이미지 후보는 `tourism_visual_assets.usage_status=candidate`로 저장합니다.
-- `categoryCode2`, `locationBasedList2`는 provider method는 준비되어 있으나, 아직 Data Agent의 코스 조합/ranking 판단에는 연결하지 않았습니다.
+- `categoryCode2`, `locationBasedList2`는 provider method와 capability에는 준비되어 있으나, 아직 route/candidate ranking workflow에는 연결하지 않았습니다.
 
 P2 이후 추가 후보:
 

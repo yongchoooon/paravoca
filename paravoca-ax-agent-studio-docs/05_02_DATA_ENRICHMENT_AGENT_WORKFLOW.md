@@ -4,6 +4,8 @@
 
 이 문서는 한국관광공사 OpenAPI 묶음을 PARAVOCA AX Agent Studio의 workflow에 붙이는 구현 계획입니다. 핵심은 전체 API를 매번 호출하는 방식이 아니라, 현재 run의 요청, 수집된 데이터, 상품 초안, QA 결과를 보고 필요한 보강만 실행하는 구조입니다.
 
+구현 상태: Phase 10에서 1차 구현을 완료했고, Phase 10.2에서 `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 네 개의 API family planner, `EvidenceFusionAgent`를 Gemini prompt + JSON schema 기반 판단으로 전환했습니다. 현재 코드는 기본 TourAPI 수집 이후 raw 후보를 `TOURAPI_CANDIDATE_SHORTLIST_LIMIT` 기준 shortlist로 줄이고, Gemini가 shortlist 기준 gap report를 만듭니다. Router는 gap을 planner lane으로 분배하고, `TourApiDetailPlannerAgent`, `VisualDataPlannerAgent`, `RouteSignalPlannerAgent`, `ThemeDataPlannerAgent`가 각자 짧은 계획을 만듭니다. 코드 action인 `EnrichmentExecutor`는 KorService2 `detailCommon2`/`detailIntro2`/`detailInfo2`/`detailImage2`를 실행하며, shortlist 안에서 실행 가능한 `contentId` 대상은 `ENRICHMENT_MAX_CALL_BUDGET=6` 때문에 임의로 잘리지 않습니다. 아직 provider가 없는 KTO 묶음은 plan/skipped 상태로만 기록합니다. OfficialWebEvidenceAgent, HumanDataRequestAgent, VisualDataEnrichment, 수요/혼잡/두루누비/관광사진 API 실제 호출은 후속 Phase 범위입니다.
+
 ## 목표
 
 1. 현재 TourAPI 목록 조회 중심 데이터를 상세/테마/수요/이미지/연관 데이터로 보강한다.
@@ -26,17 +28,20 @@ Planner
   -> Human Approval
 ```
 
-데이터 보강 workflow:
+Phase 10 구현 workflow:
 
 ```text
 Planner
+  -> GeoResolverAgent
   -> BaselineDataAgent
   -> DataGapProfilerAgent
   -> ApiCapabilityRouterAgent
-  -> DataEnrichmentAgent
+  -> TourApiDetailPlannerAgent
+  -> VisualDataPlannerAgent
+  -> RouteSignalPlannerAgent
+  -> ThemeDataPlannerAgent
+  -> EnrichmentExecutor
   -> EvidenceFusionAgent
-  -> OfficialWebEvidenceAgent, if business operation fields are still missing
-  -> HumanDataRequestAgent, if web evidence cannot confirm them
   -> Research
   -> Product
   -> Marketing
@@ -44,13 +49,16 @@ Planner
   -> Human Approval
 ```
 
+후속 확장 workflow에서는 EvidenceFusion 이후에도 운영 필드가 부족할 때 `OfficialWebEvidenceAgent`와 `HumanDataRequestAgent`를 추가합니다.
+
 Revision/QA 기반 보강 workflow:
 
 ```text
 Manual Edit or QA Issue
   -> DataGapProfilerAgent
   -> ApiCapabilityRouterAgent
-  -> DataEnrichmentAgent
+  -> TourApiDetailPlannerAgent / VisualDataPlannerAgent / RouteSignalPlannerAgent / ThemeDataPlannerAgent
+  -> EnrichmentExecutor
   -> EvidenceFusionAgent
   -> OfficialWebEvidenceAgent, if needed
   -> HumanDataRequestAgent, if needed
@@ -64,7 +72,7 @@ Approved or Reviewable Run
   -> PosterContextBuilder
   -> DataGapProfilerAgent
   -> ApiCapabilityRouterAgent
-  -> VisualDataEnrichmentAgent
+  -> VisualDataEnrichment
   -> PosterPromptAgent
   -> Human Poster Option Review
   -> PosterImageAgent
@@ -160,13 +168,14 @@ Approved or Reviewable Run
 
 구현 방식:
 
-- MVP 확장 초기는 rule-based로 시작한다.
-- LLM이 켜져 있을 때는 rule-based gap 후보를 LLM이 정리/우선순위화한다.
-- QA issue에서 들어온 공백은 severity를 한 단계 올린다.
+- Phase 10.2부터 production 경로는 Gemini prompt + JSON schema 결과를 기준으로 한다.
+- `LLM_ENABLED=true`에서는 `llm_calls.provider=gemini`, `purpose=data_gap_profile`로 기록한다.
+- LLM이 꺼진 로컬 테스트 환경에서는 fake 결과를 꾸미지 않고 테스트 호환 계산만 수행한다.
+- QA issue에서 들어온 공백은 후속 revision enrichment에서 severity를 한 단계 올리는 방향으로 확장한다.
 
 ### 3. ApiCapabilityRouterAgent
 
-`data_gaps`를 실제 API/tool call plan으로 바꿉니다.
+`data_gaps`를 API family planner lane으로 배분합니다. 실제 API operation과 arguments는 각 planner가 자기 source family subset만 보고 만듭니다.
 
 입력:
 
@@ -238,7 +247,7 @@ Approved or Reviewable Run
 - 동일 run 안에서 같은 source family와 같은 argument 호출은 dedupe한다.
 - 캐시가 fresh하면 외부 호출을 생략하고 `cache_hit=true`로 기록한다.
 
-### 4. DataEnrichmentAgent
+### 4. EnrichmentExecutor
 
 `enrichment_plan`을 실행해 실제 데이터를 가져옵니다.
 
@@ -962,29 +971,46 @@ Poster Studio에서 사용할 데이터:
 
 ```text
 너는 여행 상품 운영 데이터 검토 Agent다.
-입력된 run 요청, 관광 데이터, 상품 초안, QA 결과를 보고 실제 상품화에 필요한 데이터 공백을 구조화한다.
+입력된 run 요청, 지역 범위, shortlist 관광 후보, 검색 근거, 자연어 API capability brief를 보고 실제 상품화에 필요한 데이터 공백을 구조화한다.
 
 규칙:
+- shortlist 밖 raw 후보에 대해서는 개별 gap을 만들지 않는다.
 - 이미 근거가 있는 항목과 확인이 필요한 항목을 분리한다.
 - 가격, 예약 가능 여부, 집결지, 취소 정책은 외부 API만으로 확정하지 않는다.
 - 방문자 수, 집중률, 연관 관광지 데이터는 운영 판단 보조 신호로만 분류한다.
 - poster_studio에 필요한 이미지/시각 키워드 공백도 별도 표시한다.
+- 요청 상품 유형과 무관한 gap을 만들지 않는다.
+- 확실하지 않은 정보는 추측하지 말고 needs_review에 남긴다.
 - 출력은 JSON schema를 지킨다.
 ```
 
 ### ApiCapabilityRouterAgent prompt
 
 ```text
-너는 데이터 공백을 API 호출 계획으로 바꾸는 Agent다.
-입력된 data_gaps와 source capability catalog를 보고 필요한 tool call plan을 만든다.
+너는 데이터 공백을 API family planner lane으로 배분하는 Agent다.
+입력된 data_gaps와 source capability catalog 요약을 보고 어떤 planner가 어떤 gap을 맡을지만 정한다.
 
 규칙:
-- 같은 목적의 호출은 중복하지 않는다.
-- run budget을 넘기지 않는다.
-- 의료관광 API는 allow_medical_api가 true일 때만 계획에 넣는다.
-- 이미지 API 결과는 게시 후보와 프롬프트 참고 후보를 구분할 수 있게 reason을 남긴다.
-- missing_user_business_info는 user_detail_request 전에 official_web_search와 official_page_extract를 먼저 계획한다.
-- 호출하지 않는 gap은 skipped_gaps에 이유를 남긴다.
+- API endpoint와 arguments를 직접 만들지 않는다.
+- 각 gap은 tourapi_detail, visual_data, route_signal, theme_data 중 하나의 lane에만 배정한다.
+- 의료관광 API는 allow_medical_api가 false이면 낮은 우선순위 또는 보류 사유를 남긴다.
+- 출력은 family_routes 중심 JSON schema를 지킨다.
+```
+
+### API Family Planner prompt
+
+```text
+너는 특정 KTO API family lane만 담당하는 계획 Agent다.
+Router가 배정한 gap과 해당 lane의 짧은 capability 요약만 보고 세부 call 또는 skipped/future 기록을 만든다.
+
+규칙:
+- assigned_gaps에 없는 gap_id를 만들지 않는다.
+- TourApiDetailPlannerAgent만 Phase 10.2에서 실제 planned_calls를 만들 수 있다.
+- detail planner의 실행 call은 detailCommon2/detailIntro2/detailInfo2/detailImage2 묶음으로 만든다.
+- shortlist 안에서 contentId가 있는 실행 가능 대상은 임의 6개 budget으로 자르지 않는다.
+- VisualDataPlannerAgent, RouteSignalPlannerAgent, ThemeDataPlannerAgent는 provider가 붙기 전까지 future_provider_not_implemented로 남긴다.
+- 의료관광은 allow_medical_api가 false이면 feature_flag_disabled로 남긴다.
+- reason과 planning_reasoning은 짧게 쓴다.
 ```
 
 ### OfficialWebEvidenceAgent prompt
@@ -1011,6 +1037,8 @@ Poster Studio에서 사용할 데이터:
 - 데이터 해석 주의사항을 삭제하지 않는다.
 - 수요/혼잡/연관성 signal을 관광지 설명 본문처럼 쓰지 않는다.
 - 충돌하거나 오래된 정보는 needs_review로 표시한다.
+- Product/Marketing/QA가 써도 되는 claim과 쓰면 안 되는 claim을 분리한다.
+- UI에 보여줄 요약은 ui_highlights에 한국어로 작성한다.
 - downstream Agent가 쓸 수 있도록 evidence_ids를 안정적으로 남긴다.
 ```
 
@@ -1056,34 +1084,55 @@ Poster Studio에서 사용할 데이터:
 - content_id 기반 상세 조회 테스트 통과
 - source document에 상세/반복/이미지 정보가 포함됨
 
-### Step 3. DataGapProfilerAgent rule-based 구현
+### Step 3. DataGapProfilerAgent Gemini 구현
 
 파일 후보:
 
-- `backend/app/agents/data_gap.py`
+- `backend/app/agents/data_enrichment.py`
+- `backend/app/agents/workflow.py`
 - `backend/app/tests/test_data_gap_agent.py`
 
 완료 기준:
 
+- `LLM_ENABLED=true`에서 `llm_calls.provider=gemini`, `purpose=data_gap_profile`로 기록
 - 이미지 없는 item에서 `missing_image_asset` 생성
 - 반려동물 요청에서 `missing_pet_policy` 생성
 - 도보 요청에서 `missing_route_asset` 생성
 - 가격/집결지 누락은 `missing_user_business_info`로 분리하고, 바로 사용자 질문으로 만들지 않는다.
 
-### Step 4. ApiCapabilityRouterAgent 구현
+### Step 4. ApiCapabilityRouterAgent Gemini 구현
 
 파일 후보:
 
-- `backend/app/agents/enrichment_router.py`
+- `backend/app/agents/data_enrichment.py`
+- `backend/app/agents/workflow.py`
 - `backend/app/tests/test_enrichment_router.py`
 
 완료 기준:
 
-- gap type을 tool call plan으로 변환
+- `LLM_ENABLED=true`에서 `llm_calls.provider=gemini`, `purpose=api_capability_routing`으로 기록
+- gap type을 API family planner lane으로 변환
 - max call budget 적용
 - disabled source family skip
 - 의료관광 API 보호 플래그 적용
 - `missing_user_business_info`는 `official_web_search`와 `official_page_extract`를 `user_detail_request`보다 먼저 계획
+
+### Step 4-1. API Family Planner Gemini 구현
+
+파일 후보:
+
+- `backend/app/agents/data_enrichment.py`
+- `backend/app/agents/workflow.py`
+- `backend/app/tests/test_data_enrichment.py`
+
+완료 기준:
+
+- `TourApiDetailPlannerAgent`는 `purpose=tourapi_detail_planning`으로 Gemini 호출을 기록
+- `VisualDataPlannerAgent`는 `purpose=visual_data_planning`으로 Gemini 호출을 기록
+- `RouteSignalPlannerAgent`는 `purpose=route_signal_planning`으로 Gemini 호출을 기록
+- `ThemeDataPlannerAgent`는 `purpose=theme_data_planning`으로 Gemini 호출을 기록
+- 각 planner prompt에는 자기 source family subset만 들어간다.
+- 네 planner의 fragment를 합쳐 `enrichment_plan`을 만든다.
 
 ### Step 5. OfficialWebEvidenceAgent 구현
 

@@ -2,7 +2,7 @@
 
 작성 기준일: 2026-05-07
 
-이 문서는 Phase 9.6까지 구현된 PARAVOCA AX Agent Studio를 기준으로, 평가와 배포 전에 보강해야 할 구현 단계를 다시 정리한 문서입니다. 기존 `11_IMPLEMENTATION_ROADMAP.md`의 Phase 8/9는 초기 계획 기준이며, 실제 다음 개발은 이 문서의 순서를 우선합니다.
+이 문서는 Phase 10.2까지 구현된 PARAVOCA AX Agent Studio를 기준으로, 평가와 배포 전에 보강해야 할 구현 단계를 다시 정리한 문서입니다. 기존 `11_IMPLEMENTATION_ROADMAP.md`의 Phase 8/9는 초기 계획 기준이며, 실제 다음 개발은 이 문서의 순서를 우선합니다.
 
 ## 현재 구현 기준
 
@@ -43,6 +43,7 @@ Planner
 - 상세 이미지 후보 저장
 - Run Detail, Result Review, QA issue 삭제, revision history UI
 - Run Detail Evidence 상세 정보/이미지 후보 UI
+- 현재 frontend는 단일 Dashboard 중심 화면이며, Mantine `AppShell.Navbar` 기반 앱 전체 navigation shell은 아직 구현되지 않음
 
 현재 TourAPI 사용 범위:
 
@@ -70,6 +71,7 @@ Planner
 - Planner, Data, Research Agent의 실제 데이터 기반 판단
 - Poster Studio용 이미지 후보와 poster context
 - 데이터 보강 품질까지 포함한 evaluation
+- Dashboard 내부 탭을 넘어서는 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation과 route 구조
 
 ## 구현 원칙
 
@@ -246,7 +248,9 @@ python -m app.rag.reindex --collection source_documents --reset
 - embedding API 비용이 발생하지 않는다.
 - 검색 실패나 모델 로딩 실패가 FastAPI log와 workflow error log에 남는다.
 
-## Phase 10: Data Enrichment Agent Workflow
+## Phase 10: Data Enrichment Workflow
+
+구현 상태: 완료. Phase 10 기준 코드에는 기본 TourAPI 수집 이후 data gap profiling, capability routing, 선택적 KorService2 상세/이미지 보강, evidence fusion, Run Detail Data Coverage/Recommended Data Calls UI가 연결되어 있습니다. Phase 10.2에서 DataGapProfilerAgent, ApiCapabilityRouterAgent, 네 개의 API family planner, EvidenceFusionAgent는 Gemini prompt + JSON schema 기반 판단으로 전환되었습니다.
 
 목표:
 
@@ -257,7 +261,11 @@ python -m app.rag.reindex --collection source_documents --reset
 - `BaselineDataAgent`
 - `DataGapProfilerAgent`
 - `ApiCapabilityRouterAgent`
-- `DataEnrichmentAgent`
+- `TourApiDetailPlannerAgent`
+- `VisualDataPlannerAgent`
+- `RouteSignalPlannerAgent`
+- `ThemeDataPlannerAgent`
+- `EnrichmentExecutor`
 - `EvidenceFusionAgent`
 
 workflow:
@@ -267,7 +275,11 @@ Planner
   -> BaselineDataAgent
   -> DataGapProfilerAgent
   -> ApiCapabilityRouterAgent
-  -> DataEnrichmentAgent
+  -> TourApiDetailPlannerAgent
+  -> VisualDataPlannerAgent
+  -> RouteSignalPlannerAgent
+  -> ThemeDataPlannerAgent
+  -> EnrichmentExecutor
   -> EvidenceFusionAgent
   -> Research
   -> Product
@@ -278,14 +290,15 @@ Planner
 
 작업:
 
-- 현재 Data Agent를 `BaselineDataAgent` 역할로 분리
-- 데이터 공백을 `missing_detail_info`, `missing_image_asset`, `missing_related_places` 같은 구조로 생성
-- gap type을 tool call plan으로 변환
-- max call budget 적용
-- enrichment run 생성/조회 API 추가
-- 보강 결과를 source document와 signal table에 저장
-- Data Coverage panel UI 추가
-- Recommended Data Calls panel UI 추가
+- 현재 Data Agent를 `BaselineDataAgent` 역할로 분리. 완료.
+- 데이터 공백을 `missing_detail_info`, `missing_image_asset`, `missing_operating_hours`, `missing_price_or_fee`, `missing_booking_info`, `missing_related_places`, `missing_route_context`, `missing_theme_specific_data` 구조로 생성. 완료.
+- gap type을 API family planner lane으로 변환하고, 각 planner가 call/skip fragment를 생성. 완료.
+- max call budget 적용. 완료. 설정값은 `ENRICHMENT_MAX_CALL_BUDGET`.
+- enrichment run 생성/조회 API 추가. 완료. `GET /api/workflow-runs/{run_id}/enrichment`.
+- KorService2 `detailCommon2`, `detailIntro2`, `detailInfo2`, `detailImage2` 선택 호출과 source document 재색인. 완료.
+- 아직 provider가 없는 KTO source family는 실제 호출한 것처럼 표시하지 않고 skipped/future로 기록. 완료.
+- Data Coverage panel UI 추가. 완료.
+- Recommended Data Calls panel UI 추가. 완료.
 
 다양한 KTO endpoint 저장 매핑:
 
@@ -303,8 +316,12 @@ Planner
 Agent별 역할:
 
 - `DataGapProfilerAgent`: 어떤 정보가 부족한지 판단한다.
-- `ApiCapabilityRouterAgent`: 부족한 정보를 어떤 KTO API나 공식 웹 근거 검색으로 채울지 계획한다.
-- `DataEnrichmentAgent`: 계획된 API 호출을 실행하고 DB에 저장한다.
+- `ApiCapabilityRouterAgent`: 부족한 정보를 어느 API family planner가 다룰지 분배한다.
+- `TourApiDetailPlannerAgent`: KorService2 상세/이미지 보강 호출을 계획한다.
+- `VisualDataPlannerAgent`: 관광사진/공모전 사진 API 후보를 future/skip 포함해 계획한다.
+- `RouteSignalPlannerAgent`: 두루누비, 연관 장소, 수요/혼잡 신호 API 후보를 future/skip 포함해 계획한다.
+- `ThemeDataPlannerAgent`: 웰니스, 반려동물, 오디오, 생태, 의료 API 후보를 future/skip 포함해 계획한다.
+- `EnrichmentExecutor`: Agent 판단자가 아니라 코드 실행 action이다. 계획된 API 호출을 실행하고 DB에 저장한다.
 - `EvidenceFusionAgent`: 여러 API에서 온 정보를 같은 장소/상품 근거 묶음으로 병합한다.
 
 주의:
@@ -317,9 +334,88 @@ Agent별 역할:
 완료 기준:
 
 - 이미지 없는 item에서 `missing_image_asset`이 생성된다.
-- 운영 시간/요금/휴무가 부족하면 `missing_detail_info`가 생성된다.
+- 운영 시간/요금/예약정보가 부족하면 해당 gap이 생성된다.
 - 반려동물, 도보, 웰니스 같은 요청은 해당 theme gap으로 분류된다.
 - 불필요한 API를 매번 호출하지 않는다.
+- 실패한 enrichment call은 workflow 전체를 깨지 않고 `enrichment_tool_calls.error`에 원인을 남긴다.
+- EvidenceFusion 결과가 `evidence_profile`, `productization_advice`, `data_coverage`, `unresolved_gaps`, `source_confidence`로 final output에 포함된다.
+
+## Phase 10.2: Gemini Data Enrichment Agent 전환
+
+구현 상태: 완료. 자세한 내용은 [16_PHASE_10_2_GEMINI_DATA_ENRICHMENT.md](./16_PHASE_10_2_GEMINI_DATA_ENRICHMENT.md)를 기준으로 합니다.
+
+완료한 일:
+
+- `DataGapProfilerAgent`를 Gemini `data_gap_profile` prompt + JSON schema 기반으로 전환
+- `ApiCapabilityRouterAgent`를 Gemini `api_capability_routing` prompt + JSON schema 기반 family routing으로 전환
+- 4개 API family planner를 Gemini prompt + JSON schema 기반으로 추가
+- `EvidenceFusionAgent`를 Gemini `evidence_fusion` prompt + JSON schema 기반으로 전환
+- `EnrichmentExecutor`는 Gemini agent가 아니라 deterministic data call action으로 유지
+- 99번 KTO API 명세 전체를 `kto_capabilities.py`에 반영하고, Agent prompt에는 compact capability brief만 전달
+- Baseline raw 후보를 `TOURAPI_CANDIDATE_SHORTLIST_LIMIT` 기준 shortlist로 줄여 DataGap/Enrichment 입력으로 사용
+- KorService2 상세 보강은 shortlist 안의 실행 가능한 `contentId` 대상을 임의 6개 budget으로 자르지 않도록 수정
+- EvidenceFusion은 전체 evidence profile을 다시 출력하지 않되, 보강된 후보별 `candidate_evidence_cards`를 만들고 사용할 수 있는 사실, 경험 hook, 상품화 각도, 제한 claim, 운영자 확인 항목을 분리
+- Gemini prompt debug log를 JSON과 Markdown으로 저장하도록 추가
+- 실제 실행 가능한 API와 future/unsupported API를 분리
+- Run Detail에 Gemini reasoning summary, routing/planning reasoning, `ui_highlights` 기반 상품화 판단 메모 표시
+- Workflow Preview의 DataGap/Router/4 Planner/Fusion node를 Gemini 기반 구조로 갱신
+- Dashboard run table에서 task 선택/전체 선택/선택 삭제 구현. parent task 선택 시 revision task 자동 선택, 실행 중 task 삭제 차단
+- Run Detail QA Review에 최초 실행 또는 마지막 revision QA 설정의 `Avoid` 기준 표시
+
+운영 기준:
+
+- `LLM_ENABLED=true`에서는 신규 DataGap/Router/Planner/Fusion agent가 Gemini를 호출한다.
+- schema validation이 실패하면 Gemini JSON retry 정책을 따르고, 최종 실패 시 workflow를 실패로 남긴다.
+- provider가 없는 99번 KTO API는 실제 호출한 것처럼 표시하지 않고 `skipped/future_provider_not_implemented`로 기록한다.
+- 의료관광 API는 `ALLOW_MEDICAL_API=true`가 아니면 planned call로 만들지 않는다.
+- `data_gap_profile`과 `evidence_fusion`의 `maxOutputTokens`는 16,384로 설정한다.
+
+## Phase 10.1: AppShell Navbar and Global Navigation
+
+목표:
+
+- 현재 Dashboard 한 화면 중심 UI를 Mantine `AppShell` 기반 운영툴 shell로 전환한다.
+- 좌측 `AppShell.Navbar`와 상단 `AppShell.Header`를 추가해 앞으로 생길 Data Sources, Evaluation, Cost, Settings, Poster Studio 화면을 자연스럽게 연결한다.
+
+이 Phase가 필요한 이유:
+
+- Phase 9.6까지는 Dashboard 안의 table, workflow preview, run detail drawer를 중심으로 기능을 붙였습니다.
+- Phase 10 이후에는 Data Coverage, Recommended Data Calls, Data Sources, Evaluation Dashboard 같은 독립 화면이 늘어나므로, Dashboard 내부 탭만으로는 정보 구조가 부족합니다.
+- AppShell migration은 Data Enrichment workflow 자체와 성격이 다르므로, 별도 frontend architecture phase로 분리합니다.
+
+작업:
+
+- `frontend/src/layouts/AppShellLayout/` 또는 동등한 공통 layout module 추가
+- Mantine `AppShell.Header`, `AppShell.Navbar`, `AppShell.Main`, mobile `Burger` 구현
+- 좌측 navigation item 구성:
+  - Dashboard
+  - Runs
+  - Workflow Preview 또는 Workflows
+  - Data Sources
+  - Evaluation
+  - Costs
+  - Poster Studio
+  - Settings
+- 현재 Dashboard 기능을 `AppShell.Main` 안으로 이동하되 기존 run 생성, run table, Run Detail drawer, workflow preview 동작은 유지
+- 아직 구현되지 않은 화면은 빈 route 또는 disabled/future nav item으로 표시하고, 실제 기능을 만든 것처럼 보이게 하지 않음
+- active route highlight, collapsed mobile state, header action area, notification 영역 정리
+- Dashboard 내부에서만 쓰던 navigation성 탭은 전역 navbar와 역할이 겹치지 않도록 재정리
+- 사용자용 진행 상태는 내부 agent/debug 단계 전체를 그대로 노출하지 않는다. 개발자 모드에서는 `Planner`, `Geo`, `Gemini Gap`, `Gemini Router`, 개별 planner lane 같은 세부 단계를 볼 수 있게 유지하되, 일반 사용자 모드에서는 `요청 이해`, `관광 데이터 확인`, `보강 정보 확인`, `상품 초안 생성`, `검수`처럼 더 적은 단계로 묶어 보여준다.
+
+하지 않을 것:
+
+- Data Enrichment workflow 구현
+- Evaluation Dashboard 실제 지표 구현
+- Cost Dashboard 실제 비용 분석 구현
+- Poster Studio 이미지 생성 구현
+
+완료 기준:
+
+- 첫 화면 진입 시 Mantine `AppShell.Navbar`가 표시된다.
+- Dashboard, Runs, Workflow Preview의 기존 사용 흐름이 깨지지 않는다.
+- mobile width에서는 navbar가 `Burger`로 접히고 펼쳐진다.
+- 아직 미구현인 화면은 명확히 future/disabled 상태로 보인다.
+- `npm run build`가 통과한다.
 
 ## Phase 10.5: Cached Fetch and Scheduled Sync
 
@@ -383,11 +479,11 @@ python -m app.data.reindex --source source_documents
 - 새 지역 요청은 on-demand로 수집되고 이후 cache에 남는다.
 - scheduled sync 결과와 실패 로그를 확인할 수 있다.
 
-## Phase 11: Planner, Data, Research Agent 실제화
+## Phase 11: Planner, Research, Product Evidence Actualization
 
 목표:
 
-- 아직 규칙 기반에 가까운 Planner, Data, Research를 실제 evidence 기반 Agent로 바꾼다.
+- 아직 규칙 기반에 가까운 Planner와 Research를 실제 evidence 기반 Agent로 바꾸고, Product/Marketing/QA가 Phase 10.2의 `evidence_profile`, `productization_advice`, `unresolved_gaps`, `ui_highlights`를 강하게 반영하도록 만든다.
 
 작업:
 
@@ -396,6 +492,10 @@ python -m app.data.reindex --source source_documents
 - Data Agent는 고정 호출이 아니라 enrichment plan을 실행
 - Research Agent는 evidence profile을 읽고 지역/시즌/타깃/리스크를 요약
 - Product Agent에 raw document list 대신 `evidence_profile`과 `productization_advice` 전달
+- Product Agent가 evidence 기반 itinerary를 만들고, source가 없는 운영시간/요금/예약 가능 여부를 단정하지 않도록 prompt와 validation 강화
+- data coverage 수준에 따라 상품 card UI를 다양화. 예: 이미지 후보 있음, route 근거 있음, signal만 있음, 운영자 확인 필요
+- 이미지/route/signal/wellness/pet 같은 데이터 유형별로 사용자에게 보여줄 표현 방식을 분리
+- QA가 `unresolved_gaps`를 기준으로 claim risk를 판단하도록 강화
 - 사용자 입력의 `avoid` 항목과 기본 QA 검수 항목을 분리
 
 완료 기준:
@@ -403,49 +503,55 @@ python -m app.data.reindex --source source_documents
 - Planner가 입력 요청을 구조화하고 검증 실패 시 명확한 에러를 남긴다.
 - Research 결과가 실제 source evidence와 signal에 근거한다.
 - Product/Marketing/QA가 같은 evidence profile을 공유한다.
+- 근거 없는 claim은 상품 본문이 아니라 assumptions/not_to_claim/needs_review로 분리된다.
 
-## Phase 12: Visual, Related Places, Demand Signals
+## Phase 12: Additional KTO API Data Utilization
+
+Phase 12는 99번 문서에 정리된 추가 KTO API를 실제 provider/executor로 붙이고, 가져온 데이터를 DB/source document/RAG/Product UI에 반영하는 단계입니다. Phase 10.2까지는 capability catalog, compact capability brief, Gemini routing만 준비되어 있으므로, Phase 12부터는 “필요하다고 판단한 API를 실제로 호출해 저장하고 상품 생성에 활용”하는 것을 완료 기준으로 둡니다.
 
 목표:
 
-- 상품 구성, 이미지 후보, 수요 판단, 혼잡 리스크를 보강한다.
+- 상품 구성, 이미지 후보, route/연관 장소, 수요 판단, 혼잡 리스크, 테마형 상품 근거를 실제 API 데이터로 보강한다.
+
+### Phase 12.1: Visual APIs
 
 대상 API:
 
 - 관광사진 정보_GW
 - 관광공모전 사진 수상작 정보
-- 관광지별 연관 관광지 정보
-- 관광지 집중률 방문자 추이 예측 정보
-- 관광빅데이터 정보서비스_GW
 
 작업:
 
+- 관광사진/공모전 사진 provider method 추가
 - 이미지 후보를 `tourism_visual_assets`에 저장
 - 게시 가능 후보와 참고 후보를 분리
+- 이미지 저작권/사용 조건 확인 필요 상태를 UI에 표시
+- Poster Studio에 넘길 visual hints 생성
+
+### Phase 12.2: Route, Related Places, Demand Signals
+
+대상 API:
+
+- 관광지별 연관 관광지 정보
+- 관광지 집중률 방문자 추이 예측 정보
+- 관광빅데이터 정보서비스_GW
+- 지역별 관광수요 예측 정보
+- 두루누비 정보 서비스_GW
+
+작업:
+
 - 연관 관광지를 코스 조합 후보로 저장
+- 두루누비 코스/경로를 `tourism_route_assets`와 `source_documents`에 저장
 - 방문 수요와 집중률을 `tourism_signal_records`에 저장
 - Product ranking에 수요/혼잡/연관성 signal을 반영
 - QA에서 혼잡/수요 신호를 확정 정보처럼 쓰지 않는지 검수
-- Poster Studio에 넘길 visual hints 생성
 
-완료 기준:
-
-- Run Detail에서 상품별 이미지 후보를 볼 수 있다.
-- 상품 초안이 주변 관광지/숙박/음식 조합 근거를 활용한다.
-- 혼잡도는 경고 또는 대체 제안으로만 표시된다.
-- 수요 데이터는 판매 보장 문구로 쓰이지 않는다.
-
-## Phase 13: Theme-Specific KTO APIs
-
-목표:
-
-- 상품 카테고리를 일반 관광지 중심에서 테마형 상품으로 확장한다.
+### Phase 12.3: Theme APIs
 
 대상 API:
 
 - 웰니스관광정보
 - 반려동물 동반여행 서비스
-- 두루누비 정보 서비스_GW
 - 관광지 오디오 가이드정보_GW
 - 생태 관광 정보_GW
 - 의료관광정보
@@ -454,18 +560,23 @@ python -m app.data.reindex --source source_documents
 
 - 요청 의도에 따라 theme gap 생성
 - theme별 provider method 추가
-- theme 결과를 source document와 theme-specific table에 저장
-- 반려동물 조건, 도보 코스, 오디오 해설, 생태 맥락을 상품 구성에 반영
+- theme 결과를 `tourism_entities`, `source_documents`, 필요 시 theme-specific metadata에 저장
+- 반려동물 조건, 웰니스 속성, 오디오 해설, 생태 맥락을 상품 구성에 반영
 - 의료관광 API는 `ALLOW_MEDICAL_API=true`일 때만 활성화
+- 테마 API 근거가 Product card와 Run Detail에서 “확인된 정보”와 “운영자 확인 필요”로 나뉘어 보이게 함
 
 완료 기준:
 
+- Run Detail에서 상품별 이미지 후보를 볼 수 있다.
+- 상품 초안이 주변 관광지/숙박/음식 조합 근거를 활용한다.
 - 반려동물 요청에서 pet policy 근거를 찾는다.
 - 도보/트레킹 요청에서 두루누비 코스 근거를 찾는다.
 - 외국인 문화/역사 요청에서 오디오 가이드 근거를 활용할 수 있다.
-- 의료관광 데이터는 별도 설정 없이는 호출되지 않는다.
+- 웰니스/생태/의료관광 데이터는 과장 claim 없이 운영자 확인 항목과 함께 표시된다.
+- 혼잡도는 경고 또는 대체 제안으로만 표시된다.
+- 수요 데이터는 판매 보장 문구로 쓰이지 않는다.
 
-## Phase 14: Official Web Evidence + User Detail Request
+## Phase 13: Official Web Evidence + User Detail Request
 
 목표:
 
@@ -543,7 +654,7 @@ UI:
 - 가격과 취소 정책은 공식 페이지가 있어도 검토 필요 상태를 유지할 수 있다.
 - 사용자에게 묻는 항목 수가 공식 웹 근거 확인 뒤 줄어든다.
 
-## Phase 15: Evaluation
+## Phase 14: Evaluation
 
 목표:
 
@@ -582,7 +693,7 @@ UI:
 - 데이터 보강 전/후 coverage 차이를 report에서 볼 수 있다.
 - 공식 웹 근거가 필요한 case와 사용자 입력이 필요한 case를 구분해 평가한다.
 
-## Phase 16: Deployment / Demo Hardening
+## Phase 15: Deployment / Demo Hardening
 
 목표:
 
@@ -605,7 +716,7 @@ UI:
 - 실제 TourAPI key와 Gemini key가 있으면 demo workflow 완주 가능
 - 실패 시 FastAPI log와 log file에서 원인을 확인할 수 있다.
 
-## Phase 17: Poster Studio
+## Phase 16: Poster Studio
 
 목표:
 
@@ -618,7 +729,7 @@ Approved or Reviewable Run
   -> PosterContextBuilder
   -> DataGapProfilerAgent
   -> ApiCapabilityRouterAgent
-  -> VisualDataEnrichmentAgent
+  -> VisualDataEnrichment
   -> PosterPromptAgent
   -> Human Poster Option Review
   -> PosterImageAgent
@@ -643,25 +754,23 @@ Approved or Reviewable Run
 
 ## 다음 구현 시작점
 
-바로 다음 구현은 Phase 10 Data Enrichment Agent Workflow부터 시작합니다.
+바로 다음 구현은 Phase 10.1 AppShell Navbar and Global Navigation부터 시작합니다. Phase 10 Data Enrichment Workflow와 Phase 10.2 Gemini Data Enrichment Agent 전환은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 작업은 Phase 12에서 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 진행합니다.
 
 Codex에게 줄 첫 작업 범위:
 
 ```text
-Phase 10: Data Enrichment Agent Workflow를 구현해줘.
+Phase 10.1: AppShell Navbar and Global Navigation을 구현해줘.
 
 범위:
-- 현재 Phase 9.6의 GeoResolver/TourAPI v4.4 ldong/lcls/RAG metadata 구조를 유지
-- DataGapAnalyzer, BaselineDataAgent, EvidenceFusionAgent 범위 확정
-- TourAPI 상세 보강으로도 부족한 운영 시간, 예약 조건, 집결지, 가격/포함사항 공백을 구조화
-- Product/Marketing/QA가 evidence와 data_gap을 더 강하게 사용하도록 연결
-- 외부 웹 검색/grounding은 feature flag와 비용 한도 뒤에만 연결
+- 현재 Dashboard 중심 화면을 Mantine AppShell 기반 전역 layout으로 전환
+- Header/Navbar/primary navigation 추가
+- Runs, Workflow Preview, Data Sources, Evaluation, Costs, Settings placeholder route 구성
+- 기존 Run 생성, Run Detail drawer, Workflow preview, revision UI 동작 유지
+- mobile navbar collapse와 active nav 상태 구현
 - backend test와 frontend build로 확인
 
 주의:
-- 아직 관광사진/공모전/수요/혼잡/두루누비/웰니스 API는 붙이지 마.
-- Gemini/OpenAI embedding은 기본값으로 쓰지 마.
-- 기존 local CPU sentence-transformers embedding provider를 유지해 embedding API 비용이 발생하지 않게 해.
-- TourAPI mock, fixture, fallback은 사용하지 마.
+- Data Enrichment workflow 동작을 바꾸지 마.
 - 지역 resolve 실패 시 전국 fallback하지 마.
+- 불필요한 landing page를 만들지 말고 운영 dashboard를 첫 화면으로 유지해.
 ```

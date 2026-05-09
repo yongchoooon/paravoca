@@ -16,7 +16,7 @@
 - 평가 자동화: RAG, agent tool call, workflow success, 비용, latency를 측정합니다.
 - 비용 거버넌스: Gemini gateway 사용량 추적, 저가 모델 라우팅, 샘플 기반 eval, batch 실행을 설계합니다.
 
-현재 코드 구현 기준은 Phase 9.6까지입니다. TourAPI 기본 검색, KorService2 상세 보강, source document/Chroma 색인, local semantic embedding provider, Gemini 기반 Product/Marketing/QA, revision workflow, KTO capability catalog, Run Detail Evidence의 상세 정보/이미지 후보 표시까지 구현되어 있습니다. Phase 9.6에서는 `GeoResolverAgent`를 추가해 자연어 요청에서 지역 의도를 해석하고, TourAPI v4.4 `ldongCode2?lDongListYn=Y`/`lclsSystmCode2` catalog를 기준으로 `lDongRegnCd`/`lDongSignguCd` 검색을 수행합니다. 지역이 애매하면 run status는 `failed`로 저장하고 지역 후보 안내를 표시하며, 해외 목적지는 PARAVOCA 국내 지원 범위 안내로 종료합니다.
+현재 코드 구현 기준은 Phase 10.2까지입니다. TourAPI 기본 검색, KorService2 상세 보강, source document/Chroma 색인, local semantic embedding provider, Gemini 기반 Product/Marketing/QA, revision workflow, KTO capability catalog, Run Detail Evidence의 상세 정보/이미지 후보 표시까지 구현되어 있습니다. Phase 9.6에서는 `GeoResolverAgent`를 추가해 자연어 요청에서 지역 의도를 해석하고, TourAPI v4.4 `ldongCode2?lDongListYn=Y`/`lclsSystmCode2` catalog를 기준으로 `lDongRegnCd`/`lDongSignguCd` 검색을 수행합니다. 지역이 애매하면 run status는 `failed`로 저장하고 지역 후보 안내를 표시하며, 해외 목적지는 PARAVOCA 국내 지원 범위 안내로 종료합니다. Phase 10에서는 Data 단계를 `BaselineDataAgent`, `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 4개 API family planner, `EnrichmentExecutor`, `EvidenceFusionAgent`로 분리해 필요한 데이터 보강만 실행하고, Product/Marketing/QA에 넘길 `evidence_profile`, `productization_advice`, `data_coverage`, `unresolved_gaps`를 생성합니다. Phase 10.2에서는 DataGap/Router/Planner/Fusion 판단을 Gemini prompt + JSON schema 기반으로 전환했고, raw 후보 shortlist, compact capability brief, KorService2 상세 보강 전체 처리, 후보별 EvidenceFusion card, prompt debug log, Dashboard task 삭제, QA Review Avoid 표시를 반영했습니다.
 
 ## 문서 목록
 
@@ -69,10 +69,13 @@
     - Codex에게 그대로 전달할 구현 프롬프트와 작업 규칙
 
 14. [14_POST_PHASE7_IMPLEMENTATION_PLAN.md](./14_POST_PHASE7_IMPLEMENTATION_PLAN.md)
-    - Phase 7 이후 KTO 데이터 보강, 공식 웹 근거, Agent 실제화, 평가, 배포, Poster Studio 구현 순서
+    - Phase 7 이후 KTO 데이터 보강, AppShell 전역 navigation, 공식 웹 근거, Agent 실제화, 평가, 배포, Poster Studio 구현 순서
 
 15. [15_PHASE_9_6_GEO_RESOLVER_PLAN.md](./15_PHASE_9_6_GEO_RESOLVER_PLAN.md)
     - 자연어 지역 의도 추출, GeoResolverAgent, TourAPI 법정동/신분류체계 전환 구현 계획
+
+16. [16_PHASE_10_2_GEMINI_DATA_ENRICHMENT.md](./16_PHASE_10_2_GEMINI_DATA_ENRICHMENT.md)
+   - Gemini 기반 DataGapProfiler/ApiCapabilityRouter/Planner/EvidenceFusion 전환, shortlist와 prompt 축소, KorService2 상세 보강 정책, 후보별 evidence card, Phase 11/12 연결 계획
 
 99. [99_00_KTO_API_SPEC_INDEX.md](./99_00_KTO_API_SPEC_INDEX.md)
     - KTO/TourAPI API 명세 canonical 인덱스, 99-01부터 99-13까지 서비스별 endpoint/response schema 정규화 문서
