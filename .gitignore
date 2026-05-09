@@ -8,6 +8,7 @@ data/*.log
 backend/data/*.db
 *.db.*
 backend/logs/
+logs/
 data/chroma/
 data/test_chroma/
 backend/data/chroma/
