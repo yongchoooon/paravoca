@@ -3,9 +3,13 @@ import traceback
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.api.responses import error as api_error
 from app.api.responses import ok
+from app.agents.data_enrichment import enrichment_run_to_dict
+from app.agents.preflight import validate_preflight_request
 from app.agents.workflow import run_product_planning_workflow, run_revision_workflow
 from app.db import models
 from app.db.session import SessionLocal, get_db
@@ -18,12 +22,15 @@ from app.schemas.workflow import (
     QAIssueDeleteRequest,
     ToolCallRead,
     WorkflowRunCreate,
+    WorkflowRunDeleteRequest,
+    WorkflowRunDeleteResult,
     WorkflowRunRead,
     WorkflowRevisionCreate,
 )
 
 router = APIRouter(prefix="/workflow-runs", tags=["workflow-runs"])
 logger = logging.getLogger("uvicorn.error")
+ACTIVE_RUN_STATUSES = {"pending", "running"}
 
 
 def _log_workflow_exception(
@@ -99,6 +106,45 @@ def get_run_or_404(db: Session, run_id: str) -> models.WorkflowRun:
     return run
 
 
+def _collect_run_ids_with_revisions(db: Session, run_ids: list[str]) -> list[str]:
+    requested = [run_id for run_id in dict.fromkeys(run_ids) if run_id]
+    if not requested:
+        return []
+
+    all_runs = db.query(models.WorkflowRun.id, models.WorkflowRun.parent_run_id).all()
+    child_ids_by_parent: dict[str, list[str]] = {}
+    known_ids: set[str] = set()
+    for run_id, parent_run_id in all_runs:
+        known_ids.add(run_id)
+        if parent_run_id:
+            child_ids_by_parent.setdefault(parent_run_id, []).append(run_id)
+
+    missing = [run_id for run_id in requested if run_id not in known_ids]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Workflow run not found: {missing[0]}")
+
+    collected: set[str] = set()
+
+    def visit(run_id: str) -> None:
+        if run_id in collected:
+            return
+        collected.add(run_id)
+        for child_id in child_ids_by_parent.get(run_id, []):
+            visit(child_id)
+
+    for run_id in requested:
+        visit(run_id)
+
+    return sorted(collected, key=lambda item: _run_depth(item, child_ids_by_parent))
+
+
+def _run_depth(run_id: str, child_ids_by_parent: dict[str, list[str]]) -> int:
+    children = child_ids_by_parent.get(run_id, [])
+    if not children:
+        return 0
+    return 1 + max(_run_depth(child_id, child_ids_by_parent) for child_id in children)
+
+
 def apply_approval_decision(
     *,
     db: Session,
@@ -160,6 +206,16 @@ def create_workflow_run(
     template = db.get(models.WorkflowTemplate, payload.template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Workflow template not found")
+    preflight = validate_preflight_request(payload.input.model_dump())
+    if not preflight.supported:
+        return JSONResponse(
+            status_code=422,
+            content=api_error(
+                "PREFLIGHT_VALIDATION_FAILED",
+                preflight.user_message,
+                {"preflight": preflight.to_dict()},
+            ),
+        )
 
     run = models.WorkflowRun(
         template_id=payload.template_id,
@@ -199,6 +255,47 @@ def list_workflow_runs(db: Session = Depends(get_db)) -> dict:
     return ok(data, count=len(data))
 
 
+@router.post("/delete")
+def delete_workflow_runs(
+    payload: WorkflowRunDeleteRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    run_ids = _collect_run_ids_with_revisions(db, payload.run_ids)
+    runs = (
+        db.query(models.WorkflowRun)
+        .filter(models.WorkflowRun.id.in_(run_ids))
+        .all()
+        if run_ids
+        else []
+    )
+    run_by_id = {run.id: run for run in runs}
+    active = [
+        run.id
+        for run in runs
+        if run.status in ACTIVE_RUN_STATUSES
+    ]
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Running workflow runs cannot be deleted: {', '.join(active)}",
+        )
+
+    deleted_run_ids: list[str] = []
+    for run_id in run_ids:
+        run = run_by_id.get(run_id)
+        if not run:
+            continue
+        db.delete(run)
+        deleted_run_ids.append(run_id)
+    db.commit()
+    return ok(
+        WorkflowRunDeleteResult(
+            deleted_run_ids=deleted_run_ids,
+            deleted_count=len(deleted_run_ids),
+        ).model_dump(mode="json")
+    )
+
+
 @router.get("/{run_id}")
 def get_workflow_run(run_id: str, db: Session = Depends(get_db)) -> dict:
     run = get_run_or_404(db, run_id)
@@ -229,6 +326,25 @@ def list_run_tool_calls(run_id: str, db: Session = Depends(get_db)) -> dict:
     )
     data = [ToolCallRead.model_validate(call).model_dump(mode="json") for call in tool_calls]
     return ok(data, count=len(data))
+
+
+@router.get("/{run_id}/enrichment")
+def list_run_enrichment(run_id: str, db: Session = Depends(get_db)) -> dict:
+    get_run_or_404(db, run_id)
+    enrichment_runs = (
+        db.query(models.EnrichmentRun)
+        .filter(models.EnrichmentRun.workflow_run_id == run_id)
+        .order_by(models.EnrichmentRun.created_at.desc())
+        .all()
+    )
+    data = [enrichment_run_to_dict(enrichment_run) for enrichment_run in enrichment_runs]
+    return ok(
+        {
+            "latest": data[0] if data else None,
+            "runs": data,
+        },
+        count=len(data),
+    )
 
 
 @router.get("/{run_id}/llm-calls")

@@ -4,9 +4,12 @@ import hashlib
 import json
 import logging
 import random
+import re
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -58,10 +61,11 @@ def call_gemini_json(
     model = settings.gemini_generation_model
     started = time.perf_counter()
     original_prompt = _original_prompt or prompt
+    full_prompt = _build_json_prompt(prompt=prompt, response_schema=response_schema)
 
     if not settings.gemini_api_key:
         latency_ms = int((time.perf_counter() - started) * 1000)
-        _record_call(
+        call_id = _record_call(
             db=db,
             run_id=run_id,
             step_id=step_id,
@@ -74,11 +78,32 @@ def call_gemini_json(
             cost_usd=0.0,
             paid_tier_equivalent_cost_usd=0.0,
             latency_ms=latency_ms,
-            request_hash=_request_hash(prompt),
+            request_hash=_request_hash(full_prompt),
+        )
+        _write_prompt_debug_log(
+            db=db,
+            settings=settings,
+            run_id=run_id,
+            step_id=step_id,
+            call_id=call_id,
+            purpose=purpose,
+            model=model,
+            status="failed",
+            prompt=prompt,
+            full_prompt=full_prompt,
+            original_prompt=original_prompt,
+            response_schema=response_schema,
+            request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+            usage={},
+            finish_reason=None,
+            raw_text=None,
+            parsed=None,
+            error={"type": "GeminiGatewayError", "message": "GEMINI_API_KEY is not configured"},
+            latency_ms=latency_ms,
+            json_retry_attempt=_json_retry_attempt,
         )
         raise GeminiGatewayError("GEMINI_API_KEY is not configured")
 
-    full_prompt = _build_json_prompt(prompt=prompt, response_schema=response_schema)
     response: httpx.Response | None = None
     last_http_error: httpx.HTTPError | None = None
     request_payload = {
@@ -143,7 +168,7 @@ def call_gemini_json(
 
     if last_http_error is not None:
         latency_ms = int((time.perf_counter() - started) * 1000)
-        _record_call(
+        call_id = _record_call(
             db=db,
             run_id=run_id,
             step_id=step_id,
@@ -157,6 +182,28 @@ def call_gemini_json(
             paid_tier_equivalent_cost_usd=0.0,
             latency_ms=latency_ms,
             request_hash=_request_hash(full_prompt),
+        )
+        _write_prompt_debug_log(
+            db=db,
+            settings=settings,
+            run_id=run_id,
+            step_id=step_id,
+            call_id=call_id,
+            purpose=purpose,
+            model=model,
+            status="failed",
+            prompt=prompt,
+            full_prompt=full_prompt,
+            original_prompt=original_prompt,
+            response_schema=response_schema,
+            request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+            usage={},
+            finish_reason=None,
+            raw_text=None,
+            parsed=None,
+            error={"type": last_http_error.__class__.__name__, "message": str(last_http_error)},
+            latency_ms=latency_ms,
+            json_retry_attempt=_json_retry_attempt,
         )
         raise GeminiGatewayError(str(last_http_error)) from last_http_error
 
@@ -165,7 +212,8 @@ def call_gemini_json(
 
     latency_ms = int((time.perf_counter() - started) * 1000)
     if response.is_error:
-        _record_call(
+        error_message = _safe_error_message(response)
+        call_id = _record_call(
             db=db,
             run_id=run_id,
             step_id=step_id,
@@ -180,7 +228,29 @@ def call_gemini_json(
             latency_ms=latency_ms,
             request_hash=_request_hash(full_prompt),
         )
-        raise GeminiGatewayError(_safe_error_message(response))
+        _write_prompt_debug_log(
+            db=db,
+            settings=settings,
+            run_id=run_id,
+            step_id=step_id,
+            call_id=call_id,
+            purpose=purpose,
+            model=model,
+            status="failed",
+            prompt=prompt,
+            full_prompt=full_prompt,
+            original_prompt=original_prompt,
+            response_schema=response_schema,
+            request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+            usage={},
+            finish_reason=None,
+            raw_text=_response_debug_body(response),
+            parsed=None,
+            error={"type": "GeminiHTTPError", "message": error_message, "status_code": response.status_code},
+            latency_ms=latency_ms,
+            json_retry_attempt=_json_retry_attempt,
+        )
+        raise GeminiGatewayError(error_message)
 
     body = response.json()
     finish_reason = _finish_reason(body)
@@ -230,7 +300,7 @@ def call_gemini_json(
         )
         max_json_retries = max(0, int(settings.gemini_json_max_retries))
         will_retry_json = _json_retry_attempt < max_json_retries
-        _record_call(
+        call_id = _record_call(
             db=db,
             run_id=run_id,
             step_id=step_id,
@@ -244,6 +314,28 @@ def call_gemini_json(
             paid_tier_equivalent_cost_usd=paid_equivalent_cost_usd,
             latency_ms=latency_ms,
             request_hash=_request_hash(full_prompt),
+        )
+        _write_prompt_debug_log(
+            db=db,
+            settings=settings,
+            run_id=run_id,
+            step_id=step_id,
+            call_id=call_id,
+            purpose=purpose,
+            model=model,
+            status="retrying" if will_retry_json else "failed",
+            prompt=prompt,
+            full_prompt=full_prompt,
+            original_prompt=original_prompt,
+            response_schema=response_schema,
+            request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+            usage=usage,
+            finish_reason=finish_reason,
+            raw_text=raw_text if "raw_text" in locals() else None,
+            parsed=None,
+            error={"type": exc.__class__.__name__, "message": str(exc)},
+            latency_ms=latency_ms,
+            json_retry_attempt=_json_retry_attempt,
         )
         if will_retry_json:
             delay = min(0.5 * (_json_retry_attempt + 1), 2.0)
@@ -279,7 +371,7 @@ def call_gemini_json(
             )
         raise
 
-    _record_call(
+    call_id = _record_call(
         db=db,
         run_id=run_id,
         step_id=step_id,
@@ -293,6 +385,28 @@ def call_gemini_json(
         paid_tier_equivalent_cost_usd=paid_equivalent_cost_usd,
         latency_ms=latency_ms,
         request_hash=_request_hash(full_prompt),
+    )
+    _write_prompt_debug_log(
+        db=db,
+        settings=settings,
+        run_id=run_id,
+        step_id=step_id,
+        call_id=call_id,
+        purpose=purpose,
+        model=model,
+        status="succeeded",
+        prompt=prompt,
+        full_prompt=full_prompt,
+        original_prompt=original_prompt,
+        response_schema=response_schema,
+        request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+        usage=usage,
+        finish_reason=finish_reason,
+        raw_text=raw_text,
+        parsed=parsed,
+        error=None,
+        latency_ms=latency_ms,
+        json_retry_attempt=_json_retry_attempt,
     )
 
     return GeminiJsonResult(
@@ -432,7 +546,7 @@ def _record_call(
     paid_tier_equivalent_cost_usd: float,
     latency_ms: int,
     request_hash: str,
-) -> None:
+) -> str:
     call = models.LLMCall(
         run_id=run_id,
         step_id=step_id,
@@ -465,6 +579,150 @@ def _record_call(
         latency_ms=latency_ms,
         request_hash=request_hash,
     )
+    return call.id
+
+
+def _write_prompt_debug_log(
+    *,
+    db: Session,
+    settings: Settings,
+    run_id: str,
+    step_id: str,
+    call_id: str,
+    purpose: str,
+    model: str,
+    status: str,
+    prompt: str,
+    full_prompt: str,
+    original_prompt: str,
+    response_schema: dict[str, Any],
+    request_config: dict[str, Any],
+    usage: dict[str, Any],
+    finish_reason: str | None,
+    raw_text: str | None,
+    parsed: dict[str, Any] | None,
+    error: dict[str, Any] | None,
+    latency_ms: int,
+    json_retry_attempt: int,
+) -> None:
+    if not settings.llm_prompt_debug_log_enabled:
+        return
+    try:
+        agent_name = _agent_name_for_step(db, step_id)
+        run_dir = Path(settings.llm_prompt_debug_log_dir) / _safe_filename(run_id or "no-run")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        filename = "__".join(
+            [
+                timestamp,
+                _safe_filename(agent_name or "unknown-agent"),
+                _safe_filename(purpose),
+                _safe_filename(step_id or "no-step"),
+                f"retry-{json_retry_attempt}",
+                _safe_filename(status),
+            ]
+        )
+        payload = {
+            "timestamp": timestamp,
+            "run_id": run_id,
+            "step_id": step_id,
+            "call_id": call_id,
+            "agent_name": agent_name,
+            "provider": "gemini",
+            "model": model,
+            "purpose": purpose,
+            "status": status,
+            "json_retry_attempt": json_retry_attempt,
+            "request": {
+                "config": request_config,
+                "response_schema": response_schema,
+                "input_prompt": prompt,
+                "original_prompt": original_prompt,
+                "full_prompt": full_prompt,
+                "request_hash": _request_hash(full_prompt),
+            },
+            "response": {
+                "finish_reason": finish_reason,
+                "usage": usage,
+                "raw_text": raw_text,
+                "parsed_json": parsed,
+                "error": error,
+            },
+            "latency_ms": latency_ms,
+        }
+        (run_dir / f"{filename}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (run_dir / f"{filename}.md").write_text(
+            _render_prompt_debug_markdown(payload),
+            encoding="utf-8",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to write Gemini prompt debug log. run_id=%s step_id=%s purpose=%s",
+            run_id,
+            step_id,
+            purpose,
+        )
+
+
+def _render_prompt_debug_markdown(payload: dict[str, Any]) -> str:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+    lines = [
+        f"# {payload.get('agent_name') or 'Unknown Agent'} / {payload.get('purpose') or 'unknown'}",
+        "",
+        "## Metadata",
+        "",
+        f"- run_id: `{payload.get('run_id')}`",
+        f"- step_id: `{payload.get('step_id')}`",
+        f"- call_id: `{payload.get('call_id')}`",
+        f"- provider/model: `{payload.get('provider')}/{payload.get('model')}`",
+        f"- status: `{payload.get('status')}`",
+        f"- retry: `{payload.get('json_retry_attempt')}`",
+        f"- finish_reason: `{response.get('finish_reason')}`",
+        f"- latency_ms: `{payload.get('latency_ms')}`",
+        "",
+        "## Request Config",
+        "",
+        _fenced_json(request.get("config")),
+        "",
+        "## Usage",
+        "",
+        _fenced_json(response.get("usage")),
+        "",
+        "## Input Prompt",
+        "",
+        _fenced_text(str(request.get("input_prompt") or "")),
+        "",
+        "## Full Prompt Sent To Gemini",
+        "",
+        _fenced_text(str(request.get("full_prompt") or "")),
+        "",
+        "## Raw Output",
+        "",
+        _fenced_text(str(response.get("raw_text") or "")),
+        "",
+        "## Parsed JSON",
+        "",
+        _fenced_json(response.get("parsed_json")),
+    ]
+    if response.get("error"):
+        lines.extend(["", "## Error", "", _fenced_json(response.get("error"))])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _fenced_text(value: str) -> str:
+    return f"```text\n{_escape_fence(value)}\n```"
+
+
+def _fenced_json(value: Any) -> str:
+    return f"```json\n{_escape_fence(json.dumps(value or {}, ensure_ascii=False, indent=2))}\n```"
+
+
+def _escape_fence(value: str) -> str:
+    return value.replace("```", "`` `")
 
 
 def _estimate_cost(*, model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -486,6 +744,30 @@ def _safe_error_message(response: httpx.Response) -> str:
     if isinstance(error, dict):
         return str(error.get("message") or error.get("status") or error)[:500]
     return str(error)[:500]
+
+
+def _response_debug_body(response: httpx.Response) -> str:
+    try:
+        return json.dumps(response.json(), ensure_ascii=False)
+    except ValueError:
+        return response.text
+
+
+def _agent_name_for_step(db: Session, step_id: str) -> str | None:
+    if not step_id:
+        return None
+    try:
+        step = db.get(models.AgentStep, step_id)
+    except Exception:
+        return None
+    if not step:
+        return None
+    return step.agent_name
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    return cleaned.strip("._")[:120] or "unknown"
 
 
 def _is_retryable_response(response: httpx.Response) -> bool:

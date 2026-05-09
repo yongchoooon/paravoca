@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     tourapi_service_key: str | None = None
     tourapi_base_url: str = "https://apis.data.go.kr/B551011/KorService2"
     tourapi_detail_enrichment_limit: int = 5
+    tourapi_candidate_shortlist_limit: int = 20
+    enrichment_max_call_budget: int = 6
     kto_photo_contest_enabled: bool = False
     kto_wellness_enabled: bool = False
     kto_pet_enabled: bool = False
@@ -37,6 +39,7 @@ class Settings(BaseSettings):
     kto_bigdata_enabled: bool = False
     kto_crowding_enabled: bool = False
     kto_related_places_enabled: bool = False
+    kto_regional_tourism_demand_enabled: bool = False
     allow_medical_api: bool = False
     official_web_search_enabled: bool = False
     openai_api_key: str | None = None
@@ -50,6 +53,8 @@ class Settings(BaseSettings):
     gemini_retry_max_seconds: float = 12.0
     llm_enabled: bool = False
     llm_usage_log_dir: str = "logs"
+    llm_prompt_debug_log_enabled: bool = False
+    llm_prompt_debug_log_dir: str = "logs/prompt_debug"
     app_log_dir: str = "logs"
     usd_krw_rate: float = 1400
 

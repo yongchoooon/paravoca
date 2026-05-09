@@ -13,6 +13,35 @@ from sqlalchemy.orm import Session
 
 from app.agents.geo_resolver import resolve_geo_scope, save_geo_resolution
 from app.agents.state import GraphState
+from app.agents.data_enrichment import (
+    API_CAPABILITY_ROUTING_RESPONSE_SCHEMA,
+    DATA_GAP_PROFILE_RESPONSE_SCHEMA,
+    EVIDENCE_FUSION_RESPONSE_SCHEMA,
+    API_FAMILY_PLANNER_RESPONSE_SCHEMA,
+    TOURAPI_DETAIL_PLANNER_RESPONSE_SCHEMA,
+    build_api_capability_router_prompt,
+    build_api_family_planner_prompt,
+    build_data_gap_profile_prompt,
+    build_evidence_fusion_prompt,
+    build_tourapi_detail_planner_prompt,
+    capability_brief_for_prompt,
+    capability_matrix_for_prompt,
+    count_tourapi_detail_targets,
+    create_enrichment_run,
+    execute_enrichment_plan,
+    fuse_evidence,
+    normalize_evidence_fusion_payload,
+    normalize_family_planner_payload,
+    normalize_family_routing_payload,
+    normalize_gap_profile_payload,
+    normalize_tourapi_detail_planner_payload,
+    merge_enrichment_plan_fragments,
+    plan_family_deterministic,
+    profile_data_gaps,
+    select_enrichment_candidate_items,
+    summarize_candidate_pool,
+    PLANNER_DEFINITIONS,
+)
 from app.core.config import get_settings
 from app.db import models
 from app.llm.gemini_gateway import GeminiJsonResult, call_gemini_json
@@ -20,7 +49,6 @@ from app.llm.usage_log import safe_write_llm_usage_log
 from app.rag.chroma_store import index_source_documents, search_source_documents
 from app.rag.source_documents import upsert_source_documents_from_items
 from app.tools.tourism import get_tourism_provider, log_tool_call, upsert_tourism_items
-from app.tools.tourism_enrichment import enrich_items_with_tourapi_details
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -199,7 +227,19 @@ def _base_revision_state(run: models.WorkflowRun, context: dict[str, Any]) -> Gr
         "user_request": run.input,
         "normalized_request": normalized,
         "source_items": source_output.get("source_items", []),
+        "candidate_pool_summary": source_output.get("candidate_pool_summary", {}),
         "retrieved_documents": source_output.get("retrieved_documents", []),
+        "data_gap_report": source_output.get("data_gap_report", {}),
+        "capability_routing": source_output.get("capability_routing", {}),
+        "enrichment_plan_fragments": source_output.get("enrichment_plan_fragments", []),
+        "enrichment_plan": source_output.get("enrichment_plan", {}),
+        "enrichment_summary": source_output.get("enrichment_summary", {}),
+        "evidence_profile": source_output.get("evidence_profile", {}),
+        "productization_advice": source_output.get("productization_advice", {}),
+        "data_coverage": source_output.get("data_coverage", {}),
+        "unresolved_gaps": source_output.get("unresolved_gaps", []),
+        "source_confidence": source_output.get("source_confidence", 0.0),
+        "ui_highlights": source_output.get("ui_highlights", []),
         "research_summary": source_output.get("research_summary", {}),
         "errors": [],
         "agent_execution": [],
@@ -257,7 +297,15 @@ def _build_graph(db: Session):
     graph.add_node("planner", lambda state: planner_agent(db, state))
     graph.add_node("geo_resolver", lambda state: geo_resolver_agent(db, state))
     graph.add_node("geo_exit", lambda state: geo_exit_node(db, state))
-    graph.add_node("data", lambda state: data_agent(db, state))
+    graph.add_node("baseline_data", lambda state: baseline_data_agent(db, state))
+    graph.add_node("data_gap_profiler", lambda state: data_gap_profiler_agent(db, state))
+    graph.add_node("api_capability_router", lambda state: api_capability_router_agent(db, state))
+    graph.add_node("tourapi_detail_planner", lambda state: tourapi_detail_planner_agent(db, state))
+    graph.add_node("visual_data_planner", lambda state: visual_data_planner_agent(db, state))
+    graph.add_node("route_signal_planner", lambda state: route_signal_planner_agent(db, state))
+    graph.add_node("theme_data_planner", lambda state: theme_data_planner_agent(db, state))
+    graph.add_node("data_enrichment", lambda state: data_enrichment_agent(db, state))
+    graph.add_node("evidence_fusion", lambda state: evidence_fusion_agent(db, state))
     graph.add_node("research", lambda state: research_agent(db, state))
     graph.add_node("product", lambda state: product_agent(db, state))
     graph.add_node("marketing", lambda state: marketing_agent(db, state))
@@ -271,11 +319,26 @@ def _build_graph(db: Session):
         _route_after_geo_resolution,
         {
             "geo_exit": "geo_exit",
-            "data": "data",
+            "data": "baseline_data",
         },
     )
     graph.add_edge("geo_exit", END)
-    graph.add_edge("data", "research")
+    graph.add_edge("baseline_data", "data_gap_profiler")
+    graph.add_conditional_edges(
+        "data_gap_profiler",
+        _route_after_gap_profile,
+        {
+            "enrich": "api_capability_router",
+            "research": "research",
+        },
+    )
+    graph.add_edge("api_capability_router", "tourapi_detail_planner")
+    graph.add_edge("tourapi_detail_planner", "visual_data_planner")
+    graph.add_edge("visual_data_planner", "route_signal_planner")
+    graph.add_edge("route_signal_planner", "theme_data_planner")
+    graph.add_edge("theme_data_planner", "data_enrichment")
+    graph.add_edge("data_enrichment", "evidence_fusion")
+    graph.add_edge("evidence_fusion", "research")
     graph.add_edge("research", "product")
     graph.add_edge("product", "marketing")
     graph.add_edge("marketing", "qa")
@@ -295,6 +358,12 @@ def _route_after_geo_resolution(state: GraphState) -> str:
     return "data"
 
 
+def _route_after_gap_profile(state: GraphState) -> str:
+    gap_report = state.get("data_gap_report") or {}
+    gaps = gap_report.get("gaps") if isinstance(gap_report.get("gaps"), list) else []
+    return "enrich" if gaps else "research"
+
+
 def planner_agent(db: Session, state: GraphState) -> GraphState:
     with step_log(db, state["run_id"], "PlannerAgent", "planner", state.get("user_request")) as step:
         request = state["user_request"]
@@ -304,16 +373,22 @@ def planner_agent(db: Session, state: GraphState) -> GraphState:
             "start_date": _period_start(request.get("period")),
             "end_date": _period_end(request.get("period")),
             "target_customer": request.get("target_customer") or "외국인",
-            "product_count": min(int(request.get("product_count") or 3), 10),
+            "product_count": min(int(request.get("product_count") or 3), 5),
             "preferred_themes": request.get("preferences") or ["야간 관광", "축제"],
             "avoid": request.get("avoid") or [],
             "output_language": request.get("output_language") or "ko",
         }
         plan = [
             {"id": "resolve_geo_scope", "agent": "GeoResolverAgent"},
-            {"id": "search_attractions", "tool": "tourapi_search_keyword"},
-            {"id": "search_events", "tool": "tourapi_search_festival"},
-            {"id": "search_stays", "tool": "tourapi_search_stay"},
+            {"id": "baseline_tourapi_collection", "agent": "BaselineDataAgent"},
+            {"id": "profile_data_gaps", "agent": "DataGapProfilerAgent"},
+            {"id": "route_data_capabilities", "agent": "ApiCapabilityRouterAgent"},
+            {"id": "plan_tourapi_detail", "agent": "TourApiDetailPlannerAgent"},
+            {"id": "plan_visual_data", "agent": "VisualDataPlannerAgent"},
+            {"id": "plan_route_signal", "agent": "RouteSignalPlannerAgent"},
+            {"id": "plan_theme_data", "agent": "ThemeDataPlannerAgent"},
+            {"id": "execute_selected_enrichment", "executor": "EnrichmentExecutor"},
+            {"id": "fuse_evidence", "agent": "EvidenceFusionAgent"},
             {"id": "rag_search", "tool": "vector_search"},
             {"id": "generate_products", "agent": "ProductAgent"},
             {"id": "generate_marketing", "agent": "MarketingAgent"},
@@ -448,9 +523,9 @@ def geo_exit_node(db: Session, state: GraphState) -> GraphState:
         }
 
 
-def data_agent(db: Session, state: GraphState) -> GraphState:
+def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
     normalized = state["normalized_request"]
-    with step_log(db, state["run_id"], "DataAgent", "data_collection", normalized) as step:
+    with step_log(db, state["run_id"], "BaselineDataAgent", "baseline_data_collection", normalized) as step:
         provider = get_tourism_provider()
         provider_source = "tourapi"
         run_id = state["run_id"]
@@ -555,19 +630,6 @@ def data_agent(db: Session, state: GraphState) -> GraphState:
                 f"TourAPI returned no tourism items for resolved geo_scope={geo_scope!r}"
             )
         upsert_tourism_items(db, items)
-        settings = get_settings()
-        detail_limit = min(settings.tourapi_detail_enrichment_limit, len(items))
-        detail_enrichment = enrich_items_with_tourapi_details(
-            db=db,
-            provider=provider,
-            items=items,
-            run_id=run_id,
-            step_id=step.id,
-            limit=detail_limit,
-        )
-        if detail_enrichment["items"]:
-            enriched_by_id = {item.id: item for item in detail_enrichment["items"]}
-            items = [enriched_by_id.get(item.id, item) for item in items]
         source_documents = upsert_source_documents_from_items(db, items)
         indexed_count = index_source_documents(db, source_documents)
         vector_filters = _vector_filters_for_geo_scope(geo_scope, source=provider_source)
@@ -597,20 +659,399 @@ def data_agent(db: Session, state: GraphState) -> GraphState:
             raise RuntimeError(
                 f"No TourAPI source documents were retrieved from vector search for geo_scope={geo_scope!r}"
             )
+        raw_source_items = [_tourism_item_to_dict(item) for item in items]
+        source_items = select_enrichment_candidate_items(
+            source_items=raw_source_items,
+            retrieved_documents=retrieved,
+            normalized_request=normalized,
+            limit=int(get_settings().tourapi_candidate_shortlist_limit),
+        )
+        candidate_pool_summary = summarize_candidate_pool(
+            raw_source_items=raw_source_items,
+            selected_items=source_items,
+        )
         output = {
             "geo_scope": geo_scope,
-            "source_items": [_tourism_item_to_dict(item) for item in items],
+            "source_items": source_items,
+            "candidate_pool_summary": candidate_pool_summary,
             "retrieved_documents": retrieved,
             "indexed_documents": indexed_count,
-            "detail_enrichment": detail_enrichment["summary"],
+            "detail_enrichment": {
+                "status": "deferred_to_enrichment_executor",
+                "message": "Phase 10부터 상세/이미지 보강은 gap profiling 이후 선택적으로 실행합니다.",
+            },
         }
         step.output = output
         record_rule_based_llm_call(db, run_id, step.id, "data_summary", normalized, output)
         return {
             "geo_scope": geo_scope,
             "source_items": output["source_items"],
+            "candidate_pool_summary": candidate_pool_summary,
             "retrieved_documents": retrieved,
         }
+
+
+def data_agent(db: Session, state: GraphState) -> GraphState:
+    return baseline_data_agent(db, state)
+
+
+def data_gap_profiler_agent(db: Session, state: GraphState) -> GraphState:
+    settings = get_settings()
+    capability_brief = capability_brief_for_prompt(settings)
+    input_payload = {
+        "source_item_count": len(state.get("source_items", [])),
+        "retrieved_document_count": len(state.get("retrieved_documents", [])),
+        "normalized_request": state.get("normalized_request", {}),
+        "candidate_pool_summary": state.get("candidate_pool_summary", {}),
+    }
+    with step_log(db, state["run_id"], "DataGapProfilerAgent", "data_gap_profile", input_payload) as step:
+        if settings.llm_enabled:
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose="data_gap_profile",
+                prompt=build_data_gap_profile_prompt(
+                    source_items=state.get("source_items", []),
+                    retrieved_documents=state.get("retrieved_documents", []),
+                    normalized_request=state.get("normalized_request", {}),
+                    capability_brief=capability_brief,
+                    candidate_pool_summary=state.get("candidate_pool_summary", {}),
+                ),
+                response_schema=DATA_GAP_PROFILE_RESPONSE_SCHEMA,
+                max_output_tokens=16384,
+                temperature=0.1,
+                settings=settings,
+            )
+            gap_report = normalize_gap_profile_payload(
+                gemini_result.data,
+                source_items=state.get("source_items", []),
+                retrieved_documents=state.get("retrieved_documents", []),
+            )
+            meta = _gemini_generation_meta("DataGapProfilerAgent", "data_gap_profile", gemini_result)
+            step.model = gemini_result.model
+        else:
+            gap_report = profile_data_gaps(
+                source_items=state.get("source_items", []),
+                retrieved_documents=state.get("retrieved_documents", []),
+                normalized_request=state.get("normalized_request", {}),
+            )
+            gap_report = {
+                **gap_report,
+                "reasoning_summary": gap_report.get("reasoning_summary")
+                or "LLM_ENABLED=false라 Gemini gap 판단을 실행하지 않고 로컬 테스트 호환 경로로 계산했습니다.",
+                "needs_review": gap_report.get("needs_review") or [],
+            }
+            meta = _offline_generation_meta("DataGapProfilerAgent", "data_gap_profile")
+            step.model = meta["model"]
+        step.output = {"gap_report": gap_report, "generation": meta}
+        return {
+            "data_gap_report": gap_report,
+            "data_coverage": gap_report.get("coverage") or {},
+            "unresolved_gaps": gap_report.get("gaps") or [],
+            "agent_execution": _append_agent_execution(state, meta),
+        }
+
+
+def api_capability_router_agent(db: Session, state: GraphState) -> GraphState:
+    gap_report = state.get("data_gap_report") or {"gaps": []}
+    settings = get_settings()
+    max_call_budget = int(settings.enrichment_max_call_budget)
+    capabilities = capability_matrix_for_prompt(settings)
+    with step_log(db, state["run_id"], "ApiCapabilityRouterAgent", "api_capability_routing", gap_report) as step:
+        if settings.llm_enabled:
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose="api_capability_routing",
+                prompt=build_api_capability_router_prompt(
+                    gap_report=gap_report,
+                    capabilities=capabilities,
+                    settings=settings,
+                    max_call_budget=max_call_budget,
+                ),
+                response_schema=API_CAPABILITY_ROUTING_RESPONSE_SCHEMA,
+                max_output_tokens=2048,
+                temperature=0.05,
+                settings=settings,
+            )
+            capability_routing = normalize_family_routing_payload(
+                gemini_result.data,
+                gap_report=gap_report,
+                settings=settings,
+            )
+            meta = _gemini_generation_meta("ApiCapabilityRouterAgent", "api_capability_routing", gemini_result)
+            step.model = gemini_result.model
+        else:
+            capability_routing = normalize_family_routing_payload(
+                {"family_routes": [], "routing_reasoning": "LLM_ENABLED=false라 로컬 호환 경로로 family lane을 분배했습니다."},
+                gap_report=gap_report,
+                settings=settings,
+            )
+            meta = _offline_generation_meta("ApiCapabilityRouterAgent", "api_capability_routing")
+            step.model = meta["model"]
+        step.output = {"capability_routing": capability_routing, "generation": meta}
+        return {
+            "capability_routing": capability_routing,
+            "enrichment_plan_fragments": [],
+            "agent_execution": _append_agent_execution(state, meta),
+        }
+
+
+def tourapi_detail_planner_agent(db: Session, state: GraphState) -> GraphState:
+    return api_family_planner_agent(db, state, "tourapi_detail")
+
+
+def visual_data_planner_agent(db: Session, state: GraphState) -> GraphState:
+    return api_family_planner_agent(db, state, "visual_data")
+
+
+def route_signal_planner_agent(db: Session, state: GraphState) -> GraphState:
+    return api_family_planner_agent(db, state, "route_signal")
+
+
+def theme_data_planner_agent(db: Session, state: GraphState) -> GraphState:
+    return api_family_planner_agent(db, state, "theme_data")
+
+
+def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -> GraphState:
+    definition = PLANNER_DEFINITIONS[planner_key]
+    settings = get_settings()
+    existing_fragments = state.get("enrichment_plan_fragments") or []
+    existing_planned_count = sum(len(fragment.get("planned_calls") or []) for fragment in existing_fragments)
+    capability_routing = state.get("capability_routing") or {"family_routes": []}
+    gap_report = state.get("data_gap_report") or {"gaps": []}
+    max_call_budget = int(settings.enrichment_max_call_budget)
+    if planner_key == "tourapi_detail":
+        max_call_budget = max(
+            max_call_budget,
+            existing_planned_count + count_tourapi_detail_targets(capability_routing, gap_report),
+        )
+    route = next(
+        (route for route in capability_routing.get("family_routes") or [] if route.get("planner") == planner_key),
+        None,
+    )
+    assigned_gap_ids = route.get("gap_ids") if isinstance(route, dict) else []
+    assigned_gap_count = len(assigned_gap_ids or [])
+    if assigned_gap_count == 0:
+        result: GraphState = {"enrichment_plan_fragments": existing_fragments}
+        if planner_key == "theme_data":
+            result["enrichment_plan"] = merge_enrichment_plan_fragments(
+                existing_fragments,
+                max_call_budget=max(max_call_budget, existing_planned_count),
+            )
+        return result
+
+    input_payload = {
+        "planner": planner_key,
+        "assigned_gap_count": assigned_gap_count,
+        "existing_planned_count": existing_planned_count,
+    }
+    with step_log(db, state["run_id"], definition["agent_name"], definition["purpose"], input_payload) as step:
+        if settings.llm_enabled:
+            if planner_key == "tourapi_detail":
+                planner_prompt = build_tourapi_detail_planner_prompt(
+                    capability_routing=capability_routing,
+                    gap_report=gap_report,
+                    max_call_budget=max_call_budget,
+                    existing_planned_count=existing_planned_count,
+                )
+                planner_schema = TOURAPI_DETAIL_PLANNER_RESPONSE_SCHEMA
+                planner_max_output_tokens = 8192
+            else:
+                planner_prompt = build_api_family_planner_prompt(
+                    planner_key=planner_key,
+                    capability_routing=capability_routing,
+                    gap_report=gap_report,
+                    capabilities=capability_matrix_for_prompt(settings),
+                    settings=settings,
+                    max_call_budget=max_call_budget,
+                    existing_planned_count=existing_planned_count,
+                )
+                planner_schema = API_FAMILY_PLANNER_RESPONSE_SCHEMA
+                planner_max_output_tokens = 2048
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose=definition["purpose"],
+                prompt=planner_prompt,
+                response_schema=planner_schema,
+                max_output_tokens=planner_max_output_tokens,
+                temperature=0.05,
+                settings=settings,
+            )
+            if planner_key == "tourapi_detail":
+                fragment = normalize_tourapi_detail_planner_payload(
+                    gemini_result.data,
+                    capability_routing=capability_routing,
+                    gap_report=gap_report,
+                    settings=settings,
+                    max_call_budget=max_call_budget,
+                    existing_planned_count=existing_planned_count,
+                )
+            else:
+                fragment = normalize_family_planner_payload(
+                    gemini_result.data,
+                    planner_key=planner_key,
+                    capability_routing=capability_routing,
+                    gap_report=gap_report,
+                    settings=settings,
+                    max_call_budget=max_call_budget,
+                    existing_planned_count=existing_planned_count,
+                )
+            meta = _gemini_generation_meta(definition["agent_name"], definition["purpose"], gemini_result)
+            step.model = gemini_result.model
+        else:
+            fragment = plan_family_deterministic(
+                planner_key=planner_key,
+                capability_routing=capability_routing,
+                gap_report=gap_report,
+                settings=settings,
+                max_call_budget=max_call_budget,
+                existing_planned_count=existing_planned_count,
+            )
+            meta = _offline_generation_meta(definition["agent_name"], definition["purpose"])
+            step.model = meta["model"]
+        next_fragments = [*existing_fragments, fragment]
+        output = {"fragment": fragment, "generation": meta}
+        if planner_key == "theme_data":
+            fragment_planned_count = len(fragment.get("planned_calls") or [])
+            output["merged_plan"] = merge_enrichment_plan_fragments(
+                next_fragments,
+                max_call_budget=max(max_call_budget, existing_planned_count + fragment_planned_count),
+            )
+        step.output = output
+        result: GraphState = {
+            "enrichment_plan_fragments": next_fragments,
+            "agent_execution": _append_agent_execution(state, meta),
+        }
+        if planner_key == "theme_data":
+            result["enrichment_plan"] = output["merged_plan"]
+        return result
+
+
+def data_enrichment_agent(db: Session, state: GraphState) -> GraphState:
+    input_payload = {
+        "gap_report": state.get("data_gap_report") or {"gaps": []},
+        "plan": state.get("enrichment_plan")
+        or merge_enrichment_plan_fragments(
+            state.get("enrichment_plan_fragments") or [],
+            max_call_budget=int(get_settings().enrichment_max_call_budget),
+        ),
+    }
+    with step_log(db, state["run_id"], "EnrichmentExecutor", "data_enrichment", input_payload) as step:
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id=state["run_id"],
+            gap_report=input_payload["gap_report"],
+            plan=input_payload["plan"],
+            trigger_type="workflow",
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=get_tourism_provider(),
+            enrichment_run=enrichment_run,
+            source_items=state.get("source_items", []),
+            run_id=state["run_id"],
+            step_id=step.id,
+        )
+        output = {
+            "enrichment_run_id": enrichment_run.id,
+            "status": enrichment_run.status,
+            "summary": summary,
+        }
+        step.output = output
+        step.model = "tool-executor-v1"
+        return {"enrichment_summary": output}
+
+
+def evidence_fusion_agent(db: Session, state: GraphState) -> GraphState:
+    input_payload = {
+        "source_item_count": len(state.get("source_items", [])),
+        "retrieved_document_count": len(state.get("retrieved_documents", [])),
+        "enrichment_summary": state.get("enrichment_summary") or {},
+    }
+    with step_log(db, state["run_id"], "EvidenceFusionAgent", "evidence_fusion", input_payload) as step:
+        settings = get_settings()
+        refreshed_documents = _refreshed_documents_after_enrichment(db, state, step.id)
+        documents = refreshed_documents or state.get("retrieved_documents", [])
+        base_fusion = fuse_evidence(
+            db=db,
+            source_items=state.get("source_items", []),
+            retrieved_documents=documents,
+            gap_report=state.get("data_gap_report") or {"gaps": []},
+            enrichment_summary=state.get("enrichment_summary") or {},
+        )
+        if settings.llm_enabled:
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose="evidence_fusion",
+                prompt=build_evidence_fusion_prompt(
+                    base_fusion=base_fusion,
+                    retrieved_documents=documents,
+                    gap_report=state.get("data_gap_report") or {"gaps": []},
+                    enrichment_summary=state.get("enrichment_summary") or {},
+                ),
+                response_schema=EVIDENCE_FUSION_RESPONSE_SCHEMA,
+                max_output_tokens=16384,
+                temperature=0.1,
+                settings=settings,
+            )
+            fusion = normalize_evidence_fusion_payload(gemini_result.data, base_fusion=base_fusion)
+            meta = _gemini_generation_meta("EvidenceFusionAgent", "evidence_fusion", gemini_result)
+            step.model = gemini_result.model
+        else:
+            fusion = {
+                **base_fusion,
+                "ui_highlights": _offline_fusion_highlights(base_fusion, state.get("enrichment_summary") or {}),
+            }
+            meta = _offline_generation_meta("EvidenceFusionAgent", "evidence_fusion")
+            step.model = meta["model"]
+        output = {
+            **fusion,
+            "retrieved_documents": documents,
+            "generation": meta,
+        }
+        step.output = output
+        return {
+            "retrieved_documents": documents,
+            "evidence_profile": fusion["evidence_profile"],
+            "productization_advice": fusion["productization_advice"],
+            "data_coverage": fusion["data_coverage"],
+            "unresolved_gaps": fusion["unresolved_gaps"],
+            "source_confidence": fusion["source_confidence"],
+            "ui_highlights": fusion.get("ui_highlights", []),
+            "agent_execution": _append_agent_execution(state, meta),
+        }
+
+
+def _refreshed_documents_after_enrichment(
+    db: Session,
+    state: GraphState,
+    step_id: str | None,
+) -> list[dict[str, Any]]:
+    normalized = state.get("normalized_request") or {}
+    geo_scope = state.get("geo_scope") or normalized.get("geo_scope") or {}
+    query = _keyword_for_geo_scope(normalized, geo_scope)
+    filters = _vector_filters_for_geo_scope(geo_scope, source="tourapi")
+    documents = log_tool_call(
+        db=db,
+        run_id=state["run_id"],
+        step_id=step_id,
+        tool_name="vector_search_post_enrichment",
+        arguments={"query": query, "top_k": 10, "filters": filters},
+        source="chroma",
+        call=lambda: search_source_documents(query=query, top_k=10, filters=filters),
+    )
+    return _filter_retrieved_documents_by_geo_scope(
+        documents,
+        geo_scope=geo_scope,
+        run_id=state["run_id"],
+    )
 
 
 def _region_code_from_area_result(item: dict[str, Any] | None) -> str | None:
@@ -856,6 +1297,11 @@ def research_agent(db: Session, state: GraphState) -> GraphState:
                 "가격, 예약 가능 여부, 운영 시간은 운영자가 최종 확인해야 합니다.",
                 "이미지 사용 전 공공데이터 이용 조건을 확인해야 합니다.",
             ],
+            "evidence_profile": state.get("evidence_profile") or {},
+            "productization_advice": state.get("productization_advice") or {},
+            "data_coverage": state.get("data_coverage") or {},
+            "unresolved_gaps": state.get("unresolved_gaps") or [],
+            "source_confidence": state.get("source_confidence") or 0.0,
         }
         step.output = summary
         record_rule_based_llm_call(db, state["run_id"], step.id, "research", docs, summary)
@@ -891,7 +1337,7 @@ def product_agent(db: Session, state: GraphState) -> GraphState:
                 purpose="product_generation",
                 prompt=_product_prompt(normalized, state.get("research_summary", {}), docs),
                 response_schema=PRODUCT_RESPONSE_SCHEMA,
-                max_output_tokens=4096,
+                max_output_tokens=8192,
                 temperature=0.35,
                 settings=settings,
             )
@@ -924,6 +1370,7 @@ def marketing_agent(db: Session, state: GraphState) -> GraphState:
                     products,
                     state.get("retrieved_documents", []),
                     state.get("revision_context"),
+                    _evidence_context_from_state(state),
                 ),
                 response_schema=MARKETING_RESPONSE_SCHEMA,
                 max_output_tokens=8192,
@@ -961,9 +1408,10 @@ def qa_agent(db: Session, state: GraphState) -> GraphState:
                     assets,
                     state.get("retrieved_documents", []),
                     _qa_settings_from_state(state),
+                    _evidence_context_from_state(state),
                 ),
                 response_schema=QA_RESPONSE_SCHEMA,
-                max_output_tokens=4096,
+                max_output_tokens=8192,
                 temperature=0.1,
                 settings=settings,
             )
@@ -1020,7 +1468,7 @@ def revision_patch_agent(db: Session, state: GraphState) -> GraphState:
                     state.get("revision_context", {}),
                 ),
                 response_schema=REVISION_PATCH_RESPONSE_SCHEMA,
-                max_output_tokens=4096,
+                max_output_tokens=8192,
                 temperature=0.15,
                 settings=settings,
             )
@@ -1054,7 +1502,19 @@ def human_approval_node(db: Session, state: GraphState) -> GraphState:
             "normalized_request": state.get("normalized_request"),
             "geo_scope": state.get("geo_scope") or (state.get("normalized_request") or {}).get("geo_scope"),
             "source_items": state.get("source_items", []),
+            "candidate_pool_summary": state.get("candidate_pool_summary", {}),
             "retrieved_documents": state.get("retrieved_documents", []),
+            "data_gap_report": state.get("data_gap_report", {}),
+            "capability_routing": state.get("capability_routing", {}),
+            "enrichment_plan_fragments": state.get("enrichment_plan_fragments", []),
+            "enrichment_plan": state.get("enrichment_plan", {}),
+            "enrichment_summary": state.get("enrichment_summary", {}),
+            "evidence_profile": state.get("evidence_profile", {}),
+            "productization_advice": state.get("productization_advice", {}),
+            "data_coverage": state.get("data_coverage", {}),
+            "unresolved_gaps": state.get("unresolved_gaps", []),
+            "source_confidence": state.get("source_confidence", 0.0),
+            "ui_highlights": state.get("ui_highlights", []),
             "research_summary": state.get("research_summary", {}),
             "products": state.get("product_ideas", []),
             "marketing_assets": state.get("marketing_assets", []),
@@ -1620,10 +2080,12 @@ def _marketing_prompt(
     products: list[dict[str, Any]],
     docs: list[dict[str, Any]],
     revision_context: dict[str, Any] | None = None,
+    evidence_context: dict[str, Any] | None = None,
 ) -> str:
     context = {
         "상품_목록": products,
         "근거_문서": _summarize_evidence(docs),
+        "근거_프로필": evidence_context or {},
         "수정_요청": _prompt_revision_context(revision_context),
         "규칙": [
             "각 product_id마다 marketing_asset을 정확히 1개씩 생성하세요. product_id 값은 상품_목록의 id를 그대로 사용하세요.",
@@ -1647,6 +2109,7 @@ def _qa_prompt(
     assets: list[dict[str, Any]],
     docs: list[dict[str, Any]],
     qa_settings: dict[str, Any],
+    evidence_context: dict[str, Any] | None = None,
 ) -> str:
     avoid = _string_list(qa_settings.get("avoid"))
     extra_checks = avoid if avoid else ["가격 단정 표현", "과장 표현", "출처 없는 주장"]
@@ -1654,6 +2117,7 @@ def _qa_prompt(
         "상품_목록": products,
         "마케팅_자산": assets,
         "근거_문서": _summarize_evidence(docs),
+        "근거_프로필": evidence_context or {},
         "검수_설정": qa_settings,
         "검수_항목": [
             "금지 표현 포함 여부",
@@ -1756,6 +2220,17 @@ def _prompt_revision_context(revision_context: dict[str, Any] | None) -> dict[st
     }
 
 
+def _evidence_context_from_state(state: GraphState) -> dict[str, Any]:
+    return {
+        "evidence_profile": state.get("evidence_profile") or {},
+        "productization_advice": state.get("productization_advice") or {},
+        "data_coverage": state.get("data_coverage") or {},
+        "unresolved_gaps": state.get("unresolved_gaps") or [],
+        "source_confidence": state.get("source_confidence") or 0.0,
+        "ui_highlights": state.get("ui_highlights") or [],
+    }
+
+
 def _qa_settings_from_state(state: GraphState) -> dict[str, Any]:
     normalized = state.get("normalized_request") or {}
     revision_context = state.get("revision_context") or {}
@@ -1809,6 +2284,17 @@ def _rule_based_generation_meta(agent_name: str, purpose: str) -> dict[str, Any]
     }
 
 
+def _offline_generation_meta(agent_name: str, purpose: str) -> dict[str, Any]:
+    return {
+        "agent": agent_name,
+        "purpose": purpose,
+        "provider": "offline_compat",
+        "model": "gemini-required-offline-compat-v1",
+        "cost_usd": 0.0,
+        "paid_tier_equivalent_cost_usd": 0.0,
+    }
+
+
 def _gemini_generation_meta(agent_name: str, purpose: str, result: GeminiJsonResult) -> dict[str, Any]:
     return {
         "agent": agent_name,
@@ -1826,6 +2312,42 @@ def _gemini_generation_meta(agent_name: str, purpose: str, result: GeminiJsonRes
 
 def _append_agent_execution(state: GraphState, meta: dict[str, Any]) -> list[dict[str, Any]]:
     return [*state.get("agent_execution", []), meta]
+
+
+def _offline_fusion_highlights(
+    base_fusion: dict[str, Any],
+    enrichment_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    coverage = base_fusion.get("data_coverage") if isinstance(base_fusion.get("data_coverage"), dict) else {}
+    unresolved = base_fusion.get("unresolved_gaps") if isinstance(base_fusion.get("unresolved_gaps"), list) else []
+    summary = enrichment_summary.get("summary") if isinstance(enrichment_summary.get("summary"), dict) else {}
+    executed_calls = int(summary.get("executed_calls") or 0)
+    failed_calls = int(summary.get("failed_calls") or 0)
+    highlights: list[dict[str, Any]] = [
+        {
+            "title": "근거 공백 요약",
+            "body": f"현재 상품화 전에 확인해야 할 공백이 {len(unresolved)}개 남아 있습니다.",
+            "severity": "warning" if unresolved else "success",
+            "related_gap_types": sorted({str(gap.get("gap_type")) for gap in unresolved if isinstance(gap, dict)}),
+        },
+        {
+            "title": "선택 보강 실행",
+            "body": f"실행된 보강 호출 {executed_calls}개, 실패한 호출 {failed_calls}개입니다.",
+            "severity": "warning" if failed_calls else "info",
+            "related_gap_types": [],
+        },
+    ]
+    if coverage:
+        image_coverage = round(float(coverage.get("image_coverage") or 0.0) * 100)
+        highlights.append(
+            {
+                "title": "이미지 근거",
+                "body": f"이미지 근거 커버리지는 약 {image_coverage}%입니다. 게시 전 출처와 사용 조건 확인이 필요합니다.",
+                "severity": "info",
+                "related_gap_types": ["missing_image_asset"],
+            }
+        )
+    return highlights
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:

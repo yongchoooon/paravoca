@@ -15,7 +15,7 @@ class WorkflowRunInput(BaseModel):
     region: str | None = None
     period: str | None = None
     target_customer: str | None = None
-    product_count: int = Field(default=3, ge=1, le=10)
+    product_count: int = Field(default=3, ge=1, le=5)
     preferences: list[str] = Field(default_factory=list)
     avoid: list[str] = Field(default_factory=list)
     output_language: Literal["ko", "en"] = "ko"
@@ -50,6 +50,15 @@ class WorkflowRevisionCreate(BaseModel):
 
 class QAIssueDeleteRequest(BaseModel):
     issue_indices: list[int] = Field(default_factory=list)
+
+
+class WorkflowRunDeleteRequest(BaseModel):
+    run_ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class WorkflowRunDeleteResult(BaseModel):
+    deleted_run_ids: list[str]
+    deleted_count: int
 
 
 class WorkflowTemplateRead(BaseModel):

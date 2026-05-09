@@ -1,13 +1,15 @@
+import json
+
 from fastapi.testclient import TestClient
 import pytest
 import httpx
 from sqlalchemy import inspect
 
 from app.agents.workflow import validate_qa_report
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db import models
 from app.db.session import SessionLocal, engine
-from app.llm.gemini_gateway import _is_retryable_response, _parse_json, _retry_delay_seconds
+from app.llm.gemini_gateway import call_gemini_json, _is_retryable_response, _parse_json, _retry_delay_seconds
 from app.main import app
 from app.rag.source_documents import build_source_document
 from app.tests.geo_catalog_helpers import seed_test_ldong_catalog
@@ -24,6 +26,220 @@ def unwrap(response):
 def require_tourapi_key():
     if not get_settings().tourapi_service_key:
         pytest.skip("TOURAPI_SERVICE_KEY is required for workflow tests")
+
+
+def test_gemini_prompt_debug_log_writes_full_prompt_and_output(monkeypatch, tmp_path):
+    def fake_post(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {"parts": [{"text": '{"answer":"ok"}'}]},
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 12,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 15,
+                },
+            },
+        )
+
+    monkeypatch.setattr("app.llm.gemini_gateway.httpx.post", fake_post)
+    settings = Settings(
+        gemini_api_key="fake-key",
+        llm_prompt_debug_log_enabled=True,
+        llm_prompt_debug_log_dir=str(tmp_path),
+    )
+
+    with TestClient(app):
+        with SessionLocal() as db:
+            run = models.WorkflowRun(
+                template_id="default_product_planning",
+                input={"message": "프롬프트 로그 테스트"},
+            )
+            db.add(run)
+            db.commit()
+            db.refresh(run)
+            run_id = run.id
+            step = models.AgentStep(
+                run_id=run_id,
+                agent_name="DebugPromptAgent",
+                step_type="debug_prompt",
+                status="running",
+                input={"purpose": "debug"},
+            )
+            db.add(step)
+            db.commit()
+            db.refresh(step)
+            step_id = step.id
+
+            result = call_gemini_json(
+                db=db,
+                run_id=run_id,
+                step_id=step_id,
+                purpose="debug_prompt",
+                prompt='{"task":"full prompt should be logged"}',
+                response_schema={
+                    "type": "object",
+                    "required": ["answer"],
+                    "properties": {"answer": {"type": "string"}},
+                },
+                settings=settings,
+            )
+
+    json_files = list((tmp_path / run_id).glob("*.json"))
+    markdown_files = list((tmp_path / run_id).glob("*.md"))
+    assert result.data == {"answer": "ok"}
+    assert len(json_files) == 1
+    assert len(markdown_files) == 1
+    payload = json.loads(json_files[0].read_text(encoding="utf-8"))
+    assert payload["run_id"] == run_id
+    assert payload["step_id"] == step_id
+    assert payload["agent_name"] == "DebugPromptAgent"
+    assert payload["purpose"] == "debug_prompt"
+    assert payload["status"] == "succeeded"
+    assert "full prompt should be logged" in payload["request"]["input_prompt"]
+    assert "JSON 스키마" in payload["request"]["full_prompt"]
+    assert payload["response"]["raw_text"] == '{"answer":"ok"}'
+    assert payload["response"]["parsed_json"] == {"answer": "ok"}
+    markdown = markdown_files[0].read_text(encoding="utf-8")
+    assert "# DebugPromptAgent / debug_prompt" in markdown
+    assert "## Input Prompt" in markdown
+    assert '{"task":"full prompt should be logged"}' in markdown
+    assert "## Full Prompt Sent To Gemini" in markdown
+    assert "JSON 스키마" in markdown
+    assert "## Raw Output" in markdown
+    assert '{"answer":"ok"}' in markdown
+
+
+def test_preflight_rejects_natural_language_product_count_above_limit():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            before_count = db.query(models.WorkflowRun).count()
+        response = client.post(
+            "/api/workflow-runs",
+            json={
+                "template_id": "default_product_planning",
+                "input": {
+                    "message": "이번 달 서울에서 외국인 대상 관광 상품을 10개 기획해줘",
+                    "period": "2026-05",
+                    "target_customer": "외국인",
+                    "product_count": 5,
+                    "preferences": ["야간 관광"],
+                    "avoid": [],
+                    "output_language": "ko",
+                },
+            },
+        )
+        with SessionLocal() as db:
+            after_count = db.query(models.WorkflowRun).count()
+
+    body = response.json()
+    assert response.status_code == 422
+    assert body["error"]["code"] == "PREFLIGHT_VALIDATION_FAILED"
+    assert body["error"]["details"]["preflight"]["reason_code"] == "product_count_exceeds_limit"
+    assert body["error"]["details"]["preflight"]["requested_product_count"] == 10
+    assert after_count == before_count
+
+
+def test_preflight_rejects_unsupported_non_tourism_prompt():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            before_count = db.query(models.WorkflowRun).count()
+        response = client.post(
+            "/api/workflow-runs",
+            json={
+                "template_id": "default_product_planning",
+                "input": {
+                    "message": "된장찌개 레시피 뭐야?",
+                    "period": "2026-05",
+                    "target_customer": "외국인",
+                    "product_count": 1,
+                    "preferences": [],
+                    "avoid": [],
+                    "output_language": "ko",
+                },
+            },
+        )
+        with SessionLocal() as db:
+            after_count = db.query(models.WorkflowRun).count()
+
+    body = response.json()
+    assert response.status_code == 422
+    assert body["error"]["code"] == "PREFLIGHT_VALIDATION_FAILED"
+    assert body["error"]["details"]["preflight"]["reason_code"] == "unsupported_scope"
+    assert after_count == before_count
+
+
+def test_delete_workflow_runs_removes_selected_rows_and_revisions():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            parent = models.WorkflowRun(
+                template_id="default_product_planning",
+                status="failed",
+                input={"message": "삭제할 parent"},
+            )
+            db.add(parent)
+            db.flush()
+            revision = models.WorkflowRun(
+                template_id="default_product_planning",
+                parent_run_id=parent.id,
+                revision_number=1,
+                revision_mode="manual_save",
+                status="awaiting_approval",
+                input={"message": "삭제할 revision"},
+            )
+            db.add(revision)
+            db.flush()
+            db.add(
+                models.AgentStep(
+                    run_id=parent.id,
+                    agent_name="Test",
+                    step_type="delete_test",
+                    status="succeeded",
+                    input={},
+                )
+            )
+            parent_id = parent.id
+            revision_id = revision.id
+            db.commit()
+
+        deleted = unwrap(client.post("/api/workflow-runs/delete", json={"run_ids": [parent_id]}))
+
+        with SessionLocal() as db:
+            remaining_parent = db.get(models.WorkflowRun, parent_id)
+            remaining_revision = db.get(models.WorkflowRun, revision_id)
+            remaining_steps = db.query(models.AgentStep).filter(models.AgentStep.run_id == parent_id).count()
+
+    assert deleted["deleted_count"] == 2
+    assert set(deleted["deleted_run_ids"]) == {parent_id, revision_id}
+    assert remaining_parent is None
+    assert remaining_revision is None
+    assert remaining_steps == 0
+
+
+def test_delete_workflow_runs_rejects_active_rows():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            run = models.WorkflowRun(
+                template_id="default_product_planning",
+                status="running",
+                input={"message": "실행 중 삭제 불가"},
+            )
+            db.add(run)
+            db.commit()
+            run_id = run.id
+
+        response = client.post("/api/workflow-runs/delete", json={"run_ids": [run_id]})
+
+        with SessionLocal() as db:
+            still_exists = db.get(models.WorkflowRun, run_id)
+
+    assert response.status_code == 409
+    assert still_exists is not None
 
 
 def legacy_area_from_ldong(ldong_regn_cd, fallback):
@@ -603,6 +819,7 @@ def test_create_and_read_workflow_run(monkeypatch):
         fetched = unwrap(client.get(f"/api/workflow-runs/{created['id']}"))
         steps = unwrap(client.get(f"/api/workflow-runs/{created['id']}/steps"))
         tool_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/tool-calls"))
+        enrichment = unwrap(client.get(f"/api/workflow-runs/{created['id']}/enrichment"))
         llm_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/llm-calls"))
         result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
 
@@ -615,7 +832,12 @@ def test_create_and_read_workflow_run(monkeypatch):
     assert {step["agent_name"] for step in steps} >= {
         "PlannerAgent",
         "GeoResolverAgent",
-        "DataAgent",
+        "BaselineDataAgent",
+        "DataGapProfilerAgent",
+        "ApiCapabilityRouterAgent",
+        "TourApiDetailPlannerAgent",
+        "EnrichmentExecutor",
+        "EvidenceFusionAgent",
         "ResearchAgent",
         "ProductAgent",
         "MarketingAgent",
@@ -628,6 +850,9 @@ def test_create_and_read_workflow_run(monkeypatch):
         "tourapi_search_stay",
         "vector_search",
     }
+    assert enrichment["latest"]["status"] == "completed"
+    assert result["evidence_profile"]["entities"]
+    assert result["data_coverage"]["total_items"] >= 1
     assert len(llm_calls) >= 7
 
 

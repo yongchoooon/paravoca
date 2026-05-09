@@ -76,28 +76,112 @@ def migrate_tourism_item_geo_columns() -> None:
 
 
 def seed_default_workflow(db: Session) -> None:
+    nodes = [
+        {"id": "user_input", "type": "user_input", "position": {"x": 0, "y": 120}, "config": {}},
+        {"id": "planner", "type": "planner_agent", "position": {"x": 220, "y": 120}, "config": {}},
+        {"id": "geo_resolver", "type": "geo_resolver_agent", "position": {"x": 440, "y": 120}, "config": {}},
+        {
+            "id": "baseline_data",
+            "type": "baseline_data_agent",
+            "position": {"x": 660, "y": 120},
+            "config": {"provider": "tourapi"},
+        },
+        {
+            "id": "data_gap_profiler",
+            "type": "data_gap_profiler_agent",
+            "position": {"x": 880, "y": 120},
+            "config": {},
+        },
+        {
+            "id": "api_capability_router",
+            "type": "api_capability_router_agent",
+            "position": {"x": 1100, "y": 120},
+            "config": {"max_call_budget": "settings.enrichment_max_call_budget"},
+        },
+        {
+            "id": "tourapi_detail_planner",
+            "type": "tourapi_detail_planner_agent",
+            "position": {"x": 1320, "y": -40},
+            "config": {},
+        },
+        {
+            "id": "visual_data_planner",
+            "type": "visual_data_planner_agent",
+            "position": {"x": 1320, "y": 80},
+            "config": {},
+        },
+        {
+            "id": "route_signal_planner",
+            "type": "route_signal_planner_agent",
+            "position": {"x": 1320, "y": 200},
+            "config": {},
+        },
+        {
+            "id": "theme_data_planner",
+            "type": "theme_data_planner_agent",
+            "position": {"x": 1320, "y": 320},
+            "config": {},
+        },
+        {
+            "id": "data_enrichment",
+            "type": "enrichment_executor",
+            "position": {"x": 1540, "y": 120},
+            "config": {},
+        },
+        {
+            "id": "evidence_fusion",
+            "type": "evidence_fusion_agent",
+            "position": {"x": 1760, "y": 120},
+            "config": {},
+        },
+        {"id": "research", "type": "research_agent", "position": {"x": 1980, "y": 120}, "config": {}},
+        {"id": "product", "type": "product_agent", "position": {"x": 2200, "y": 120}, "config": {}},
+        {"id": "marketing", "type": "marketing_agent", "position": {"x": 2420, "y": 120}, "config": {}},
+        {"id": "qa", "type": "qa_agent", "position": {"x": 2640, "y": 120}, "config": {}},
+        {
+            "id": "human_approval",
+            "type": "human_approval",
+            "position": {"x": 2860, "y": 120},
+            "config": {"required": True},
+        },
+    ]
+    edges = [
+        {"id": "edge_user_planner", "source": "user_input", "target": "planner"},
+        {"id": "edge_planner_geo", "source": "planner", "target": "geo_resolver"},
+        {"id": "edge_geo_baseline", "source": "geo_resolver", "target": "baseline_data"},
+        {"id": "edge_baseline_gap", "source": "baseline_data", "target": "data_gap_profiler"},
+        {"id": "edge_gap_router", "source": "data_gap_profiler", "target": "api_capability_router"},
+        {"id": "edge_router_detail_planner", "source": "api_capability_router", "target": "tourapi_detail_planner"},
+        {"id": "edge_router_visual_planner", "source": "api_capability_router", "target": "visual_data_planner"},
+        {"id": "edge_router_route_planner", "source": "api_capability_router", "target": "route_signal_planner"},
+        {"id": "edge_router_theme_planner", "source": "api_capability_router", "target": "theme_data_planner"},
+        {"id": "edge_detail_planner_enrichment", "source": "tourapi_detail_planner", "target": "data_enrichment"},
+        {"id": "edge_visual_planner_enrichment", "source": "visual_data_planner", "target": "data_enrichment"},
+        {"id": "edge_route_planner_enrichment", "source": "route_signal_planner", "target": "data_enrichment"},
+        {"id": "edge_theme_planner_enrichment", "source": "theme_data_planner", "target": "data_enrichment"},
+        {"id": "edge_enrichment_fusion", "source": "data_enrichment", "target": "evidence_fusion"},
+        {"id": "edge_fusion_research", "source": "evidence_fusion", "target": "research"},
+        {"id": "edge_research_product", "source": "research", "target": "product"},
+        {"id": "edge_product_marketing", "source": "product", "target": "marketing"},
+        {"id": "edge_marketing_qa", "source": "marketing", "target": "qa"},
+        {"id": "edge_qa_approval", "source": "qa", "target": "human_approval"},
+    ]
     template = db.get(models.WorkflowTemplate, "default_product_planning")
     if template:
+        template.description = "TourAPI 기반 상품 기획과 선택적 data enrichment workflow"
+        template.nodes = nodes
+        template.edges = edges
+        template.updated_at = models.utcnow()
+        db.commit()
         return
 
     template = models.WorkflowTemplate(
         id="default_product_planning",
         name="Default Product Planning",
-        description="TourAPI 기반 상품 기획 기본 workflow",
+        description="TourAPI 기반 상품 기획과 선택적 data enrichment workflow",
         is_default=True,
-        nodes=[
-            {"id": "user_input", "type": "user_input", "position": {"x": 0, "y": 120}, "config": {}},
-            {"id": "planner", "type": "planner_agent", "position": {"x": 260, "y": 120}, "config": {}},
-            {"id": "geo_resolver", "type": "geo_resolver_agent", "position": {"x": 520, "y": 120}, "config": {}},
-            {"id": "data_agent", "type": "data_agent", "position": {"x": 780, "y": 120}, "config": {"provider": "tourapi"}},
-            {"id": "human_approval", "type": "human_approval", "position": {"x": 1040, "y": 120}, "config": {"required": True}},
-        ],
-        edges=[
-            {"id": "edge_user_planner", "source": "user_input", "target": "planner"},
-            {"id": "edge_planner_geo", "source": "planner", "target": "geo_resolver"},
-            {"id": "edge_geo_data", "source": "geo_resolver", "target": "data_agent"},
-            {"id": "edge_data_approval", "source": "data_agent", "target": "human_approval"},
-        ],
+        nodes=nodes,
+        edges=edges,
     )
     db.add(template)
     db.commit()
