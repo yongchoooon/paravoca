@@ -43,8 +43,10 @@ import {
   approveWorkflowRun,
   createWorkflowRevision,
   deleteWorkflowRunQaIssues,
+  EnrichmentRun,
   EvidenceDocument,
   getWorkflowRun,
+  getWorkflowRunEnrichment,
   getWorkflowRunResult,
   listRunApprovals,
   listRunLlmCalls,
@@ -61,6 +63,7 @@ import {
   ToolCall,
   WorkflowResult,
   WorkflowRun,
+  WorkflowEnrichmentSummary,
 } from "../services/runsApi";
 import { formatKstDateTime } from "../utils/datetime";
 import { RunLogs } from "./RunLogs";
@@ -136,6 +139,7 @@ export function RunDetail({
   const [result, setResult] = useState<WorkflowResult | null>(null);
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  const [enrichment, setEnrichment] = useState<WorkflowEnrichmentSummary | null>(null);
   const [llmCalls, setLlmCalls] = useState<LLMCall[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
@@ -170,21 +174,31 @@ export function RunDetail({
       }
       setError(null);
       const nextRun = await getWorkflowRun(runId);
-      const [resultResponse, stepsResponse, toolCallsResponse, llmCallsResponse, approvalsResponse] =
+      const [
+        resultResponse,
+        stepsResponse,
+        toolCallsResponse,
+        enrichmentResponse,
+        llmCallsResponse,
+        approvalsResponse,
+      ] =
         await Promise.allSettled([
           getWorkflowRunResult(runId),
           listRunSteps(runId),
           listRunToolCalls(runId),
+          getWorkflowRunEnrichment(runId),
           listRunLlmCalls(runId),
           listRunApprovals(runId),
         ]);
       setRun(nextRun);
       const nextSteps = stepsResponse.status === "fulfilled" ? stepsResponse.value : [];
       const nextToolCalls = toolCallsResponse.status === "fulfilled" ? toolCallsResponse.value : [];
+      const nextEnrichment = enrichmentResponse.status === "fulfilled" ? enrichmentResponse.value : null;
       const nextLlmCalls = llmCallsResponse.status === "fulfilled" ? llmCallsResponse.value : [];
       const nextApprovals = approvalsResponse.status === "fulfilled" ? approvalsResponse.value : [];
       setSteps(nextSteps);
       setToolCalls(nextToolCalls);
+      setEnrichment(nextEnrichment);
       setLlmCalls(nextLlmCalls);
       setApprovals(nextApprovals);
       if (resultResponse.status === "fulfilled") {
@@ -297,6 +311,11 @@ export function RunDetail({
         .filter((item) => item.parent_run_id === rootRun?.id)
         .sort((a, b) => (a.revision_number ?? 0) - (b.revision_number ?? 0)),
     [relatedRuns, rootRun]
+  );
+
+  const qaAvoidRules = useMemo(
+    () => avoidRulesForQaReview(run, result),
+    [run, result]
   );
 
   function openApprovalModal(action: ApprovalAction) {
@@ -544,6 +563,7 @@ export function RunDetail({
       revision,
       steps,
       tool_calls: toolCalls,
+      enrichment,
       llm_calls: llmCalls,
       approvals,
     };
@@ -709,6 +729,7 @@ export function RunDetail({
         </SimpleGrid>
 
         <GeoScopePanel scope={geoScopeFromResult(result)} />
+        <EnrichmentOverview result={result} enrichment={enrichment} />
 
         <Tabs
           value={activeTab}
@@ -796,6 +817,7 @@ export function RunDetail({
               <QASection
                 report={result.qa_report}
                 products={result.products}
+                avoidRules={qaAvoidRules}
                 selectedIssueKeys={selectedQaIssueKeys}
                 onToggleIssue={toggleQaIssue}
                 onToggleAll={toggleAllQaIssues}
@@ -860,6 +882,7 @@ export function RunDetail({
                     revision_mode: run.revision_mode,
                   },
                   steps,
+                  enrichment,
                   toolCalls,
                   llmCalls,
                   approvals,
@@ -1123,6 +1146,152 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function EnrichmentOverview({
+  result,
+  enrichment,
+}: {
+  result: WorkflowResult;
+  enrichment: WorkflowEnrichmentSummary | null;
+}) {
+  const latest = enrichment?.latest ?? null;
+  const coverage = result.data_coverage;
+  const hasCoverage = Object.keys(coverage).length > 0;
+  const callRows = enrichmentCallRows(latest, result.enrichment_plan);
+  const unresolved = result.unresolved_gaps;
+  const gapReasoning = String(recordOrNull(result.data_gap_report)?.reasoning_summary ?? "");
+  const routingReasoning = String(recordOrNull(result.enrichment_plan)?.routing_reasoning ?? "");
+  const highlights = arrayOfRecords(result.ui_highlights);
+  if (!latest && !hasCoverage && unresolved.length === 0 && highlights.length === 0) return null;
+
+  return (
+    <SimpleGrid cols={{ base: 1, lg: 2 }}>
+      <Paper withBorder p="md">
+        <Stack gap="sm">
+          <Group justify="space-between" align="flex-start">
+            <div>
+              <Text fw={700} size="sm">데이터 커버리지</Text>
+              <Text size="sm" c="dimmed">
+                수집된 근거에서 상품화에 필요한 상세정보 공백을 요약합니다.
+              </Text>
+            </div>
+            <Badge variant="light" color={sourceConfidenceColor(result.source_confidence)}>
+              신뢰도 {Math.round((result.source_confidence || 0) * 100)}%
+            </Badge>
+          </Group>
+          <SimpleGrid cols={{ base: 2, sm: 3 }}>
+            <Metric label="상세정보" value={formatCoveragePercent(coverage.detail_info_coverage)} />
+            <Metric label="이미지" value={formatCoveragePercent(coverage.image_coverage)} />
+            <Metric label="운영시간" value={formatCoveragePercent(coverage.operating_hours_coverage)} />
+            <Metric label="요금" value={formatCoveragePercent(coverage.price_or_fee_coverage)} />
+            <Metric label="예약정보" value={formatCoveragePercent(coverage.booking_info_coverage)} />
+            <Metric label="미해결 공백" value={String(unresolved.length)} />
+          </SimpleGrid>
+          {unresolved.length > 0 ? (
+            <Group gap="xs">
+              {gapTypeCounts(unresolved).map(([type, count]) => (
+                <Badge key={type} variant="light" color="yellow">
+                  {gapTypeLabel(type)} {count}
+                </Badge>
+              ))}
+            </Group>
+          ) : (
+            <Text size="sm" c="dimmed">현재 Product/QA로 전달할 차단 수준의 미해결 공백은 없습니다.</Text>
+          )}
+          {gapReasoning ? (
+            <>
+              <Divider />
+              <div>
+                <Text fw={600} size="sm">판단 근거</Text>
+                <Text size="sm" c="dimmed">{gapReasoning}</Text>
+              </div>
+            </>
+          ) : null}
+        </Stack>
+      </Paper>
+
+      <Paper withBorder p="md">
+        <Stack gap="sm">
+          <Group justify="space-between" align="flex-start">
+            <div>
+              <Text fw={700} size="sm">추천 보강 호출</Text>
+              <Text size="sm" c="dimmed">
+                부족한 정보에 대해 실제 실행했거나 보류한 보강 호출입니다.
+              </Text>
+            </div>
+            {latest ? (
+              <Badge variant="light" color={latest.status === "completed" ? "green" : "yellow"}>
+                {enrichmentStatusLabel(latest.status)}
+              </Badge>
+            ) : null}
+          </Group>
+          {callRows.length === 0 ? (
+            <Alert color="gray">추가 보강 호출이 필요하지 않았습니다.</Alert>
+          ) : (
+            <ScrollArea>
+              <Table verticalSpacing="sm">
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>상태</Table.Th>
+                    <Table.Th>출처</Table.Th>
+                    <Table.Th>호출</Table.Th>
+                    <Table.Th>이유</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {callRows.slice(0, 8).map((row) => (
+                    <Table.Tr key={row.id}>
+                      <Table.Td>
+                        <Badge variant="light" color={callStatusColor(row.status)}>
+                          {callStatusLabel(row.status)}
+                        </Badge>
+                      </Table.Td>
+                      <Table.Td>{sourceFamilyLabel(row.source_family)}</Table.Td>
+                      <Table.Td>{toolLabel(row.tool_name)}</Table.Td>
+                      <Table.Td>
+                        <Text size="sm" lineClamp={2}>{row.reason}</Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </ScrollArea>
+          )}
+          {routingReasoning ? (
+            <>
+              <Divider />
+              <div>
+                <Text fw={600} size="sm">호출 선택 기준</Text>
+                <Text size="sm" c="dimmed">{routingReasoning}</Text>
+              </div>
+            </>
+          ) : null}
+        </Stack>
+      </Paper>
+      {highlights.length > 0 ? (
+        <Paper withBorder p="md">
+          <Stack gap="sm">
+            <div>
+              <Text fw={700} size="sm">상품화 판단 메모</Text>
+              <Text size="sm" c="dimmed">
+                보강된 근거가 Product/Marketing/QA에서 어떻게 쓰여야 하는지 요약합니다.
+              </Text>
+            </div>
+            {highlights.slice(0, 4).map((highlight, index) => (
+              <Alert
+                key={`${String(highlight.title ?? "highlight")}-${index}`}
+                color={highlightSeverityColor(highlight.severity)}
+              >
+                <Text fw={600} size="sm">{String(highlight.title ?? "확인 항목")}</Text>
+                <Text size="sm">{String(highlight.body ?? "")}</Text>
+              </Alert>
+            ))}
+          </Stack>
+        </Paper>
+      ) : null}
+    </SimpleGrid>
+  );
+}
+
 function RevisionMeta({
   run,
   parentRun,
@@ -1354,6 +1523,179 @@ function geoRoleLabel(value: unknown) {
   }[role] ?? "";
 }
 
+type EnrichmentCallRow = {
+  id: string;
+  status: string;
+  source_family: string;
+  tool_name: string;
+  reason: string;
+};
+
+function enrichmentCallRows(
+  latest: EnrichmentRun | null,
+  resultPlan: Record<string, unknown>,
+): EnrichmentCallRow[] {
+  if (latest?.tool_calls?.length) {
+    return latest.tool_calls.map((call) => {
+      const summary = recordOrNull(call.response_summary);
+      const error = recordOrNull(call.error);
+      return {
+        id: call.id,
+        status: call.status,
+        source_family: call.source_family,
+        tool_name: call.tool_name,
+        reason:
+          String(summary?.reason ?? "") ||
+          String(summary?.detail ?? "") ||
+          String(error?.message ?? "") ||
+          String(summary?.display_name ?? "") ||
+          "선택된 보강 계획에 따라 처리했습니다.",
+      };
+    });
+  }
+
+  const plan = latest?.plan ?? resultPlan;
+  const planned = arrayOfRecords(plan.planned_calls).map((call, index) => ({
+    id: String(call.id ?? `planned-${index}`),
+    status: "planned",
+    source_family: String(call.source_family ?? ""),
+    tool_name: String(call.tool_name ?? ""),
+    reason: String(call.reason ?? "보강 후보로 계획되었습니다."),
+  }));
+  const skipped = arrayOfRecords(plan.skipped_calls).map((call, index) => ({
+    id: String(call.id ?? `skipped-${index}`),
+    status: "skipped",
+    source_family: String(call.source_family ?? ""),
+    tool_name: String(call.tool_name ?? ""),
+    reason: String(call.reason ?? "") || skipReasonLabel(call.skip_reason),
+  }));
+  return [...planned, ...skipped];
+}
+
+function gapTypeCounts(gaps: Array<Record<string, unknown>>): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  gaps.forEach((gap) => {
+    const type = String(gap.gap_type ?? "unknown");
+    counts.set(type, (counts.get(type) ?? 0) + 1);
+  });
+  return Array.from(counts.entries());
+}
+
+function formatCoveragePercent(value: unknown) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  return `${Math.round(numeric * 100)}%`;
+}
+
+function sourceConfidenceColor(value: number) {
+  if (value >= 0.75) return "green";
+  if (value >= 0.5) return "yellow";
+  return "red";
+}
+
+function enrichmentStatusLabel(value: string) {
+  return {
+    completed: "완료",
+    completed_with_errors: "일부 실패",
+    running: "진행 중",
+    planned: "계획됨",
+    failed: "실패",
+  }[value] ?? value;
+}
+
+function callStatusLabel(value: string) {
+  return {
+    planned: "계획",
+    running: "진행 중",
+    succeeded: "실행",
+    completed: "완료",
+    skipped: "보류",
+    failed: "실패",
+  }[value] ?? value;
+}
+
+function callStatusColor(value: string) {
+  return {
+    planned: "blue",
+    running: "blue",
+    succeeded: "green",
+    completed: "green",
+    skipped: "gray",
+    failed: "red",
+  }[value] ?? "gray";
+}
+
+function highlightSeverityColor(value: unknown) {
+  return {
+    success: "green",
+    warning: "yellow",
+    info: "blue",
+    error: "red",
+  }[String(value ?? "info")] ?? "blue";
+}
+
+function sourceFamilyLabel(value: string) {
+  return {
+    kto_tourapi_kor: "TourAPI 국문",
+    kto_photo_contest: "관광공모전 사진",
+    kto_tourism_photo: "관광사진",
+    kto_durunubi: "두루누비",
+    kto_related_places: "연관 관광지",
+    kto_tourism_bigdata: "관광 빅데이터",
+    kto_crowding_forecast: "혼잡도 예측",
+    kto_regional_tourism_demand: "지역 관광수요",
+    kto_wellness: "웰니스",
+    kto_pet: "반려동물",
+    kto_audio: "오디오 관광",
+    kto_eco: "생태관광",
+    kto_medical: "의료관광",
+  }[value] ?? (value || "-");
+}
+
+function toolLabel(value: string) {
+  return {
+    kto_tour_detail_enrichment: "상세/이미지 보강",
+    kto_related_places_area: "주변 관광지",
+    kto_durunubi_course_list: "코스/동선",
+    kto_pet_area_search: "반려동물 테마",
+    kto_wellness_keyword_search: "웰니스 테마",
+    kto_audio_keyword_search: "오디오 해설",
+    kto_eco_tourism_search: "생태관광",
+    kto_medical_keyword_search: "의료관광",
+  }[value] ?? (value || "-");
+}
+
+function gapTypeLabel(value: string) {
+  return {
+    missing_detail_info: "상세정보",
+    missing_image_asset: "이미지",
+    missing_operating_hours: "운영시간",
+    missing_price_or_fee: "요금",
+    missing_booking_info: "예약정보",
+    missing_related_places: "연관 장소",
+    missing_route_context: "동선",
+    missing_theme_specific_data: "테마 데이터",
+    missing_pet_policy: "반려동물 조건",
+    missing_wellness_attributes: "웰니스 속성",
+    missing_medical_context: "의료관광 맥락",
+    missing_story_asset: "해설/스토리",
+    missing_sustainability_context: "생태/지속가능성",
+    missing_demand_signal: "수요 신호",
+    missing_crowding_signal: "혼잡 신호",
+    missing_regional_demand_signal: "지역 수요",
+    missing_visual_reference: "시각 참고",
+    missing_multilingual_story: "다국어 해설",
+  }[value] ?? value;
+}
+
+function skipReasonLabel(value: unknown) {
+  return {
+    future_provider_not_implemented: "향후 연결 예정인 source라 이번 run에서는 실제 호출하지 않았습니다.",
+    feature_flag_disabled: "기능 플래그가 꺼져 있어 호출하지 않았습니다.",
+    max_call_budget_exceeded: "이번 run의 보강 호출 예산을 넘어 보류했습니다.",
+  }[String(value ?? "")] ?? "이번 run에서는 호출하지 않았습니다.";
+}
+
 function evidenceTypeLabel(row: EvidenceDocument) {
   const rawType = String(row.metadata.content_type ?? "").trim().toLowerCase();
   return {
@@ -1372,6 +1714,31 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function avoidRulesForQaReview(run: WorkflowRun | null, result: WorkflowResult | null): string[] {
+  const revision = result ? recordOrNull(result.revision) : null;
+  const qaSettings = recordOrNull(revision?.qa_settings);
+  const revisionAvoid = stringListFromUnknown(qaSettings?.avoid);
+  if (revisionAvoid.length > 0) return revisionAvoid;
+
+  const inputAvoid = stringListFromUnknown((run?.input as unknown as Record<string, unknown> | undefined)?.avoid);
+  if (inputAvoid.length > 0) return inputAvoid;
+
+  const normalizedAvoid = stringListFromUnknown(result?.normalized_request?.avoid);
+  if (normalizedAvoid.length > 0) return normalizedAvoid;
+
+  return [];
+}
+
+function stringListFromUnknown(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
 }
 
 function arrayOfRecords(value: unknown): Array<Record<string, unknown>> {
@@ -1711,9 +2078,9 @@ function RevisionQaSettingsPanel({
           <NumberInput
             label="Product count"
             min={1}
-            max={10}
+            max={5}
             value={settings.product_count}
-            onChange={(value) => onChange({ product_count: Number(value) || 1 })}
+            onChange={(value) => onChange({ product_count: Math.min(Number(value) || 1, 5) })}
           />
         </SimpleGrid>
         <SimpleGrid cols={{ base: 1, md: 2 }}>
@@ -1980,6 +2347,7 @@ function numberFromMetadata(value: unknown): number {
 function QASection({
   report,
   products,
+  avoidRules,
   selectedIssueKeys,
   onToggleIssue,
   onToggleAll,
@@ -1988,6 +2356,7 @@ function QASection({
 }: {
   report: QAReport;
   products: ProductIdea[];
+  avoidRules: string[];
   selectedIssueKeys: string[];
   onToggleIssue: (issue: QAIssue, index: number) => void;
   onToggleAll: (checked: boolean) => void;
@@ -2006,6 +2375,18 @@ function QASection({
         <div>
           <Text fw={700}>QA Review</Text>
           <Text size="sm" c="dimmed">{report.summary}</Text>
+          <Group gap="xs" mt={6}>
+            <Text size="xs" c="dimmed" fw={600}>Avoid</Text>
+            {avoidRules.length > 0 ? (
+              avoidRules.map((rule) => (
+                <Badge key={rule} size="sm" variant="light" color="gray">
+                  {rule}
+                </Badge>
+              ))
+            ) : (
+              <Text size="xs" c="dimmed">설정된 Avoid 기준 없음</Text>
+            )}
+          </Group>
         </div>
         <Badge color={report.overall_status === "pass" ? "green" : "yellow"} variant="light">
           {report.overall_status}

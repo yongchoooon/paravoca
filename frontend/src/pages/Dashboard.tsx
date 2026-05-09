@@ -3,6 +3,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Drawer,
   Group,
   Modal,
@@ -21,10 +22,17 @@ import {
 import { useForm } from "@mantine/form";
 import { useDisclosure } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
-import { IconAlertCircle, IconEye, IconPlayerPlay } from "@tabler/icons-react";
+import { IconAlertCircle, IconEye, IconPlayerPlay, IconTrash } from "@tabler/icons-react";
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow } from "@xyflow/react";
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react";
-import { createWorkflowRun, listWorkflowRuns, listWorkflowTemplates, WorkflowRun } from "../services/runsApi";
+import {
+  createWorkflowRun,
+  deleteWorkflowRuns,
+  listWorkflowRuns,
+  listWorkflowTemplates,
+  WorkflowRun,
+} from "../services/runsApi";
+import { ApiError } from "../services/apiClient";
 import { StatusBadge } from "../components/StatusBadge";
 import { RunDetail } from "./RunDetail";
 import { formatKstDateTime } from "../utils/datetime";
@@ -32,45 +40,73 @@ import classes from "./Dashboard.module.css";
 
 function WorkflowNodeLabel({
   title,
-  stepType,
   description,
 }: {
   title: string;
-  stepType: string;
   description: string;
 }) {
   return (
     <div className={classes.workflowNodeLabel}>
       <Text fw={700} size="xs">{title}</Text>
-      <Text ff="monospace" size="10px" c="dimmed">{stepType}</Text>
       <Text size="10px" c="dimmed" lh={1.2}>{description}</Text>
     </div>
   );
 }
 
-function WorkflowDecisionNode() {
+function WorkflowDecisionNode({ data }: { data?: { title?: string; stepType?: string; description?: string } }) {
   return (
     <div className={classes.workflowDecisionLabel}>
       <Handle className={classes.workflowHiddenHandle} id="in-left" type="target" position={Position.Left} />
+      <Handle className={classes.workflowHiddenHandle} id="in-top" type="target" position={Position.Top} />
       <Handle className={classes.workflowHiddenHandle} id="resolved-right" type="source" position={Position.Right} />
+      <Handle className={classes.workflowHiddenHandle} id="no-right" type="source" position={Position.Right} />
+      <Handle className={classes.workflowHiddenHandle} id="yes-bottom" type="source" position={Position.Bottom} />
       <Handle className={classes.workflowHiddenHandle} id="exit-top" type="source" position={Position.Top} />
       <div className={classes.workflowDecisionContent}>
-        <Text fw={800} size="xs">지역 확정?</Text>
-        <Text ff="monospace" size="9px" c="dimmed">geo_gate</Text>
-        <Text size="9px" c="dimmed" lh={1.15}>진행 / 종료 판단</Text>
+        <Text fw={800} size="xs">{data?.title ?? "지역 확정?"}</Text>
+        <Text size="9px" c="dimmed" lh={1.15}>{data?.description ?? "진행 / 종료 판단"}</Text>
       </div>
+    </div>
+  );
+}
+
+function WorkflowActionNode({ data }: { data?: { title?: string; stepType?: string; description?: string } }) {
+  return (
+    <div className={classes.workflowActionNode}>
+      <Handle className={classes.workflowHiddenHandle} id="in-top" type="target" position={Position.Top} />
+      <Handle className={classes.workflowHiddenHandle} id="in-left" type="target" position={Position.Left} />
+      <Handle className={classes.workflowHiddenHandle} id="out-right" type="source" position={Position.Right} />
+      <Text fw={800} size="xs">{data?.title ?? "실행"}</Text>
+      <Text size="9px" c="dimmed" lh={1.15}>{data?.description ?? "선택 API 호출"}</Text>
+    </div>
+  );
+}
+
+function WorkflowExitActionNode({ data }: { data?: { title?: string; description?: string } }) {
+  return (
+    <div className={classes.workflowExitActionNode}>
+      <Handle className={classes.workflowHiddenHandle} id="in-bottom" type="target" position={Position.Bottom} />
+      <Handle className={classes.workflowHiddenHandle} id="out-top" type="source" position={Position.Top} />
+      <Text fw={800} size="xs">{data?.title ?? "종료 안내"}</Text>
+      <Text size="9px" c="dimmed" lh={1.15}>{data?.description ?? "후보 안내 후 새 요청"}</Text>
     </div>
   );
 }
 
 const workflowNodeTypes = {
   decision: WorkflowDecisionNode,
+  action: WorkflowActionNode,
+  exitAction: WorkflowExitActionNode,
 };
 
 const normalNodeStyle = {
   background: "var(--mantine-color-blue-0)",
   border: "1px solid var(--mantine-color-blue-5)",
   boxShadow: "0 1px 3px rgba(34, 139, 230, 0.18)",
+  width: 154,
+  height: 64,
+  display: "flex",
+  alignItems: "center",
 };
 
 const revisionNodeStyle = {
@@ -83,13 +119,10 @@ const resolvedNodeStyle = {
   background: "var(--mantine-color-teal-0)",
   border: "1px solid var(--mantine-color-teal-5)",
   boxShadow: "0 1px 3px rgba(18, 184, 134, 0.16)",
-};
-
-const geoExitNodeStyle = {
-  background: "var(--mantine-color-red-0)",
-  border: "1px solid var(--mantine-color-red-5)",
-  boxShadow: "0 1px 3px rgba(250, 82, 82, 0.16)",
-  width: 158,
+  width: 154,
+  height: 64,
+  display: "flex",
+  alignItems: "center",
 };
 
 const decisionNodeStyle = {
@@ -98,7 +131,7 @@ const decisionNodeStyle = {
   boxShadow: "none",
   padding: 0,
   width: 158,
-  height: 88,
+  height: 64,
 };
 
 const normalEdgeStyle = {
@@ -122,22 +155,56 @@ const geoExitEdgeStyle = {
   strokeDasharray: "6 4",
 };
 
+const optionalEdgeStyle = {
+  stroke: "var(--mantine-color-blue-6)",
+  strokeWidth: 2,
+};
+
 const workflowGraphBounds = {
-  minX: -20,
-  minY: -140,
-  maxX: 1970,
-  maxY: 455,
+  minX: -430,
+  minY: -305,
+  maxX: 3240,
+  maxY: 600,
 };
 
 const workflowNodes: Node[] = [
   {
     id: "request",
-    position: { x: 0, y: 20 },
+    position: { x: -390, y: 20 },
     sourcePosition: Position.Right,
     targetPosition: Position.Top,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="New run" stepType="workflow_created" description="자연어 요청 생성" />,
+      label: <WorkflowNodeLabel title="New run" description="자연어 요청 생성" />,
+    },
+  },
+  {
+    id: "preflight",
+    position: { x: -200, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Preflight" description="지원 범위와 개수 확인" />,
+    },
+  },
+  {
+    id: "preflight-decision",
+    position: { x: -35, y: 20 },
+    type: "decision",
+    style: decisionNodeStyle,
+    data: {
+      title: "요청 가능?",
+      description: "실행 전 범위 검증",
+    },
+  },
+  {
+    id: "preflight-exit",
+    position: { x: -35, y: -115 },
+    type: "exitAction",
+    data: {
+      title: "요청 수정",
+      description: "범위 또는 최대 개수 안내",
     },
   },
   {
@@ -147,7 +214,7 @@ const workflowNodes: Node[] = [
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Planner" stepType="planner" description="요청/기간 정규화" />,
+      label: <WorkflowNodeLabel title="Planner" description="요청 조건 정리" />,
     },
   },
   {
@@ -157,15 +224,18 @@ const workflowNodes: Node[] = [
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="GeoResolver" stepType="geo_resolution" description="ldong 지역 해석" />,
+      label: <WorkflowNodeLabel title="GeoResolver" description="요청 지역 해석" />,
     },
   },
   {
     id: "geo-decision",
-    position: { x: 525, y: 8 },
+    position: { x: 525, y: 20 },
     type: "decision",
     style: decisionNodeStyle,
-    data: {},
+    data: {
+      title: "지역 확정?",
+      description: "진행 또는 안내 종료",
+    },
   },
   {
     id: "geo-resolved",
@@ -174,130 +244,210 @@ const workflowNodes: Node[] = [
     targetPosition: Position.Left,
     style: resolvedNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Geo resolved" stepType="geo_scope_resolved" description="지역 확정 후 계속 진행" />,
+      label: <WorkflowNodeLabel title="Geo resolved" description="확정 지역으로 계속 진행" />,
     },
   },
   {
-    id: "data",
+    id: "baseline-data",
     position: { x: 915, y: 20 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Data" stepType="data_collection" description="TourAPI ldong 수집" />,
+      label: <WorkflowNodeLabel title="Baseline" description="기본 관광 데이터 수집" />,
     },
   },
   {
-    id: "research",
+    id: "gap-profile",
     position: { x: 1095, y: 20 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Research" stepType="research" description="RAG 검색/요약" />,
+      label: <WorkflowNodeLabel title="Data Gap" description="부족한 정보 파악" />,
+    },
+  },
+  {
+    id: "enrichment-decision",
+    position: { x: 1275, y: 20 },
+    type: "decision",
+    style: decisionNodeStyle,
+    data: {
+      title: "보강 필요?",
+      description: "추가 데이터가 필요한지 판단",
+    },
+  },
+  {
+    id: "api-router",
+    position: { x: 1405, y: -143 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="API Router" description="필요한 API 묶음 분류" />,
+    },
+  },
+  {
+    id: "tourapi-detail-planner",
+    position: { x: 1625, y: -270 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Detail Planner" description="상세 정보 보강 계획" />,
+    },
+  },
+  {
+    id: "visual-data-planner",
+    position: { x: 1625, y: -185 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Visual Planner" description="사진 자료 후보 판단" />,
+    },
+  },
+  {
+    id: "route-signal-planner",
+    position: { x: 1625, y: -100 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Route Planner" description="동선과 수요 신호 판단" />,
+    },
+  },
+  {
+    id: "theme-data-planner",
+    position: { x: 1625, y: -15 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Theme Planner" description="테마 데이터 후보 판단" />,
+    },
+  },
+  {
+    id: "fusion",
+    position: { x: 1835, y: -143 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Evidence Fusion" description="보강 근거 병합" />,
+    },
+  },
+  {
+    id: "research",
+    position: { x: 2045, y: 20 },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    style: normalNodeStyle,
+    data: {
+      label: <WorkflowNodeLabel title="Research" description="근거 검색과 요약" />,
     },
   },
   {
     id: "product",
-    position: { x: 1275, y: 20 },
+    position: { x: 2225, y: 20 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Product" stepType="product_generation" description="상품 초안" />,
+      label: <WorkflowNodeLabel title="Product" description="상품 초안 작성" />,
     },
   },
   {
     id: "marketing",
-    position: { x: 1455, y: 20 },
+    position: { x: 2405, y: 20 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Marketing" stepType="marketing_generation" description="카피/FAQ/SNS" />,
+      label: <WorkflowNodeLabel title="Marketing" description="상세페이지와 FAQ 작성" />,
     },
   },
   {
     id: "qa",
-    position: { x: 1635, y: 20 },
+    position: { x: 2585, y: 20 },
     sourcePosition: Position.Right,
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="QA" stepType="qa_review" description="리스크 검수" />,
+      label: <WorkflowNodeLabel title="QA" description="표현과 근거 리스크 검수" />,
     },
   },
   {
     id: "approval",
-    position: { x: 1815, y: 20 },
+    position: { x: 2765, y: 20 },
     type: "output",
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Approval" stepType="human_approval" description="승인 대기" />,
+      label: <WorkflowNodeLabel title="Approval" description="사람 검토 대기" />,
     },
   },
   {
     id: "geo-exit",
     position: { x: 525, y: -115 },
-    sourcePosition: Position.Top,
-    targetPosition: Position.Bottom,
-    style: geoExitNodeStyle,
+    type: "exitAction",
     data: {
-      label: <WorkflowNodeLabel title="Geo exit" stepType="geo_scope_exit" description="후보 안내 / 지원 범위 밖" />,
+      title: "요청 종료",
+      description: "지역 후보 안내 또는 국내 지원 범위 안내",
     },
   },
   {
     id: "source-run",
-    position: { x: 0, y: 330 },
+    position: { x: 0, y: 465 },
     type: "input",
     style: revisionNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Existing run" stepType="source_final_output" description="원본 결과" />,
+      label: <WorkflowNodeLabel title="Existing run" description="원본 결과" />,
     },
   },
   {
     id: "revision-context",
-    position: { x: 240, y: 330 },
+    position: { x: 240, y: 465 },
     style: revisionNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Revision" stepType="revision_context" description="수정 맥락 생성" />,
+      label: <WorkflowNodeLabel title="Revision" description="수정 요청 정리" />,
     },
   },
   {
     id: "revision-patch",
-    position: { x: 480, y: 330 },
+    position: { x: 480, y: 465 },
     style: revisionNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="AI Patch" stepType="revision_patch" description="선택 이슈만 수정" />,
+      label: <WorkflowNodeLabel title="AI Patch" description="선택 이슈만 수정" />,
     },
   },
   {
     id: "revision-qa",
-    position: { x: 720, y: 330 },
+    position: { x: 720, y: 465 },
     style: revisionNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="QA" stepType="qa_review" description="재검수" />,
+      label: <WorkflowNodeLabel title="QA" description="수정 결과 재검수" />,
     },
   },
   {
     id: "revision-approval",
-    position: { x: 960, y: 330 },
+    position: { x: 960, y: 465 },
     type: "output",
     style: revisionNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Approval" stepType="human_approval" description="새 revision 승인" />,
+      label: <WorkflowNodeLabel title="Approval" description="새 revision 승인" />,
     },
   },
 ];
 
 const workflowEdges: Edge[] = [
   ...[
-    ["request", "planner"],
+    ["request", "preflight"],
+    ["preflight", "preflight-decision"],
     ["planner", "geo"],
     ["geo", "geo-decision"],
-    ["geo-resolved", "data"],
-    ["data", "research"],
+    ["geo-resolved", "baseline-data"],
+    ["baseline-data", "gap-profile"],
     ["research", "product"],
     ["product", "marketing"],
     ["marketing", "qa"],
@@ -306,16 +456,112 @@ const workflowEdges: Edge[] = [
     id: `${source}-${target}`,
     source,
     target,
-    targetHandle: target === "geo-decision" ? "in-left" : undefined,
+    targetHandle: target === "geo-decision" || target === "preflight-decision" ? "in-left" : undefined,
+    type: "straight",
     style: normalEdgeStyle,
     markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-blue-6)" },
   })),
+  {
+    id: "preflight-pass-edge",
+    source: "preflight-decision",
+    sourceHandle: "resolved-right",
+    target: "planner",
+    label: "통과",
+    type: "straight",
+    style: resolvedEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-teal-6)" },
+  },
+  {
+    id: "preflight-exit-edge",
+    source: "preflight-decision",
+    sourceHandle: "exit-top",
+    target: "preflight-exit",
+    targetHandle: "in-bottom",
+    label: "범위 밖",
+    type: "smoothstep",
+    style: geoExitEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-red-6)" },
+  },
+  {
+    id: "preflight-retry-edge",
+    source: "preflight-exit",
+    sourceHandle: "out-top",
+    target: "request",
+    label: "요청 수정",
+    type: "smoothstep",
+    style: { ...geoExitEdgeStyle, strokeDasharray: "2 5" },
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-red-6)" },
+  },
+  {
+    id: "gap-profile-enrichment-decision",
+    source: "gap-profile",
+    target: "enrichment-decision",
+    targetHandle: "in-left",
+    type: "straight",
+    style: normalEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-blue-6)" },
+  },
+  {
+    id: "enrichment-needed-router",
+    source: "enrichment-decision",
+    sourceHandle: "exit-top",
+    target: "api-router",
+    label: "보강 필요",
+    type: "smoothstep",
+    style: optionalEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-blue-6)" },
+  },
+  {
+    id: "enrichment-not-needed-research",
+    source: "enrichment-decision",
+    sourceHandle: "yes-bottom",
+    target: "research",
+    label: "보강 없음",
+    type: "smoothstep",
+    style: normalEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-blue-6)" },
+  },
+  ...[
+    ["api-router", "tourapi-detail-planner"],
+    ["api-router", "visual-data-planner"],
+    ["api-router", "route-signal-planner"],
+    ["api-router", "theme-data-planner"],
+  ].map(([source, target]) => ({
+    id: `${source}-${target}`,
+    source,
+    target,
+    type: "smoothstep",
+    style: optionalEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-blue-6)" },
+  })),
+  ...[
+    ["tourapi-detail-planner", "fusion"],
+    ["visual-data-planner", "fusion"],
+    ["route-signal-planner", "fusion"],
+    ["theme-data-planner", "fusion"],
+  ].map(([source, target]) => ({
+    id: `${source}-${target}`,
+    source,
+    target,
+    type: "smoothstep",
+    style: optionalEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-blue-6)" },
+  })),
+  {
+    id: "fusion-research",
+    source: "fusion",
+    target: "research",
+    type: "smoothstep",
+    style: normalEdgeStyle,
+    markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-blue-6)" },
+  },
   {
     id: "geo-resolved-edge",
     source: "geo-decision",
     sourceHandle: "resolved-right",
     target: "geo-resolved",
     label: "확정",
+    type: "straight",
     style: resolvedEdgeStyle,
     markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-teal-6)" },
   },
@@ -324,6 +570,7 @@ const workflowEdges: Edge[] = [
     source: "geo-decision",
     sourceHandle: "exit-top",
     target: "geo-exit",
+    targetHandle: "in-bottom",
     label: "확정 불가 / 해외",
     type: "smoothstep",
     style: geoExitEdgeStyle,
@@ -332,6 +579,7 @@ const workflowEdges: Edge[] = [
   {
     id: "geo-exit-retry-edge",
     source: "geo-exit",
+    sourceHandle: "out-top",
     target: "request",
     label: "지역명 보강 후 새 run",
     type: "smoothstep",
@@ -439,22 +687,37 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
 function RunTableRow({
   run,
   selectedRunId,
+  selectedForDelete,
   indent = false,
   revisionCount = 0,
   isExpanded = false,
   onToggleRevisions,
   onSelectRun,
+  onToggleRunSelection,
+  canSelectForDelete,
 }: {
   run: WorkflowRun;
   selectedRunId: string | null;
+  selectedForDelete: boolean;
   indent?: boolean;
   revisionCount?: number;
   isExpanded?: boolean;
   onToggleRevisions?: () => void;
   onSelectRun: (runId: string) => void;
+  onToggleRunSelection: (runId: string, checked: boolean) => void;
+  canSelectForDelete: boolean;
 }) {
   return (
     <Table.Tr className={indent ? classes.revisionRow : undefined}>
+      <Table.Td className={classes.selectCell}>
+        <Checkbox
+          size="xs"
+          checked={selectedForDelete}
+          disabled={!canSelectForDelete}
+          aria-label={`${getRunTitle(run)} 선택`}
+          onChange={(event) => onToggleRunSelection(run.id, event.currentTarget.checked)}
+        />
+      </Table.Td>
       <Table.Td className={classes.taskCell}>
         <Group gap="xs" wrap="nowrap" className={indent ? classes.revisionTask : undefined}>
           {indent ? <Text className={classes.branchMarker}>↳</Text> : null}
@@ -510,7 +773,10 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [createRunWarning, setCreateRunWarning] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedDeleteRunIds, setSelectedDeleteRunIds] = useState<string[]>([]);
+  const [deletingRuns, setDeletingRuns] = useState(false);
   const [expandedRootIds, setExpandedRootIds] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState("runs");
   const [workflowFlow, setWorkflowFlow] = useState<ReactFlowInstance | null>(null);
@@ -529,6 +795,8 @@ export function Dashboard() {
       output_language: "ko" as const,
     },
     validate: {
+      message: (value) => (value.trim().length > 0 ? null : "요청 내용을 입력해 주세요."),
+      product_count: (value) => (Number(value) <= 5 ? null : "상품은 최대 5개까지 생성할 수 있습니다."),
       period: (value) =>
         PERIOD_PATTERN.test(value)
           ? null
@@ -576,6 +844,72 @@ export function Dashboard() {
     [runs, selectedRunId]
   );
 
+  const revisionsByParentId = useMemo(() => {
+    const grouped = new Map<string, WorkflowRun[]>();
+    runs.forEach((run) => {
+      if (!run.parent_run_id) return;
+      const revisions = grouped.get(run.parent_run_id) ?? [];
+      revisions.push(run);
+      grouped.set(run.parent_run_id, revisions);
+    });
+    grouped.forEach((revisions) => {
+      revisions.sort((a, b) => (b.revision_number ?? 0) - (a.revision_number ?? 0));
+    });
+    return grouped;
+  }, [runs]);
+
+  const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+
+  function canSelectRunForDelete(run: WorkflowRun) {
+    if (ACTIVE_RUN_STATUSES.has(run.status)) return false;
+    if (run.parent_run_id) return true;
+    return !(revisionsByParentId.get(run.id) ?? []).some((revision) =>
+      ACTIVE_RUN_STATUSES.has(revision.status)
+    );
+  }
+
+  function deletionGroupIdsForRun(run: WorkflowRun) {
+    if (!canSelectRunForDelete(run)) return [];
+    if (run.parent_run_id) return [run.id];
+    return [
+      run.id,
+      ...(revisionsByParentId.get(run.id) ?? [])
+        .filter((revision) => canSelectRunForDelete(revision))
+        .map((revision) => revision.id),
+    ];
+  }
+
+  const visibleRunIds = useMemo(() => {
+    const ids: string[] = [];
+    runs
+      .filter((run) => !run.parent_run_id)
+      .forEach((run) => {
+        ids.push(run.id);
+        if (!expandedRootIds.includes(run.id)) return;
+        (revisionsByParentId.get(run.id) ?? []).forEach((revision) => ids.push(revision.id));
+      });
+    return ids;
+  }, [expandedRootIds, revisionsByParentId, runs]);
+
+  const selectableRunIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          visibleRunIds.flatMap((runId) => {
+            const run = runById.get(runId);
+            return run ? deletionGroupIdsForRun(run) : [];
+          })
+        )
+      ),
+    [runById, visibleRunIds]
+  );
+
+  const selectedDeleteCount = selectedDeleteRunIds.length;
+  const allVisibleSelected =
+    selectableRunIds.length > 0 && selectableRunIds.every((runId) => selectedDeleteRunIds.includes(runId));
+  const someVisibleSelected =
+    selectableRunIds.some((runId) => selectedDeleteRunIds.includes(runId)) && !allVisibleSelected;
+
   useEffect(() => {
     if (!hasActiveRuns) return;
     const timer = window.setInterval(() => {
@@ -583,6 +917,11 @@ export function Dashboard() {
     }, 2500);
     return () => window.clearInterval(timer);
   }, [hasActiveRuns]);
+
+  useEffect(() => {
+    const existingRunIds = new Set(runs.map((run) => run.id));
+    setSelectedDeleteRunIds((current) => current.filter((runId) => existingRunIds.has(runId)));
+  }, [runs]);
 
   function centerWorkflowMap(instance: ReactFlowInstance, duration = 0) {
     const container = workflowPreviewRef.current;
@@ -624,18 +963,23 @@ export function Dashboard() {
     try {
       setCreating(true);
       setError(null);
+      setCreateRunWarning(null);
       const run = await createWorkflowRun(values);
       notifications.show({
         title: "Workflow run 시작",
         message: "실행 상태는 자동으로 갱신됩니다. 완료되면 승인 대기 상태로 전환됩니다.",
         color: "blue",
       });
-      close();
+      closeCreateRunModal();
       setSelectedRunId(run.id);
       await loadData({ silent: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      if (err instanceof ApiError && err.code === "PREFLIGHT_VALIDATION_FAILED") {
+        setCreateRunWarning(message);
+      } else {
+        setError(message);
+      }
       notifications.show({
         title: "Run 생성 실패",
         message,
@@ -659,6 +1003,17 @@ export function Dashboard() {
     await loadData({ silent: true });
   }
 
+  function openCreateRunModal() {
+    setCreateRunWarning(null);
+    setError(null);
+    open();
+  }
+
+  function closeCreateRunModal() {
+    setCreateRunWarning(null);
+    close();
+  }
+
   function toggleRoot(rootId: string) {
     setExpandedRootIds((current) =>
       current.includes(rootId)
@@ -667,22 +1022,80 @@ export function Dashboard() {
     );
   }
 
+  function toggleRunSelection(runId: string, checked: boolean) {
+    const run = runById.get(runId);
+    const targetIds = run ? deletionGroupIdsForRun(run) : [runId];
+    setSelectedDeleteRunIds((current) => {
+      if (!checked) {
+        const targets = new Set([
+          ...targetIds,
+          ...(run?.parent_run_id ? [run.parent_run_id] : []),
+        ]);
+        return current.filter((item) => !targets.has(item));
+      }
+      return Array.from(new Set([...current, ...targetIds]));
+    });
+  }
+
+  function toggleSelectAllVisible(checked: boolean) {
+    setSelectedDeleteRunIds((current) => {
+      const selectable = new Set(selectableRunIds);
+      if (!checked) {
+        return current.filter((runId) => !selectable.has(runId));
+      }
+      return Array.from(new Set([...current, ...selectableRunIds]));
+    });
+  }
+
+  async function deleteSelectedRuns() {
+    if (selectedDeleteRunIds.length === 0) return;
+    const confirmed = window.confirm(
+      `선택한 task ${selectedDeleteRunIds.length}개를 삭제할까요? 원본 run을 삭제하면 연결된 revision도 함께 삭제됩니다.`
+    );
+    if (!confirmed) return;
+    try {
+      setDeletingRuns(true);
+      const result = await deleteWorkflowRuns({ run_ids: selectedDeleteRunIds });
+      const deletedIds = new Set(result.deleted_run_ids);
+      setRuns((current) => current.filter((run) => !deletedIds.has(run.id)));
+      setSelectedDeleteRunIds([]);
+      if (selectedRunId && deletedIds.has(selectedRunId)) {
+        setSelectedRunId(null);
+      }
+      notifications.show({
+        color: "green",
+        title: "Task deleted",
+        message: `${result.deleted_count}개 task를 삭제했습니다.`,
+      });
+      void loadData({ silent: true });
+    } catch (err) {
+      notifications.show({
+        color: "red",
+        title: "삭제 실패",
+        message: err instanceof Error ? err.message : "선택한 task를 삭제하지 못했습니다.",
+      });
+    } finally {
+      setDeletingRuns(false);
+    }
+  }
+
   const rows = runs
     .filter((run) => !run.parent_run_id)
     .map((run) => {
-    const revisions = runs
-      .filter((item) => item.parent_run_id === run.id)
-      .sort((a, b) => (b.revision_number ?? 0) - (a.revision_number ?? 0));
+    const revisions = revisionsByParentId.get(run.id) ?? [];
     const isExpanded = expandedRootIds.includes(run.id);
     return (
       <Fragment key={run.id}>
         <RunTableRow
           run={run}
           selectedRunId={selectedRunId}
+          selectedForDelete={selectedDeleteRunIds.includes(run.id)}
+          canSelectForDelete={canSelectRunForDelete(run)}
           revisionCount={revisions.length}
           isExpanded={isExpanded}
           onToggleRevisions={() => toggleRoot(run.id)}
           onSelectRun={setSelectedRunId}
+          onToggleRunSelection={toggleRunSelection}
         />
         {isExpanded
           ? revisions.map((revision) => (
@@ -690,8 +1103,11 @@ export function Dashboard() {
                 key={revision.id}
                 run={revision}
                 selectedRunId={selectedRunId}
+                selectedForDelete={selectedDeleteRunIds.includes(revision.id)}
+                canSelectForDelete={canSelectRunForDelete(revision)}
                 indent
                 onSelectRun={setSelectedRunId}
+                onToggleRunSelection={toggleRunSelection}
               />
             ))
           : null}
@@ -708,7 +1124,7 @@ export function Dashboard() {
             공공 관광 데이터를 상품 초안, 근거 문서, QA 검수, 승인 흐름으로 연결합니다.
           </Text>
         </div>
-        <Button leftSection={<IconPlayerPlay size={16} />} onClick={open}>
+        <Button leftSection={<IconPlayerPlay size={16} />} onClick={openCreateRunModal}>
           New run
         </Button>
       </Group>
@@ -768,10 +1184,39 @@ export function Dashboard() {
         </Tabs.List>
 
         <Tabs.Panel value="runs" pt="md">
+          <Group justify="space-between" mb="xs">
+            <Checkbox
+              label="전체 선택"
+              checked={allVisibleSelected}
+              indeterminate={someVisibleSelected}
+              disabled={selectableRunIds.length === 0}
+              onChange={(event) => toggleSelectAllVisible(event.currentTarget.checked)}
+            />
+            <Button
+              color="red"
+              variant="light"
+              leftSection={<IconTrash size={16} />}
+              disabled={selectedDeleteCount === 0}
+              loading={deletingRuns}
+              onClick={deleteSelectedRuns}
+            >
+              선택 삭제{selectedDeleteCount > 0 ? ` (${selectedDeleteCount})` : ""}
+            </Button>
+          </Group>
           <Paper withBorder className={classes.tablePanel}>
             <Table striped highlightOnHover verticalSpacing="sm" className={classes.runsTable}>
               <Table.Thead>
                 <Table.Tr>
+                  <Table.Th className={classes.selectColumn}>
+                    <Checkbox
+                      size="xs"
+                      checked={allVisibleSelected}
+                      indeterminate={someVisibleSelected}
+                      disabled={selectableRunIds.length === 0}
+                      aria-label="보이는 task 전체 선택"
+                      onChange={(event) => toggleSelectAllVisible(event.currentTarget.checked)}
+                    />
+                  </Table.Th>
                   <Table.Th className={classes.taskColumn}>Task</Table.Th>
                   <Table.Th className={classes.statusColumn}>Status</Table.Th>
                   <Table.Th className={classes.regionColumn}>Geo</Table.Th>
@@ -784,7 +1229,7 @@ export function Dashboard() {
               <Table.Tbody>
                 {rows.length > 0 ? rows : (
                   <Table.Tr>
-                    <Table.Td colSpan={7}>
+                    <Table.Td colSpan={8}>
                       <Text c="dimmed" ta="center" py="lg">
                         No workflow runs yet.
                       </Text>
@@ -803,17 +1248,15 @@ export function Dashboard() {
                 <div>
                   <Text fw={700}>Implemented workflow map</Text>
                   <Text size="sm" c="dimmed">
-                    이 preview는 현재 코드에 구현된 agent 실행 순서입니다. Workflow Builder 편집 화면이 아니라,
-                    run을 만들었을 때 DB의 `agent_steps.step_type`으로 기록되는 흐름을 요약합니다.
+                    이 preview는 현재 구현된 실행 흐름을 요약합니다. 점선은 조건이 맞을 때만 실행되는 선택 경로입니다.
                   </Text>
                 </div>
                 <Group gap="xs">
-                  <Badge variant="light" color="opsBlue">Normal run</Badge>
-                  <Badge variant="light" color="teal">Decision gate</Badge>
-                  <Badge variant="light" color="teal">Geo resolved</Badge>
-                  <Badge variant="light" color="red">Geo exit</Badge>
-                  <Badge variant="light" color="grape">Revision run</Badge>
-                  <Badge variant="outline" color="gray">dashed = exit path</Badge>
+                  <Badge variant="light" color="opsBlue">Agent</Badge>
+                  <Badge variant="light" color="teal">Decision</Badge>
+                  <Badge variant="light" color="red">Exit action</Badge>
+                  <Badge variant="light" color="grape">Revision</Badge>
+                  <Badge variant="outline" color="gray">Dashed = exit/revision</Badge>
                 </Group>
               </Group>
             </Paper>
@@ -845,7 +1288,7 @@ export function Dashboard() {
               <Paper withBorder p="md">
                 <Text fw={700} size="sm">Normal run</Text>
                 <Text size="sm" c="dimmed">
-                  새 요청은 Planner 다음 GeoResolver가 자연어 지역을 분석하고, `지역 확정?` gate에서 계속 진행할지 종료할지 판단한 뒤 TourAPI 수집으로 넘어갑니다.
+                  새 요청은 지역 확정, 기본 관광 데이터 수집, 부족한 정보 판단을 거친 뒤 필요한 경우에만 보강 API 계획과 근거 병합 경로를 탑니다.
                 </Text>
               </Paper>
               <Paper withBorder p="md">
@@ -884,7 +1327,7 @@ export function Dashboard() {
         ) : null}
       </Drawer>
 
-      <Modal opened={opened} onClose={close} title="Create workflow run" size="lg">
+      <Modal opened={opened} onClose={closeCreateRunModal} title="Create workflow run" size="lg">
         <form onSubmit={form.onSubmit(handleCreateRun)}>
           <Stack gap="sm">
             <Textarea
@@ -906,10 +1349,16 @@ export function Dashboard() {
               <NumberInput
                 label="Product count"
                 min={1}
-                max={10}
+                max={5}
+                description="최대 5개까지 생성할 수 있습니다."
                 {...form.getInputProps("product_count")}
               />
             </Group>
+            {createRunWarning ? (
+              <Alert color="yellow" icon={<IconAlertCircle size={16} />}>
+                {createRunWarning}
+              </Alert>
+            ) : null}
             <MultiSelect
               label="Preferences"
               data={["야간 관광", "축제", "전통시장", "해변", "요트", "푸드투어"]}
@@ -923,7 +1372,7 @@ export function Dashboard() {
               {...form.getInputProps("avoid")}
             />
             <Group justify="flex-end" mt="md">
-              <Button variant="subtle" onClick={close} disabled={creating}>
+              <Button variant="subtle" onClick={closeCreateRunModal} disabled={creating}>
                 Cancel
               </Button>
               <Button type="submit" loading={creating}>Create run</Button>

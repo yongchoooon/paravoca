@@ -8,31 +8,35 @@
 
 .runsTable {
   table-layout: fixed;
-  min-width: 980px;
+  min-width: 1040px;
+}
+
+.selectColumn {
+  width: 36px;
 }
 
 .taskColumn {
-  width: 34%;
+  width: 38%;
 }
 
 .statusColumn {
-  width: 112px;
+  width: 92px;
 }
 
 .regionColumn {
-  width: 90px;
+  width: 150px;
 }
 
 .productsColumn {
-  width: 90px;
+  width: 72px;
 }
 
 .revisionsColumn {
-  width: 120px;
+  width: 96px;
 }
 
 .createdColumn {
-  width: 180px;
+  width: 150px;
 }
 
 .actionColumn {
@@ -41,6 +45,10 @@
 
 .taskCell {
   overflow: hidden;
+}
+
+.selectCell {
+  text-align: center;
 }
 
 .revisionRow td {
@@ -73,7 +81,7 @@
 
 .workflowDecisionLabel {
   width: 152px;
-  height: 82px;
+  height: 64px;
   clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
   background: var(--mantine-color-teal-5);
   filter: drop-shadow(0 1px 3px rgba(18, 184, 134, 0.16));
@@ -84,9 +92,9 @@
 
 .workflowDecisionContent {
   width: 148px;
-  height: 78px;
+  height: 60px;
   box-sizing: border-box;
-  padding: 0 28px;
+  padding: 0 30px;
   clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
   background: var(--mantine-color-teal-0);
   display: flex;
@@ -104,4 +112,24 @@
   border: 0;
   background: transparent;
   opacity: 0;
+}
+
+.workflowActionNode {
+  min-width: 118px;
+  border: 1px dashed var(--mantine-color-gray-6);
+  border-radius: 999px;
+  padding: 9px 18px;
+  background: var(--mantine-color-gray-0);
+  box-shadow: 0 1px 3px rgba(73, 80, 87, 0.12);
+  text-align: center;
+}
+
+.workflowExitActionNode {
+  width: 148px;
+  border: 1px dashed var(--mantine-color-red-6);
+  border-radius: 999px;
+  padding: 9px 16px;
+  background: var(--mantine-color-red-0);
+  box-shadow: 0 1px 3px rgba(250, 82, 82, 0.12);
+  text-align: center;
 }

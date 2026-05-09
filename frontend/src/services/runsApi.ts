@@ -91,6 +91,15 @@ export type WorkflowResult = {
   user_message?: Record<string, unknown>;
   source_items: Array<Record<string, unknown>>;
   retrieved_documents: EvidenceDocument[];
+  data_gap_report: Record<string, unknown>;
+  enrichment_plan: Record<string, unknown>;
+  enrichment_summary: Record<string, unknown>;
+  evidence_profile: Record<string, unknown>;
+  productization_advice: Record<string, unknown>;
+  data_coverage: Record<string, unknown>;
+  unresolved_gaps: Array<Record<string, unknown>>;
+  source_confidence: number;
+  ui_highlights: Array<Record<string, unknown>>;
   research_summary: Record<string, unknown>;
   products: ProductIdea[];
   marketing_assets: MarketingAsset[];
@@ -127,6 +136,39 @@ export type ToolCall = {
   source: string | null;
   latency_ms: number | null;
   created_at: string;
+};
+
+export type EnrichmentToolCall = {
+  id: string;
+  plan_id: string | null;
+  tool_name: string;
+  source_family: string;
+  arguments: Record<string, unknown>;
+  status: string;
+  response_summary: Record<string, unknown> | null;
+  error: Record<string, unknown> | null;
+  cache_hit: boolean;
+  latency_ms: number | null;
+  created_at: string | null;
+};
+
+export type EnrichmentRun = {
+  id: string;
+  workflow_run_id: string;
+  trigger_type: string;
+  status: string;
+  gap_report: Record<string, unknown>;
+  plan: Record<string, unknown>;
+  result_summary: Record<string, unknown>;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  tool_calls: EnrichmentToolCall[];
+};
+
+export type WorkflowEnrichmentSummary = {
+  latest: EnrichmentRun | null;
+  runs: EnrichmentRun[];
 };
 
 export type LLMCall = {
@@ -190,6 +232,15 @@ export type QAIssueDeleteResult = {
   removed_count: number;
 };
 
+export type WorkflowRunDeletePayload = {
+  run_ids: string[];
+};
+
+export type WorkflowRunDeleteResult = {
+  deleted_run_ids: string[];
+  deleted_count: number;
+};
+
 export type WorkflowTemplate = {
   id: string;
   name: string;
@@ -212,6 +263,10 @@ export function getWorkflowRun(runId: string) {
 
 export function getWorkflowRunResult(runId: string) {
   return apiGet<WorkflowResult>(`/workflow-runs/${runId}/result`);
+}
+
+export function getWorkflowRunEnrichment(runId: string) {
+  return apiGet<WorkflowEnrichmentSummary>(`/workflow-runs/${runId}/enrichment`);
 }
 
 export function listRunSteps(runId: string) {
@@ -255,6 +310,10 @@ export function requestWorkflowRunChanges(runId: string, payload: ApprovalAction
 
 export function createWorkflowRevision(runId: string, payload: WorkflowRevisionPayload) {
   return apiPost<WorkflowRun>(`/workflow-runs/${runId}/revisions`, payload);
+}
+
+export function deleteWorkflowRuns(payload: WorkflowRunDeletePayload) {
+  return apiPost<WorkflowRunDeleteResult>("/workflow-runs/delete", payload);
 }
 
 export function deleteWorkflowRunQaIssues(runId: string, payload: QAIssueDeletePayload) {

@@ -21,18 +21,24 @@ export class ApiError extends Error {
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
-  const body = (await response.json()) as ApiEnvelope<T>;
+  const body = (await response.json()) as Partial<ApiEnvelope<T>> & { detail?: unknown };
   if (!response.ok || body.error) {
     const details = body.error?.details ?? {};
     const runId = typeof details.run_id === "string" ? ` (run_id: ${details.run_id})` : "";
+    const fallbackMessage =
+      typeof body.detail === "string"
+        ? body.detail
+        : Array.isArray(body.detail)
+          ? "요청 값을 확인해 주세요."
+          : `API error ${response.status}`;
     throw new ApiError(
-      `${body.error?.message ?? `API error ${response.status}`}${runId}`,
+      `${body.error?.message ?? fallbackMessage}${runId}`,
       body.error?.code ?? "API_ERROR",
       details,
       response.status
     );
   }
-  return body.data;
+  return body.data as T;
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
