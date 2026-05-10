@@ -113,7 +113,8 @@ Poster Studio는 승인 또는 검토 중인 workflow run 결과를 바탕으로
 - parent task 선택 시 연결된 revision task 자동 선택, 실행 중 task 삭제 차단
 - `GeoResolverAgent` 기반 자연어 지역 해석
 - `lDongRegnCd`, `lDongSignguCd`, `lclsSystm1/2/3` metadata 저장
-- `BaselineDataAgent`, Gemini 기반 `DataGapProfilerAgent`, Gemini 기반 `ApiCapabilityRouterAgent`, Gemini 기반 4개 API family planner, `EnrichmentExecutor`, Gemini 기반 `EvidenceFusionAgent`
+- Gemini 기반 `PlannerAgent`, `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 4개 API family planner, `EvidenceFusionAgent`, `ResearchSynthesisAgent`
+- `BaselineDataAgent`와 `EnrichmentExecutor`는 LLM Agent가 아니라 TourAPI 수집/색인/선택 보강을 실행하는 deterministic 단계
 - 수집 데이터 기반 gap profiling: 상세정보, 이미지, 운영시간, 요금, 예약정보, 연관 장소, 동선, 테마 특화 데이터
 - 99번 KTO API 명세 기반 capability brief와 선택적 enrichment plan 생성
 - `TOURAPI_CANDIDATE_SHORTLIST_LIMIT` 기반 raw 후보 shortlist 및 non-core API용 `ENRICHMENT_MAX_CALL_BUDGET` 예산 제한
@@ -127,7 +128,7 @@ Poster Studio는 승인 또는 검토 중인 workflow run 결과를 바탕으로
 - Run Detail Data Coverage와 Recommended Data Calls panel
 - Run Detail QA Review에서 최초 실행 또는 마지막 revision QA 설정의 Avoid 기준 표시
 - LangGraph workflow skeleton
-- Planner, Baseline Data, Gap Profiling, API Routing, Data Enrichment, Evidence Fusion, Research, Product, Marketing, QA/Compliance Agent
+- Planner, Baseline Data, Gap Profiling, API Routing, Data Enrichment, Evidence Fusion, Research Synthesis, Product, Marketing, QA/Compliance Agent
 - Planner와 Data 사이에서 자연어 요청의 지역 범위를 해석하는 GeoResolverAgent
 - Human Approval Node
 - workflow run 생성 시 `awaiting_approval`까지 rule-based 또는 Gemini 실행
@@ -217,10 +218,10 @@ LLM_ENABLED=true
 LLM mode:
 
 - `LLM_ENABLED=false`: API 키 없이 로컬 개발/테스트를 실행하는 호환 모드입니다. Phase 10.2 신규 DataGap/Router/Planner/Fusion 판단은 Gemini production 경로가 기준이며, false 모드에서는 fake 결과를 꾸미지 않고 테스트 가능한 로컬 호환 계산만 수행합니다.
-- `LLM_ENABLED=true`: GeoResolver, DataGapProfiler, ApiCapabilityRouter, 4개 API family planner, EvidenceFusion, Product, Marketing, QA와 AI revision patch가 Gemini를 호출합니다. BaselineDataAgent는 기본 수집을 담당하고, `EnrichmentExecutor`는 Gemini가 아니라 실제 provider/tool 실행만 담당합니다.
+- `LLM_ENABLED=true`: Planner, GeoResolver, DataGapProfiler, ApiCapabilityRouter, 4개 API family planner, EvidenceFusion, ResearchSynthesis, Product, Marketing, QA와 AI revision patch가 Gemini를 호출합니다. BaselineDataAgent는 기본 수집을 담당하고, `EnrichmentExecutor`는 Gemini가 아니라 실제 provider/tool 실행만 담당합니다.
 - `LLM_ENABLED=true`에서 Gemini 응답의 JSON 파싱/스키마 검증이 실패하면 `GEMINI_JSON_MAX_RETRIES` 횟수만큼 같은 provider로 다시 호출합니다.
 - 재시도 후에도 Gemini 호출, JSON 검증, 한글 출력 검증이 실패하면 workflow run은 `failed`가 됩니다.
-- 실패한 Agent는 `agent_steps.error`에 남고, Gemini 호출과 JSON 재시도 호출은 `llm_calls`에 token/latency/cost와 함께 저장됩니다.
+- 실패한 Agent는 `agent_steps.error`에 남고, Gemini 호출과 JSON 재시도 호출은 `llm_calls`에 token/latency/cost와 함께 저장됩니다. `data_summary` 같은 deterministic 수집 로그는 LLM 호출이 아니므로 새 run부터 `llm_calls`에 저장하지 않고 `agent_steps`/`tool_calls`에서 확인합니다.
 - `LLM_PROMPT_DEBUG_LOG_ENABLED=true`이면 각 Gemini 호출의 전체 input prompt, schema가 포함된 full prompt, raw output, parsed JSON, error를 `LLM_PROMPT_DEBUG_LOG_DIR/<run_id>/` 아래에 agent/purpose별로 저장합니다. 기계 확인용 `*.json`과 사람이 읽기 쉬운 `*.md`가 함께 생성되며, Markdown 로그에서는 프롬프트와 응답이 이스케이프되지 않은 텍스트 블록으로 보입니다. prompt에는 사용자 요청과 source evidence가 포함될 수 있으므로 로컬 디버깅 때만 켭니다.
 
 비용 주의:
@@ -502,9 +503,19 @@ cat backend/logs/llm_usage_summary.json
 tail -n 20 backend/logs/llm_usage.jsonl
 ```
 
-Product/Marketing/QA Agent가 Gemini로 실행되면 `llm_calls`에 아래 purpose가 `provider=gemini`로 저장됩니다.
+Gemini Agent가 실행되면 `llm_calls`에 아래 purpose가 `provider=gemini`로 저장됩니다.
 
 ```text
+planner
+geo_resolution
+data_gap_profile
+api_capability_routing
+tourapi_detail_planning
+visual_data_planning
+route_signal_planning
+theme_data_planning
+evidence_fusion
+research_synthesis
 product_generation
 marketing_generation
 qa_review
@@ -560,7 +571,7 @@ PATH="$CONDA_PREFIX/bin:$PATH" npm run build
 
 현재 확인된 검증 결과:
 
-- Backend: `68 passed`
+- Backend: `76 passed`
 - Frontend: production build 성공
 - Frontend: `npm run build`의 TypeScript check와 Vite production build 통과
 - `GET /api/health` 응답 확인
@@ -602,9 +613,11 @@ Phase 10.1 AppShell Navbar and Global Navigation은 구현 완료되었습니다
 
 Phase 10.5 UI and Operations Surface Cleanup도 구현 완료되었습니다. Run Detail은 `Result Review`, `Evidence + QA`, `Developer` 탭으로 정리되어 있고, 일반 사용자 화면에서는 내부 agent/planner lane 대신 `요청 확인`, `지역 해석`, `관광 데이터 확인`, `보강 정보 확인`, `상품 초안 생성`, `검수 및 승인` 단계로 진행 상태를 보여줍니다. `agent_steps`, `tool_calls`, `llm_calls`, Raw JSON은 `Developer` 탭으로 이동했습니다. Data Coverage / Enrichment / Evidence는 충분/부족/확인 필요, 호출됨/보류됨/향후 연결 예정/실패함처럼 사람이 읽을 수 있는 상태 중심으로 표시합니다.
 
-다음 Phase는 Phase 11입니다. ProductAgent를 진짜 evidence 기반 생성으로 전환하고, `evidence_profile`, `productization_advice`, `unresolved_gaps`를 상품 생성과 QA claim risk 판단에 강하게 반영합니다.
+Phase 11 Evidence-based ProductAgent Actualization은 구현 완료되었습니다. Product/Marketing/QA는 `evidence_profile`, `productization_advice`, `data_coverage`, `unresolved_gaps`, `source_confidence`, `ui_highlights`를 공유하고, 근거 없는 운영시간/요금/예약/외국어/안전/의료/웰니스 claim은 `assumptions`, `not_to_claim`, `needs_review`, `claim_limits`로 분리합니다.
 
-이후 공식 웹 근거 수집, Planner/Data/Research Agent 실제화, 평가 자동화와 운영 지표를 강화합니다. RAG retrieval recall, faithfulness, tool call accuracy, task success rate, cost per task, latency를 dataset 기반으로 측정하고 Evaluation Dashboard에서 확인할 수 있게 만듭니다.
+Phase 11.5 Gemini Planner/Research Actualization and LLM Call Surface Cleanup도 구현 완료되었습니다. `PlannerAgent`는 Gemini JSON schema 기반으로 요청 의도, 상품 개수, 선호/회피 조건, evidence requirement를 정리하고 지역 코드는 확정하지 않습니다. `ResearchSynthesisAgent`는 EvidenceFusion 직후 후보별 `candidate_evidence_cards`의 usable facts, operational unknowns, restricted claims, evidence document ids를 보존한 채 ProductAgent용 research brief를 만듭니다. `data_summary`는 LLM이 아니라 deterministic collection log였으므로 새 run부터 LLM Calls에 저장하지 않고, Developer UI의 LLM Calls tab은 Gemini 호출과 과거 run에 남아 있는 legacy/offline agent call을 표시하되 `data_summary` row만 숨깁니다. `ApiCapabilityRouterAgent`는 baseline 이후 gap을 보강 API family lane으로 분배하는 Agent이며, baseline 검색 전략을 세우는 future `BaselineSearchPlanner`/`TourAPIQueryPlanner`와는 별도 역할입니다.
+
+다음 Phase는 Phase 12.1/12.2/12.3입니다. 99번 문서에 정리된 추가 KTO API를 실제 provider/executor로 붙이고, 가져온 데이터를 DB/source document/RAG/Product UI에 반영합니다. RAG retrieval recall, faithfulness, tool call accuracy, task success rate, cost per task, latency를 dataset 기반으로 측정하고 Evaluation Dashboard에서 확인하는 작업은 Phase 12 이후 운영/평가 단계에서 강화합니다.
 
 별도 후속 Phase에서는 웹 검색/검색 grounding과 사용자 추가 정보 수집을 Data Agent 보강 기능으로 추가합니다. TourAPI에 없는 운영 시간, 예약 조건, 집결지, 가격/포함사항, 최신 행사 공지 같은 정보를 출처 URL과 조회 시각이 있는 `source=web` 근거로 저장하고, 공식 출처가 약한 정보는 `needs_review`로 분리합니다.
 

@@ -472,6 +472,8 @@ Agent별 역할:
 
 ## Phase 11: Planner, Research, Product Evidence Actualization
 
+구현 상태: Phase 11/11.5 기준 완료. Phase 11에서는 Product/Marketing/QA가 `evidence_profile`, `productization_advice`, `data_coverage`, `unresolved_gaps`, `source_confidence`, `ui_highlights`를 공유하고, 근거 없는 운영시간/요금/예약/외국어/안전/의료/웰니스 claim을 `assumptions`, `not_to_claim`, `needs_review`, `claim_limits`로 분리하도록 전환했습니다. Phase 11.5에서는 `PlannerAgent`와 `ResearchSynthesisAgent`를 Gemini prompt + JSON schema 기반으로 전환했고, `data_summary` deterministic 수집 로그를 LLM Calls에서 분리했습니다.
+
 목표:
 
 - 아직 규칙 기반에 가까운 Planner와 Research를 실제 evidence 기반 Agent로 바꾸고, Product/Marketing/QA가 Phase 10.2의 `evidence_profile`, `productization_advice`, `unresolved_gaps`, `ui_highlights`를 강하게 반영하도록 만든다.
@@ -481,7 +483,7 @@ Agent별 역할:
 - Planner Agent를 Gemini structured output 기반으로 전환
 - Planner output에 region, period, target, product_count, preferences, avoid, data_need_hints 포함
 - Data Agent는 고정 호출이 아니라 enrichment plan을 실행
-- Research Agent는 evidence profile을 읽고 지역/시즌/타깃/리스크를 요약
+- ResearchSynthesisAgent는 EvidenceFusion 결과를 압축 요약하지 않고 후보별 `candidate_evidence_cards`의 usable facts, operational unknowns, restricted claims, evidence document ids를 보존한 채 ProductAgent용 research brief를 만든다.
 - Product Agent에 raw document list 대신 `evidence_profile`과 `productization_advice` 전달
 - Product Agent가 evidence 기반 itinerary를 만들고, source가 없는 운영시간/요금/예약 가능 여부를 단정하지 않도록 prompt와 validation 강화
 - data coverage 수준에 따라 상품 card UI를 다양화. 예: 이미지 후보 있음, route 근거 있음, signal만 있음, 운영자 확인 필요
@@ -495,6 +497,13 @@ Agent별 역할:
 - Research 결과가 실제 source evidence와 signal에 근거한다.
 - Product/Marketing/QA가 같은 evidence profile을 공유한다.
 - 근거 없는 claim은 상품 본문이 아니라 assumptions/not_to_claim/needs_review로 분리된다.
+- `data_summary`는 LLM Calls에 저장되지 않고 `agent_steps`/`tool_calls`에서 deterministic 실행 기록으로 확인된다.
+
+역할 경계:
+
+- `ApiCapabilityRouterAgent`는 baseline 데이터 수집 이후 gap report를 보고 어떤 보강 API family/planner lane으로 보낼지 결정한다.
+- baseline TourAPI 검색 전에 query/API 전략을 결정하는 역할이 필요해지면 Phase 12 이후 `BaselineSearchPlanner` 또는 `TourAPIQueryPlanner`로 별도 분리한다.
+- Phase 11.5에서는 새 DataQueryPlanner를 만들지 않는다.
 
 ## Phase 12: Additional KTO API Data Utilization
 
@@ -745,24 +754,22 @@ Approved or Reviewable Run
 
 ## 다음 구현 시작점
 
-바로 다음 구현은 Phase 11 Planner, Research, Product Evidence Actualization부터 시작합니다. Phase 10 Data Enrichment Workflow, Phase 10.1 AppShell Navbar and Global Navigation, Phase 10.2 Gemini Data Enrichment Agent 전환, Phase 10.5 UI and Operations Surface Cleanup은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 작업은 Phase 12에서 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 진행합니다.
+바로 다음 구현은 Phase 12.1 Visual APIs부터 시작합니다. Phase 10 Data Enrichment Workflow, Phase 10.1 AppShell Navbar and Global Navigation, Phase 10.2 Gemini Data Enrichment Agent 전환, Phase 10.5 UI and Operations Surface Cleanup, Phase 11 Evidence-based ProductAgent Actualization, Phase 11.5 Gemini Planner/Research Actualization and LLM Call Surface Cleanup은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 작업은 Phase 12에서 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 진행합니다.
 
-Codex에게 줄 첫 작업 범위:
+Codex에게 줄 다음 작업 범위:
 
 ```text
-Phase 11: Planner, Research, Product Evidence Actualization을 구현해줘.
+Phase 12.1: Visual APIs Actual Connection을 구현해줘.
 
 범위:
-- ProductAgent를 `evidence_profile`, `productization_advice`, `unresolved_gaps` 기반 생성으로 전환
-- ResearchAgent가 evidence profile을 읽고 지역/시즌/타깃/리스크를 요약
-- 근거 없는 운영시간/요금/예약 가능 여부 claim 제한
-- QA가 unresolved gaps와 claim risk를 기준으로 검수하도록 강화
-- 상품 카드와 Result Review가 evidence coverage를 반영하도록 개선
+- KTO 사진/이미지 계열 API를 실제 provider/executor로 연결
+- 이미지 후보를 tourism_visual_assets/source_documents에 저장
+- Evidence + QA와 상품 카드에서 이미지 근거를 후보 상태로 표시
+- 실제 호출되지 않은 API를 호출된 것처럼 표시하지 않음
 - backend test와 frontend build로 확인
 
 주의:
-- Data Enrichment workflow 동작을 바꾸지 마.
+- Phase 11/11.5 evidence 기반 Product/Research 흐름을 깨지 마.
 - 지역 resolve 실패 시 전국 fallback하지 마.
-- 불필요한 landing page를 만들지 말고 운영 dashboard를 첫 화면으로 유지해.
-- 구현되지 않은 기능을 실제 작동하는 것처럼 보이게 하지 마.
+- 구현되지 않은 API를 실제 작동하는 것처럼 보이게 하지 마.
 ```
