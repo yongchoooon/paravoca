@@ -98,6 +98,10 @@ function buildErrorRows({
   return rows;
 }
 
+function isDeterministicCollectionLlmRow(call: LLMCall) {
+  return call.purpose === "data_summary" || call.purpose.startsWith("data_summary_");
+}
+
 export function RunLogs({
   run,
   steps,
@@ -106,6 +110,11 @@ export function RunLogs({
   agentExecution,
 }: RunLogsProps) {
   const [selectedLogDetail, setSelectedLogDetail] = useState<LogDetail | null>(null);
+  const visibleLlmCalls = useMemo(
+    () => llmCalls.filter((call) => !isDeterministicCollectionLlmRow(call)),
+    [llmCalls]
+  );
+  const hiddenDeterministicCallCount = llmCalls.length - visibleLlmCalls.length;
   const errorRows = useMemo(
     () => buildErrorRows({ run, steps, toolCalls, llmCalls }),
     [run, steps, toolCalls, llmCalls]
@@ -298,6 +307,12 @@ export function RunLogs({
         </Tabs.Panel>
 
         <Tabs.Panel value="llm" pt="md">
+          <Alert color="gray" mb="sm">
+            LLM Calls에는 Gemini 호출과 legacy/offline agent call 기록을 표시합니다. Baseline TourAPI 수집, 색인, vector search 같은 deterministic 실행 기록은 Agent Steps와 Tool Calls에서 확인하세요.
+            {hiddenDeterministicCallCount > 0
+              ? ` 숨겨진 data_summary deterministic log ${hiddenDeterministicCallCount}건이 있습니다.`
+              : ""}
+          </Alert>
           <Table striped verticalSpacing="sm">
             <Table.Thead>
               <Table.Tr>
@@ -309,15 +324,23 @@ export function RunLogs({
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {llmCalls.map((call) => (
-                <Table.Tr key={call.id}>
-                  <Table.Td>{call.provider}</Table.Td>
-                  <Table.Td>{call.model}</Table.Td>
-                  <Table.Td>{call.purpose}</Table.Td>
-                  <Table.Td>{call.total_tokens}</Table.Td>
-                  <Table.Td>${call.cost_usd.toFixed(6)}</Table.Td>
+              {visibleLlmCalls.length > 0 ? (
+                visibleLlmCalls.map((call) => (
+                  <Table.Tr key={call.id}>
+                    <Table.Td>{call.provider}</Table.Td>
+                    <Table.Td>{call.model}</Table.Td>
+                    <Table.Td>{call.purpose}</Table.Td>
+                    <Table.Td>{call.total_tokens}</Table.Td>
+                    <Table.Td>${call.cost_usd.toFixed(6)}</Table.Td>
+                  </Table.Tr>
+                ))
+              ) : (
+                <Table.Tr>
+                  <Table.Td colSpan={5}>
+                    <Text c="dimmed" ta="center">이 run에 표시할 LLM/agent call 기록이 없습니다.</Text>
+                  </Table.Td>
                 </Table.Tr>
-              ))}
+              )}
             </Table.Tbody>
           </Table>
         </Tabs.Panel>

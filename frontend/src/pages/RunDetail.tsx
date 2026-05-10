@@ -257,10 +257,11 @@ export function RunDetail({
 
   const selectedEvidenceRows = useMemo(() => {
     if (!result) return [];
-    if (!showSelectedProductEvidenceOnly || !selectedProduct?.source_ids.length) {
+    const selectedSourceIds = stringListFromUnknown(selectedProduct?.source_ids);
+    if (!showSelectedProductEvidenceOnly || selectedSourceIds.length === 0) {
       return result.retrieved_documents;
     }
-    const sourceIds = new Set(selectedProduct.source_ids);
+    const sourceIds = new Set(selectedSourceIds);
     return result.retrieved_documents.filter((doc) => sourceIds.has(doc.doc_id));
   }, [result, selectedProduct, showSelectedProductEvidenceOnly]);
 
@@ -813,7 +814,7 @@ export function RunDetail({
                 </div>
                 <Checkbox
                   checked={showSelectedProductEvidenceOnly}
-                  disabled={!selectedProduct?.source_ids.length}
+                  disabled={stringListFromUnknown(selectedProduct?.source_ids).length === 0}
                   label="Selected product only"
                   onChange={(event) => setShowSelectedProductEvidenceOnly(event.currentTarget.checked)}
                 />
@@ -1402,7 +1403,7 @@ function userWorkflowStages(
       key: "data",
       label: "관광 데이터 확인",
       description: "확정된 지역의 기본 관광 데이터를 확인합니다.",
-      stepTypes: ["baseline_data_collection", "research"],
+      stepTypes: ["baseline_data_collection"],
     },
     {
       key: "enrichment",
@@ -1417,6 +1418,7 @@ function userWorkflowStages(
         "theme_data_planning",
         "data_enrichment",
         "evidence_fusion",
+        "research",
       ],
     },
     {
@@ -2117,6 +2119,18 @@ function ProductDetail({
   product: ProductIdea;
   marketing: MarketingAsset | null;
 }) {
+  const needsReview = stringListFromUnknown(product.needs_review);
+  const claimLimits = stringListFromUnknown(product.claim_limits);
+  const coverageNotes = stringListFromUnknown(product.coverage_notes);
+  const evidenceSummary =
+    typeof product.evidence_summary === "string" && product.evidence_summary.trim()
+      ? product.evidence_summary.trim()
+      : "";
+  const marketingClaimLimits = stringListFromUnknown(marketing?.claim_limits);
+  const evidenceDisclaimer =
+    typeof marketing?.evidence_disclaimer === "string" ? marketing.evidence_disclaimer : "";
+  const sourceIds = stringListFromUnknown(product.source_ids);
+
   return (
     <Stack gap="md">
       <div>
@@ -2133,6 +2147,46 @@ function ProductDetail({
         <Metric label="Duration" value={product.estimated_duration} />
         <Metric label="Difficulty" value={product.operation_difficulty} />
       </SimpleGrid>
+
+      <Paper withBorder p="sm">
+        <Stack gap="sm">
+          <Group justify="space-between" align="flex-start">
+            <div>
+              <Text fw={700} size="sm">근거 기반 상태</Text>
+              <Text size="sm" c="dimmed">
+                Result Review에서는 상품별 핵심 근거 상태만 요약합니다. 상세 근거와 리스크는 Evidence + QA에서 확인하세요.
+              </Text>
+            </div>
+            <Group gap="xs">
+              <Badge variant="light" color="opsBlue">근거 {sourceIds.length}개</Badge>
+              <Badge variant="light" color={needsReview.length > 0 ? "yellow" : "green"}>
+                확인 필요 {needsReview.length}개
+              </Badge>
+              <Badge variant="light" color={claimLimits.length > 0 ? "gray" : "green"}>
+                claim 제한 {claimLimits.length}개
+              </Badge>
+            </Group>
+          </Group>
+
+          {evidenceSummary ? <Text size="sm">{evidenceSummary}</Text> : null}
+
+          <SimpleGrid cols={{ base: 1, md: 3 }}>
+            <EvidenceStateList title="확인 필요" items={needsReview} emptyText="별도 확인 항목 없음" />
+            <EvidenceStateList
+              title="Claim 제한"
+              items={[...claimLimits, ...marketingClaimLimits]}
+              emptyText="추가 제한 없음"
+            />
+            <EvidenceStateList title="Coverage note" items={coverageNotes} emptyText="추가 커버리지 메모 없음" />
+          </SimpleGrid>
+
+          {evidenceDisclaimer ? (
+            <Alert color="gray" variant="light">
+              <Text size="sm">{evidenceDisclaimer}</Text>
+            </Alert>
+          ) : null}
+        </Stack>
+      </Paper>
 
       <Tabs defaultValue="copy">
         <Tabs.List>
@@ -2206,6 +2260,32 @@ function ProductDetail({
         </Tabs.Panel>
       </Tabs>
     </Stack>
+  );
+}
+
+function EvidenceStateList({
+  title,
+  items,
+  emptyText,
+}: {
+  title: string;
+  items: string[];
+  emptyText: string;
+}) {
+  const deduped = Array.from(new Set(items.map((item) => item.trim()).filter(Boolean))).slice(0, 5);
+  return (
+    <div>
+      <Text fw={700} size="xs" c="dimmed">{title}</Text>
+      {deduped.length > 0 ? (
+        <Stack gap={4} mt={4}>
+          {deduped.map((item) => (
+            <Text key={item} size="sm">- {item}</Text>
+          ))}
+        </Stack>
+      ) : (
+        <Text size="sm" c="dimmed" mt={4}>{emptyText}</Text>
+      )}
+    </div>
   );
 }
 

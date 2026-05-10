@@ -214,7 +214,7 @@ const workflowNodes: Node[] = [
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Planner" description="요청 조건 정리" />,
+      label: <WorkflowNodeLabel title="Gemini Planner" description="요청 의도와 제약 정리" />,
     },
   },
   {
@@ -250,11 +250,10 @@ const workflowNodes: Node[] = [
   {
     id: "baseline-data",
     position: { x: 915, y: 20 },
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-    style: normalNodeStyle,
+    type: "action",
     data: {
-      label: <WorkflowNodeLabel title="Baseline" description="기본 관광 데이터 수집" />,
+      title: "Baseline Data",
+      description: "TourAPI 수집/색인 실행",
     },
   },
   {
@@ -284,7 +283,7 @@ const workflowNodes: Node[] = [
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="API Router" description="필요한 API 묶음 분류" />,
+      label: <WorkflowNodeLabel title="API Router" description="Gap을 보강 API lane으로 배분" />,
     },
   },
   {
@@ -344,7 +343,7 @@ const workflowNodes: Node[] = [
     targetPosition: Position.Left,
     style: normalNodeStyle,
     data: {
-      label: <WorkflowNodeLabel title="Research" description="근거 검색과 요약" />,
+      label: <WorkflowNodeLabel title="Gemini Research" description="근거 브리프 보존" />,
     },
   },
   {
@@ -1293,6 +1292,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
           </div>
           <Group gap="xs">
             <Badge variant="light" color="opsBlue">Agent</Badge>
+            <Badge variant="light" color="gray">Execution</Badge>
             <Badge variant="light" color="teal">Decision</Badge>
             <Badge variant="light" color="red">Exit action</Badge>
             <Badge variant="light" color="grape">Revision</Badge>

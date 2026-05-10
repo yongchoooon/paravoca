@@ -41,6 +41,10 @@ export type ProductIdea = {
   source_ids: string[];
   assumptions: string[];
   not_to_claim: string[];
+  evidence_summary?: string;
+  needs_review?: string[];
+  coverage_notes?: string[];
+  claim_limits?: string[];
 };
 
 export type MarketingAsset = {
@@ -54,6 +58,8 @@ export type MarketingAsset = {
   faq: Array<{ question: string; answer: string }>;
   sns_posts: string[];
   search_keywords: string[];
+  evidence_disclaimer?: string;
+  claim_limits?: string[];
 };
 
 export type EvidenceDocument = {

@@ -36,8 +36,8 @@ export const workflowStages: WorkflowStage[] = [
   },
   {
     key: "planner",
-    label: "Planner",
-    description: "요청을 정규화하고 실행 계획을 만듭니다.",
+    label: "Gemini Planner",
+    description: "Gemini가 요청 의도, 상품 개수, 선호/회피 조건, 근거 요구사항을 정리합니다.",
     agentName: "PlannerAgent",
     stepType: "planner",
   },
@@ -51,7 +51,7 @@ export const workflowStages: WorkflowStage[] = [
   {
     key: "data",
     label: "Baseline Data",
-    description: "해석된 지역 범위로 기본 TourAPI 후보를 수집합니다.",
+    description: "해석된 지역 범위로 기본 TourAPI 후보를 수집하는 deterministic 실행 단계입니다.",
     agentName: "BaselineDataAgent",
     stepType: "baseline_data_collection",
   },
@@ -65,7 +65,7 @@ export const workflowStages: WorkflowStage[] = [
   {
     key: "api_capability_routing",
     label: "Gemini Router",
-    description: "Gemini가 gap을 4개의 API planner lane으로 배분합니다.",
+    description: "Gemini가 baseline 이후 gap을 보강 API family/planner lane으로 배분합니다.",
     agentName: "ApiCapabilityRouterAgent",
     stepType: "api_capability_routing",
   },
@@ -113,9 +113,9 @@ export const workflowStages: WorkflowStage[] = [
   },
   {
     key: "research",
-    label: "Research",
-    description: "RAG 근거를 검색하고 지역/시즌 맥락을 요약합니다.",
-    agentName: "ResearchAgent",
+    label: "Gemini Research",
+    description: "Gemini가 후보별 근거 card를 보존하면서 상품 생성용 research brief를 만듭니다.",
+    agentName: "ResearchSynthesisAgent",
     stepType: "research",
   },
   {
