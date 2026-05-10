@@ -364,41 +364,92 @@ def _route_after_gap_profile(state: GraphState) -> str:
     return "enrich" if gaps else "research"
 
 
+def _default_workflow_plan() -> list[dict[str, Any]]:
+    return [
+        {"id": "resolve_geo_scope", "agent": "GeoResolverAgent"},
+        {"id": "baseline_tourapi_collection", "executor": "BaselineDataCollection"},
+        {"id": "profile_data_gaps", "agent": "DataGapProfilerAgent"},
+        {"id": "route_data_capabilities", "agent": "ApiCapabilityRouterAgent"},
+        {"id": "plan_tourapi_detail", "agent": "TourApiDetailPlannerAgent"},
+        {"id": "plan_visual_data", "agent": "VisualDataPlannerAgent"},
+        {"id": "plan_route_signal", "agent": "RouteSignalPlannerAgent"},
+        {"id": "plan_theme_data", "agent": "ThemeDataPlannerAgent"},
+        {"id": "execute_selected_enrichment", "executor": "EnrichmentExecutor"},
+        {"id": "fuse_evidence", "agent": "EvidenceFusionAgent"},
+        {"id": "synthesize_research", "agent": "ResearchSynthesisAgent"},
+        {"id": "generate_products", "agent": "ProductAgent"},
+        {"id": "generate_marketing", "agent": "MarketingAgent"},
+        {"id": "qa_review", "agent": "QAComplianceAgent"},
+        {"id": "human_approval", "node": "HumanApprovalNode"},
+    ]
+
+
+def _default_normalized_request(request: dict[str, Any]) -> dict[str, Any]:
+    product_count = _coerce_product_count(request.get("product_count"), fallback=3)
+    return {
+        "user_intent": str(request.get("message") or "관광 상품 기획").strip(),
+        "request_type": "tourism_product_generation",
+        "region_name": request.get("region"),
+        "start_date": _period_start(request.get("period")),
+        "end_date": _period_end(request.get("period")),
+        "period": request.get("period"),
+        "target_customer": request.get("target_customer") or "외국인",
+        "product_count": product_count,
+        "preferred_themes": _string_list(request.get("preferences")) or ["야간 관광", "축제"],
+        "avoid": _string_list(request.get("avoid")),
+        "output_language": request.get("output_language") or "ko",
+        "product_generation_constraints": [
+            "상품 개수는 최대 5개입니다.",
+            "지역 코드는 GeoResolverAgent가 확정합니다.",
+            "근거 없는 운영시간, 가격, 예약 가능 여부는 단정하지 않습니다.",
+        ],
+        "evidence_requirements": [
+            "각 상품은 최소 1개 이상의 실제 근거 문서와 연결되어야 합니다.",
+            "부족한 정보는 needs_review 또는 claim_limits로 분리해야 합니다.",
+        ],
+    }
+
+
+def _coerce_product_count(value: Any, fallback: int) -> int:
+    try:
+        count = int(value or fallback)
+    except (TypeError, ValueError):
+        count = fallback
+    return max(1, min(5, count))
+
+
 def planner_agent(db: Session, state: GraphState) -> GraphState:
     with step_log(db, state["run_id"], "PlannerAgent", "planner", state.get("user_request")) as step:
         request = state["user_request"]
-        region = request.get("region")
-        normalized = {
-            "region_name": region,
-            "start_date": _period_start(request.get("period")),
-            "end_date": _period_end(request.get("period")),
-            "target_customer": request.get("target_customer") or "외국인",
-            "product_count": min(int(request.get("product_count") or 3), 5),
-            "preferred_themes": request.get("preferences") or ["야간 관광", "축제"],
-            "avoid": request.get("avoid") or [],
-            "output_language": request.get("output_language") or "ko",
-        }
-        plan = [
-            {"id": "resolve_geo_scope", "agent": "GeoResolverAgent"},
-            {"id": "baseline_tourapi_collection", "agent": "BaselineDataAgent"},
-            {"id": "profile_data_gaps", "agent": "DataGapProfilerAgent"},
-            {"id": "route_data_capabilities", "agent": "ApiCapabilityRouterAgent"},
-            {"id": "plan_tourapi_detail", "agent": "TourApiDetailPlannerAgent"},
-            {"id": "plan_visual_data", "agent": "VisualDataPlannerAgent"},
-            {"id": "plan_route_signal", "agent": "RouteSignalPlannerAgent"},
-            {"id": "plan_theme_data", "agent": "ThemeDataPlannerAgent"},
-            {"id": "execute_selected_enrichment", "executor": "EnrichmentExecutor"},
-            {"id": "fuse_evidence", "agent": "EvidenceFusionAgent"},
-            {"id": "rag_search", "tool": "vector_search"},
-            {"id": "generate_products", "agent": "ProductAgent"},
-            {"id": "generate_marketing", "agent": "MarketingAgent"},
-            {"id": "qa_review", "agent": "QAComplianceAgent"},
-            {"id": "human_approval", "node": "HumanApprovalNode"},
-        ]
-        output = {"normalized_request": normalized, "plan": plan}
+        settings = get_settings()
+        if settings.llm_enabled:
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose="planner",
+                prompt=_planner_prompt(request),
+                response_schema=PLANNER_RESPONSE_SCHEMA,
+                max_output_tokens=4096,
+                temperature=0.1,
+                settings=settings,
+            )
+            normalized = validate_planner_output(gemini_result.data, request)
+            meta = _gemini_generation_meta("PlannerAgent", "planner", gemini_result)
+            step.model = gemini_result.model
+        else:
+            normalized = _default_normalized_request(request)
+            meta = _rule_based_generation_meta("PlannerAgent", "planner")
+            step.model = "rule-based-v1"
+            record_rule_based_llm_call(db, state["run_id"], step.id, "planner", request, normalized)
+        plan = _default_workflow_plan()
+        output = {"normalized_request": normalized, "plan": plan, "generation": meta}
         step.output = output
-        record_rule_based_llm_call(db, state["run_id"], step.id, "planner", request, output)
-        return {"normalized_request": normalized, "plan": plan}
+        return {
+            "normalized_request": normalized,
+            "plan": plan,
+            "agent_execution": _append_agent_execution(state, meta),
+        }
 
 
 def geo_resolver_agent(db: Session, state: GraphState) -> GraphState:
@@ -682,7 +733,6 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
             },
         }
         step.output = output
-        record_rule_based_llm_call(db, run_id, step.id, "data_summary", normalized, output)
         return {
             "geo_scope": geo_scope,
             "source_items": output["source_items"],
@@ -1276,36 +1326,47 @@ def _string_or_empty(value: Any) -> str:
 
 
 def research_agent(db: Session, state: GraphState) -> GraphState:
-    with step_log(db, state["run_id"], "ResearchAgent", "research", state.get("retrieved_documents")) as step:
+    input_payload = {
+        "retrieved_document_count": len(state.get("retrieved_documents", [])),
+        "candidate_card_count": len(_candidate_cards_from_context(_evidence_context_from_state(state))),
+        "unresolved_gap_count": len(state.get("unresolved_gaps", [])),
+        "source_confidence": state.get("source_confidence") or 0.0,
+    }
+    with step_log(db, state["run_id"], "ResearchSynthesisAgent", "research", input_payload) as step:
         docs = state.get("retrieved_documents", [])
-        source_ids = [doc["doc_id"] for doc in docs[:5]]
-        region_label = _region_label_from_normalized(state.get("normalized_request", {}))
-        summary = {
-            "region_insights": [
-                {
-                    "claim": f"{region_label}은 수집된 TourAPI 근거를 기준으로 액티비티 동선을 검토할 수 있습니다.",
-                    "evidence_source_ids": source_ids,
-                    "confidence": 0.78,
-                }
-            ],
-            "recommended_themes": [
-                {"theme": "local_activity_route", "reason": "지역 기반 후보지가 검색 근거에 포함되어 있습니다."},
-                {"theme": "seasonal_event_plus_place", "reason": "요청 기간 내 행사와 주변 관광지를 함께 검토할 수 있습니다."},
-                {"theme": "foreigner_friendly_short_course", "reason": "외국인 대상 짧은 이동 동선으로 재구성할 수 있습니다."},
-            ],
-            "constraints": [
-                "가격, 예약 가능 여부, 운영 시간은 운영자가 최종 확인해야 합니다.",
-                "이미지 사용 전 공공데이터 이용 조건을 확인해야 합니다.",
-            ],
-            "evidence_profile": state.get("evidence_profile") or {},
-            "productization_advice": state.get("productization_advice") or {},
-            "data_coverage": state.get("data_coverage") or {},
-            "unresolved_gaps": state.get("unresolved_gaps") or [],
-            "source_confidence": state.get("source_confidence") or 0.0,
+        evidence_context = _evidence_context_from_state(state)
+        settings = get_settings()
+        if settings.llm_enabled:
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose="research_synthesis",
+                prompt=_research_synthesis_prompt(
+                    normalized=state.get("normalized_request", {}),
+                    docs=docs,
+                    evidence_context=evidence_context,
+                    data_gap_report=state.get("data_gap_report") or {},
+                    enrichment_summary=state.get("enrichment_summary") or {},
+                ),
+                response_schema=RESEARCH_SYNTHESIS_RESPONSE_SCHEMA,
+                max_output_tokens=16384,
+                temperature=0.15,
+                settings=settings,
+            )
+            summary = validate_research_synthesis(gemini_result.data, state)
+            meta = _gemini_generation_meta("ResearchSynthesisAgent", "research_synthesis", gemini_result)
+            step.model = gemini_result.model
+        else:
+            summary = build_offline_research_synthesis(state)
+            meta = _rule_based_generation_meta("ResearchSynthesisAgent", "research")
+            step.model = "rule-based-v1"
+            record_rule_based_llm_call(db, state["run_id"], step.id, "research", docs, summary)
+        step.output = {"research_summary": summary, "generation": meta}
+        return {
+            "research_summary": summary,
+            "agent_execution": _append_agent_execution(state, meta),
         }
-        step.output = summary
-        record_rule_based_llm_call(db, state["run_id"], step.id, "research", docs, summary)
-        return {"research_summary": summary}
 
 
 def _region_label_from_normalized(normalized: dict[str, Any]) -> str:
@@ -1323,9 +1384,11 @@ def product_agent(db: Session, state: GraphState) -> GraphState:
     normalized = state["normalized_request"]
     with step_log(db, state["run_id"], "ProductAgent", "product_generation", state.get("research_summary")) as step:
         docs = state.get("retrieved_documents", [])
+        evidence_context = _evidence_context_from_state(state)
+        qa_settings = _qa_settings_from_state(state)
         settings = get_settings()
         if not settings.llm_enabled:
-            products = build_rule_based_products(normalized, docs)
+            products = build_rule_based_products(normalized, docs, evidence_context=evidence_context)
             meta = _rule_based_generation_meta("ProductAgent", "product_generation")
             step.model = "rule-based-v1"
             record_rule_based_llm_call(db, state["run_id"], step.id, "product_generation", normalized, products)
@@ -1335,13 +1398,26 @@ def product_agent(db: Session, state: GraphState) -> GraphState:
                 run_id=state["run_id"],
                 step_id=step.id,
                 purpose="product_generation",
-                prompt=_product_prompt(normalized, state.get("research_summary", {}), docs),
+                prompt=_product_prompt(
+                    normalized,
+                    state.get("research_summary", {}),
+                    docs,
+                    evidence_context=evidence_context,
+                    source_items=state.get("source_items", []),
+                    qa_settings=qa_settings,
+                ),
                 response_schema=PRODUCT_RESPONSE_SCHEMA,
                 max_output_tokens=8192,
                 temperature=0.35,
                 settings=settings,
             )
-            products = validate_products(gemini_result.data, normalized, docs)
+            products = validate_products(
+                gemini_result.data,
+                normalized,
+                docs,
+                evidence_context=evidence_context,
+                qa_settings=qa_settings,
+            )
             meta = _gemini_generation_meta("ProductAgent", "product_generation", gemini_result)
             step.model = gemini_result.model
         step.output = {"products": products, "generation": meta}
@@ -1355,6 +1431,7 @@ def marketing_agent(db: Session, state: GraphState) -> GraphState:
     with step_log(db, state["run_id"], "MarketingAgent", "marketing_generation", state.get("product_ideas")) as step:
         settings = get_settings()
         products = state.get("product_ideas", [])
+        evidence_context = _evidence_context_from_state(state)
         if not settings.llm_enabled:
             assets = build_rule_based_marketing(products)
             meta = _rule_based_generation_meta("MarketingAgent", "marketing_generation")
@@ -1370,14 +1447,15 @@ def marketing_agent(db: Session, state: GraphState) -> GraphState:
                     products,
                     state.get("retrieved_documents", []),
                     state.get("revision_context"),
-                    _evidence_context_from_state(state),
+                    evidence_context,
+                    _qa_settings_from_state(state),
                 ),
                 response_schema=MARKETING_RESPONSE_SCHEMA,
                 max_output_tokens=8192,
                 temperature=0.35,
                 settings=settings,
             )
-            assets = validate_marketing_assets(gemini_result.data, products)
+            assets = validate_marketing_assets(gemini_result.data, products, evidence_context=evidence_context)
             meta = _gemini_generation_meta("MarketingAgent", "marketing_generation", gemini_result)
             step.model = gemini_result.model
         step.output = {"marketing_assets": assets, "generation": meta}
@@ -1392,8 +1470,17 @@ def qa_agent(db: Session, state: GraphState) -> GraphState:
         settings = get_settings()
         products = state.get("product_ideas", [])
         assets = state.get("marketing_assets", [])
+        docs = state.get("retrieved_documents", [])
+        evidence_context = _evidence_context_from_state(state)
+        qa_settings = _qa_settings_from_state(state)
         if not settings.llm_enabled:
-            qa_report = build_rule_based_qa(products, assets)
+            qa_report = build_rule_based_qa(
+                products,
+                assets,
+                docs=docs,
+                evidence_context=evidence_context,
+                qa_settings=qa_settings,
+            )
             meta = _rule_based_generation_meta("QAComplianceAgent", "qa_review")
             step.model = "rule-based-v1"
             record_rule_based_llm_call(db, state["run_id"], step.id, "qa_review", assets, qa_report)
@@ -1406,16 +1493,23 @@ def qa_agent(db: Session, state: GraphState) -> GraphState:
                 prompt=_qa_prompt(
                     products,
                     assets,
-                    state.get("retrieved_documents", []),
-                    _qa_settings_from_state(state),
-                    _evidence_context_from_state(state),
+                    docs,
+                    qa_settings,
+                    evidence_context,
                 ),
                 response_schema=QA_RESPONSE_SCHEMA,
                 max_output_tokens=8192,
                 temperature=0.1,
                 settings=settings,
             )
-            qa_report = validate_qa_report(gemini_result.data, products)
+            qa_report = validate_qa_report(
+                gemini_result.data,
+                products,
+                docs=docs,
+                evidence_context=evidence_context,
+                marketing_assets=assets,
+                qa_settings=qa_settings,
+            )
             meta = _gemini_generation_meta("QAComplianceAgent", "qa_review", gemini_result)
             step.model = gemini_result.model
         step.output = {"qa_report": qa_report, "generation": meta}
@@ -1551,6 +1645,61 @@ GEO_RESOLUTION_RESPONSE_SCHEMA = {
 }
 
 
+PLANNER_RESPONSE_SCHEMA = {
+    "type": "object",
+    "required": [
+        "user_intent",
+        "product_count",
+        "target_customer",
+        "preferred_themes",
+        "avoid",
+        "period",
+        "output_language",
+        "request_type",
+        "product_generation_constraints",
+        "evidence_requirements",
+    ],
+    "properties": {
+        "user_intent": {"type": "string"},
+        "product_count": {"type": "integer"},
+        "target_customer": {"type": "string"},
+        "preferred_themes": {"type": "array", "items": {"type": "string"}},
+        "avoid": {"type": "array", "items": {"type": "string"}},
+        "period": {"type": "string"},
+        "output_language": {"type": "string"},
+        "request_type": {"type": "string"},
+        "product_generation_constraints": {"type": "array", "items": {"type": "string"}},
+        "evidence_requirements": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
+RESEARCH_SYNTHESIS_RESPONSE_SCHEMA = {
+    "type": "object",
+    "required": [
+        "research_brief",
+        "candidate_evidence_cards",
+        "usable_claims",
+        "restricted_claims",
+        "operational_unknowns",
+        "unresolved_gaps",
+        "product_generation_guidance",
+        "qa_risk_notes",
+    ],
+    "properties": {
+        "research_brief": {"type": "string"},
+        "candidate_evidence_cards": {"type": "array", "items": {"type": "object"}},
+        "usable_claims": {"type": "array", "items": {"type": "string"}},
+        "restricted_claims": {"type": "array", "items": {"type": "string"}},
+        "operational_unknowns": {"type": "array", "items": {"type": "string"}},
+        "unresolved_gaps": {"type": "array", "items": {"type": "object"}},
+        "product_generation_guidance": {"type": "array", "items": {"type": "string"}},
+        "qa_risk_notes": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
 PRODUCT_RESPONSE_SCHEMA = {
     "type": "object",
     "required": ["products"],
@@ -1572,6 +1721,23 @@ PRODUCT_RESPONSE_SCHEMA = {
                     "assumptions",
                     "not_to_claim",
                 ],
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "one_liner": {"type": "string"},
+                    "target_customer": {"type": "string"},
+                    "core_value": {"type": "array", "items": {"type": "string"}},
+                    "itinerary": {"type": "array", "items": {"type": "object"}},
+                    "estimated_duration": {"type": "string"},
+                    "operation_difficulty": {"type": "string"},
+                    "source_ids": {"type": "array", "items": {"type": "string"}},
+                    "assumptions": {"type": "array", "items": {"type": "string"}},
+                    "not_to_claim": {"type": "array", "items": {"type": "string"}},
+                    "evidence_summary": {"type": "string"},
+                    "needs_review": {"type": "array", "items": {"type": "string"}},
+                    "coverage_notes": {"type": "array", "items": {"type": "string"}},
+                    "claim_limits": {"type": "array", "items": {"type": "string"}},
+                },
             },
         }
     },
@@ -1586,6 +1752,15 @@ MARKETING_RESPONSE_SCHEMA = {
             "items": {
                 "type": "object",
                 "required": ["product_id", "sales_copy", "faq", "sns_posts", "search_keywords"],
+                "properties": {
+                    "product_id": {"type": "string"},
+                    "sales_copy": {"type": "object"},
+                    "faq": {"type": "array", "items": {"type": "object"}},
+                    "sns_posts": {"type": "array", "items": {"type": "string"}},
+                    "search_keywords": {"type": "array", "items": {"type": "string"}},
+                    "evidence_disclaimer": {"type": "string"},
+                    "claim_limits": {"type": "array", "items": {"type": "string"}},
+                },
             },
         }
     },
@@ -1614,8 +1789,13 @@ QA_RESPONSE_SCHEMA = {
 }
 
 
-def build_rule_based_products(normalized: dict[str, Any], docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    count = normalized.get("product_count", 3)
+def build_rule_based_products(
+    normalized: dict[str, Any],
+    docs: list[dict[str, Any]],
+    *,
+    evidence_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    count = _desired_product_count(normalized, fallback=3)
     region_label = _region_label_from_normalized(normalized)
     templates = [
         (f"{region_label} 야간 로컬 미식 투어", ["야경", "로컬 음식", "짧은 동선"]),
@@ -1624,12 +1804,16 @@ def build_rule_based_products(normalized: dict[str, Any], docs: list[dict[str, A
         (f"{region_label} 로컬 산책 + 카페 투어", ["로컬 산책", "카페", "가벼운 도보"]),
         (f"{region_label} 문화 체험 입문 클래스", ["문화 체험", "푸드투어", "현장 확인"]),
     ]
-    source_ids = [doc["doc_id"] for doc in docs[:5]]
+    source_ids = [str(doc["doc_id"]) for doc in docs[:5] if doc.get("doc_id")]
     if not source_ids:
         raise ValueError("TourAPI source documents are required for product generation")
+    coverage_notes = _coverage_notes_from_context(evidence_context or {})
+    context_claim_limits = _claim_limits_from_context(evidence_context or {})
     products = []
     for index in range(count):
         title, core = templates[index % len(templates)]
+        product_source_ids = source_ids[: min(3, len(source_ids))]
+        not_to_claim = _dedupe_texts(["가격 확정", "항상 운영", "예약 즉시 확정", *context_claim_limits])[:8]
         products.append(
             {
                 "id": f"product_{index + 1}",
@@ -1643,9 +1827,13 @@ def build_rule_based_products(normalized: dict[str, Any], docs: list[dict[str, A
                 ],
                 "estimated_duration": "3~4시간",
                 "operation_difficulty": "보통",
-                "source_ids": source_ids[: min(3, len(source_ids))],
+                "source_ids": product_source_ids,
                 "assumptions": ["세부 가격과 예약 가능 여부는 운영자가 확정해야 합니다."],
-                "not_to_claim": ["가격 확정", "항상 운영", "예약 즉시 확정"],
+                "not_to_claim": not_to_claim,
+                "evidence_summary": _evidence_summary_for_product(product_source_ids, docs),
+                "needs_review": _needs_review_from_context(evidence_context or {})[:6],
+                "coverage_notes": coverage_notes[:6],
+                "claim_limits": not_to_claim,
             }
         )
     return products
@@ -1680,12 +1868,23 @@ def build_rule_based_marketing(products: list[dict[str, Any]]) -> list[dict[str,
                     "운영 확정 전 일정과 포함사항을 확인하세요",
                 ],
                 "search_keywords": [product["title"], "외국인", "액티비티", "야경", "푸드투어", "축제", "로컬", "전통시장"],
+                "evidence_disclaimer": _marketing_evidence_disclaimer(product),
+                "claim_limits": _dedupe_texts(
+                    _string_list(product.get("claim_limits")) + _string_list(product.get("not_to_claim"))
+                )[:8],
             }
         )
     return assets
 
 
-def build_rule_based_qa(products: list[dict[str, Any]], assets: list[dict[str, Any]]) -> dict[str, Any]:
+def build_rule_based_qa(
+    products: list[dict[str, Any]],
+    assets: list[dict[str, Any]],
+    *,
+    docs: list[dict[str, Any]] | None = None,
+    evidence_context: dict[str, Any] | None = None,
+    qa_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     issues = []
     prohibited = ["100% 만족", "무조건", "항상 운영", "최저가 보장", "완전 안전", "예약 즉시 확정"]
     for asset in assets:
@@ -1702,6 +1901,18 @@ def build_rule_based_qa(products: list[dict[str, Any]], assets: list[dict[str, A
                         "suggested_fix": "과장 또는 단정 표현을 운영자 확인 필요 문구로 바꾸세요.",
                     }
                 )
+    issues = _dedupe_qa_issues(
+        [
+            *issues,
+            *_evidence_based_qa_issues(
+                products,
+                assets,
+                docs or [],
+                evidence_context or {},
+                qa_settings or {},
+            ),
+        ]
+    )
     return {
         "overall_status": "needs_review" if issues else "pass",
         "summary": "자동 검수 완료. 가격/일정/포함사항은 사람 승인 전 확인 필요.",
@@ -1764,24 +1975,111 @@ def validate_geo_resolution_hints(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_planner_output(payload: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    default = _default_normalized_request(request)
+    preferred_themes = _safe_korean_string_list(payload.get("preferred_themes"), "planner.preferred_themes")
+    avoid = _safe_korean_string_list(payload.get("avoid"), "planner.avoid")
+    constraints = _safe_korean_string_list(
+        payload.get("product_generation_constraints"),
+        "planner.product_generation_constraints",
+    )
+    evidence_requirements = _safe_korean_string_list(
+        payload.get("evidence_requirements"),
+        "planner.evidence_requirements",
+    )
+    notes = _safe_korean_string_list(payload.get("notes"), "planner.notes")
+    period = str(payload.get("period") or request.get("period") or default.get("period") or "").strip()
+    output_language = str(payload.get("output_language") or request.get("output_language") or "ko").strip()
+    if output_language not in {"ko", "en"}:
+        output_language = "ko"
+
+    normalized = {
+        **default,
+        "user_intent": _safe_korean_text(
+            payload.get("user_intent"),
+            "planner.user_intent",
+            fallback=default["user_intent"],
+        ),
+        "request_type": str(payload.get("request_type") or default["request_type"]),
+        "period": period or default.get("period"),
+        "start_date": _period_start(period or request.get("period")),
+        "end_date": _period_end(period or request.get("period")),
+        "target_customer": _safe_korean_text(
+            payload.get("target_customer"),
+            "planner.target_customer",
+            fallback=default["target_customer"],
+        ),
+        "product_count": _coerce_product_count(payload.get("product_count"), fallback=default["product_count"]),
+        "preferred_themes": preferred_themes or default["preferred_themes"],
+        "avoid": avoid or default["avoid"],
+        "output_language": output_language,
+        "product_generation_constraints": constraints or default["product_generation_constraints"],
+        "evidence_requirements": evidence_requirements or default["evidence_requirements"],
+        "planner_notes": notes,
+    }
+    # Planner must not resolve TourAPI/ldong codes. Region text stays as a user hint for GeoResolver.
+    normalized["region_name"] = request.get("region")
+    return normalized
+
+
 def validate_products(
     payload: dict[str, Any],
     normalized: dict[str, Any],
     docs: list[dict[str, Any]],
+    *,
+    evidence_context: dict[str, Any] | None = None,
+    qa_settings: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     products = payload.get("products")
-    if not isinstance(products, list) or len(products) < int(normalized.get("product_count", 1)):
+    product_count = _desired_product_count(normalized, fallback=1)
+    if not isinstance(products, list) or len(products) < product_count:
         raise ValueError("Gemini product response has invalid products")
-    allowed_source_ids = {doc["doc_id"] for doc in docs}
+    available_source_ids = [str(doc["doc_id"]) for doc in docs if doc.get("doc_id")]
+    allowed_source_ids = set(available_source_ids)
     if not allowed_source_ids:
         raise ValueError("TourAPI source documents are required for product validation")
-    available_source_ids = list(allowed_source_ids)
+    evidence_context = evidence_context or {}
+    qa_settings = qa_settings or {}
+    context_review = _needs_review_from_context(evidence_context)
+    context_claim_limits = _claim_limits_from_context(evidence_context)
+    context_coverage_notes = _coverage_notes_from_context(evidence_context)
+    avoid_limits = [f"요청 avoid 기준: {item}" for item in _string_list(qa_settings.get("avoid"))]
     validated = []
-    for index, product in enumerate(products[: int(normalized.get("product_count", len(products)))]):
+    for index, product in enumerate(products[:product_count]):
         if not isinstance(product, dict):
             raise ValueError("Product item must be an object")
-        source_ids = _string_list(product.get("source_ids")) or available_source_ids[:3]
-        source_ids = [source_id for source_id in source_ids if source_id in allowed_source_ids] or available_source_ids[:3]
+        raw_source_ids = _string_list(product.get("source_ids"))
+        invalid_source_ids = [source_id for source_id in raw_source_ids if source_id not in allowed_source_ids]
+        source_ids = [source_id for source_id in raw_source_ids if source_id in allowed_source_ids]
+        review_notes = _safe_korean_string_list(product.get("needs_review"), "products[].needs_review")
+        if invalid_source_ids:
+            review_notes.append("모델이 실제 근거 목록에 없는 source id를 반환해 서버에서 제외했습니다.")
+        if not source_ids:
+            source_ids = available_source_ids[: min(3, len(available_source_ids))]
+            review_notes.append("상품에 연결할 근거 id가 부족해 서버가 사용 가능한 근거를 보정했습니다.")
+        assumptions = (
+            _safe_korean_string_list(product.get("assumptions"), "products[].assumptions")
+            or ["세부 가격과 예약 가능 여부는 운영자가 확정해야 합니다."]
+        )
+        not_to_claim = (
+            _safe_korean_string_list(product.get("not_to_claim"), "products[].not_to_claim")
+            or ["가격 확정", "항상 운영", "예약 즉시 확정"]
+        )
+        claim_limits = _dedupe_texts(
+            [
+                *_safe_korean_string_list(product.get("claim_limits"), "products[].claim_limits"),
+                *not_to_claim,
+                *context_claim_limits,
+                *avoid_limits,
+            ]
+        )[:10]
+        needs_review = _dedupe_texts([*review_notes, *context_review])[:10]
+        coverage_notes = _dedupe_texts(
+            [
+                *_safe_korean_string_list(product.get("coverage_notes"), "products[].coverage_notes"),
+                *context_coverage_notes,
+            ]
+        )[:8]
         validated.append(
             {
                 "id": str(product.get("id") or f"product_{index + 1}"),
@@ -1799,16 +2097,27 @@ def validate_products(
                     "products[].operation_difficulty",
                 ),
                 "source_ids": source_ids[:3],
-                "assumptions": _korean_string_list(product.get("assumptions"), "products[].assumptions")
-                or ["세부 가격과 예약 가능 여부는 운영자가 확정해야 합니다."],
-                "not_to_claim": _korean_string_list(product.get("not_to_claim"), "products[].not_to_claim")
-                or ["가격 확정", "항상 운영", "예약 즉시 확정"],
+                "assumptions": assumptions[:8],
+                "not_to_claim": not_to_claim[:8],
+                "evidence_summary": _normalize_evidence_summary(
+                    product.get("evidence_summary"),
+                    source_ids,
+                    docs,
+                ),
+                "needs_review": needs_review,
+                "coverage_notes": coverage_notes,
+                "claim_limits": claim_limits,
             }
         )
     return validated
 
 
-def validate_marketing_assets(payload: dict[str, Any], products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def validate_marketing_assets(
+    payload: dict[str, Any],
+    products: list[dict[str, Any]],
+    *,
+    evidence_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     assets = payload.get("marketing_assets")
     if not isinstance(assets, list):
         raise ValueError("Gemini marketing response has invalid marketing_assets")
@@ -1836,9 +2145,337 @@ def validate_marketing_assets(payload: dict[str, Any], products: list[dict[str, 
                 "faq": faq,
                 "sns_posts": sns_posts,
                 "search_keywords": search_keywords,
+                "evidence_disclaimer": _safe_korean_text(
+                    asset.get("evidence_disclaimer"),
+                    "marketing_assets[].evidence_disclaimer",
+                    fallback=_marketing_evidence_disclaimer(product, evidence_context or {}),
+                ),
+                "claim_limits": _dedupe_texts(
+                    [
+                        *_safe_korean_string_list(asset.get("claim_limits"), "marketing_assets[].claim_limits"),
+                        *_string_list(product.get("claim_limits")),
+                        *_string_list(product.get("not_to_claim")),
+                    ]
+                )[:10],
             }
         )
     return validated
+
+
+def _desired_product_count(normalized: dict[str, Any], fallback: int) -> int:
+    try:
+        count = int(normalized.get("product_count") or fallback)
+    except (TypeError, ValueError):
+        count = fallback
+    return max(1, min(5, count))
+
+
+def _safe_korean_text(value: Any, field_path: str, *, fallback: str) -> str:
+    text = str(value or "").strip()
+    if text and _has_korean(text):
+        return text
+    return _korean_text(fallback, field_path)
+
+
+def _safe_korean_string_list(value: Any, field_path: str) -> list[str]:
+    values: list[str] = []
+    for item in _string_list(value):
+        if _has_korean(item):
+            values.append(item)
+        else:
+            values.append(f"{_field_path_label(field_path)} 확인 필요: {item}")
+    return values
+
+
+def _dedupe_texts(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in deduped:
+            deduped.append(text)
+    return deduped
+
+
+def _candidate_cards_from_context(evidence_context: dict[str, Any]) -> list[dict[str, Any]]:
+    advice = evidence_context.get("productization_advice")
+    if not isinstance(advice, dict):
+        return []
+    cards = advice.get("candidate_evidence_cards")
+    if not isinstance(cards, list):
+        return []
+    return [card for card in cards if isinstance(card, dict)]
+
+
+def _human_gap_type(gap_type: Any) -> str:
+    mapping = {
+        "missing_detail_info": "상세 설명",
+        "missing_image_asset": "이미지 후보",
+        "missing_operating_hours": "운영시간",
+        "missing_price_or_fee": "요금/가격",
+        "missing_booking_info": "예약 가능 여부",
+        "missing_related_places": "주변 연계 장소",
+        "missing_route_context": "동선 정보",
+        "missing_theme_specific_data": "테마별 조건",
+    }
+    return mapping.get(str(gap_type or ""), str(gap_type or "근거 정보"))
+
+
+def _needs_review_from_context(evidence_context: dict[str, Any]) -> list[str]:
+    gaps = evidence_context.get("unresolved_gaps") if isinstance(evidence_context.get("unresolved_gaps"), list) else []
+    notes: list[str] = []
+    for gap in gaps[:8]:
+        if not isinstance(gap, dict):
+            continue
+        reason = str(gap.get("productization_impact") or gap.get("reason") or "").strip()
+        if reason and _has_korean(reason):
+            notes.append(reason[:180])
+        else:
+            notes.append(f"{_human_gap_type(gap.get('gap_type'))} 근거가 부족해 운영자 확인이 필요합니다.")
+    return _dedupe_texts(notes)
+
+
+def _claim_limits_from_context(evidence_context: dict[str, Any]) -> list[str]:
+    gaps = evidence_context.get("unresolved_gaps") if isinstance(evidence_context.get("unresolved_gaps"), list) else []
+    gap_types = {str(gap.get("gap_type")) for gap in gaps if isinstance(gap, dict)}
+    limits: list[str] = []
+    if "missing_operating_hours" in gap_types:
+        limits.append("운영시간 확정")
+    if "missing_price_or_fee" in gap_types:
+        limits.append("가격, 무료 여부, 할인율 단정")
+    if "missing_booking_info" in gap_types:
+        limits.append("예약 즉시 확정 또는 상시 예약 가능")
+    if "missing_route_context" in gap_types:
+        limits.append("정확한 이동 시간과 동선 확정")
+    if "missing_theme_specific_data" in gap_types:
+        limits.append("반려동물, 웰니스, 의료 효능 등 테마 조건 단정")
+    try:
+        source_confidence = float(evidence_context.get("source_confidence") or 0.0)
+    except (TypeError, ValueError):
+        source_confidence = 0.0
+    if source_confidence and source_confidence < 0.6:
+        limits.append("근거 신뢰도가 낮은 후보를 대표 상품처럼 단정")
+    return _dedupe_texts(limits)
+
+
+def _coverage_notes_from_context(evidence_context: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    source_confidence = evidence_context.get("source_confidence")
+    if isinstance(source_confidence, (int, float)):
+        notes.append(f"전체 근거 신뢰도는 약 {round(float(source_confidence) * 100)}% 수준입니다.")
+    gaps = evidence_context.get("unresolved_gaps") if isinstance(evidence_context.get("unresolved_gaps"), list) else []
+    if gaps:
+        gap_labels = sorted({_human_gap_type(gap.get("gap_type")) for gap in gaps if isinstance(gap, dict)})
+        notes.append(f"확인이 필요한 정보: {', '.join(gap_labels[:6])}")
+    coverage = evidence_context.get("data_coverage")
+    if isinstance(coverage, dict) and coverage:
+        notes.append("상세, 이미지, 운영 조건 커버리지는 Data Coverage에서 함께 확인해야 합니다.")
+    return _dedupe_texts(notes)
+
+
+def _normalize_evidence_summary(value: Any, source_ids: list[str], docs: list[dict[str, Any]]) -> str:
+    if isinstance(value, str) and value.strip() and _has_korean(value):
+        return value.strip()
+    list_value = _safe_korean_string_list(value, "products[].evidence_summary")
+    if list_value:
+        return " ".join(list_value[:3])
+    return _evidence_summary_for_product(source_ids, docs)
+
+
+def _evidence_summary_for_product(source_ids: list[str], docs: list[dict[str, Any]]) -> str:
+    titles_by_id = {str(doc.get("doc_id")): str(doc.get("title") or "근거 문서") for doc in docs if doc.get("doc_id")}
+    titles = [titles_by_id.get(source_id, source_id) for source_id in source_ids]
+    if not titles:
+        return "연결된 근거가 부족해 운영자 확인이 필요합니다."
+    return f"{len(source_ids)}개 근거를 사용했습니다: {', '.join(titles[:3])}"
+
+
+def _marketing_evidence_disclaimer(
+    product: dict[str, Any],
+    evidence_context: dict[str, Any] | None = None,
+) -> str:
+    review_items = _string_list(product.get("needs_review")) or _needs_review_from_context(evidence_context or {})
+    if review_items:
+        return f"근거가 부족한 항목은 운영자 확인 후 게시하세요: {', '.join(review_items[:3])}"
+    return "상품 문구는 연결된 근거를 기준으로 작성했으며, 가격/일정/예약 조건은 게시 전 최종 확인해야 합니다."
+
+
+def _dedupe_qa_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for issue in issues:
+        key = (
+            str(issue.get("product_id") or ""),
+            str(issue.get("type") or ""),
+            str(issue.get("message") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(issue)
+    return deduped
+
+
+def _evidence_based_qa_issues(
+    products: list[dict[str, Any]],
+    assets: list[dict[str, Any]],
+    docs: list[dict[str, Any]],
+    evidence_context: dict[str, Any],
+    qa_settings: dict[str, Any],
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    allowed_source_ids = {str(doc.get("doc_id")) for doc in docs if doc.get("doc_id")}
+    gaps = evidence_context.get("unresolved_gaps") if isinstance(evidence_context.get("unresolved_gaps"), list) else []
+    unresolved_types = {str(gap.get("gap_type")) for gap in gaps if isinstance(gap, dict)}
+    assets_by_product_id = {str(asset.get("product_id")): asset for asset in assets if isinstance(asset, dict)}
+    avoid_rules = _string_list(qa_settings.get("avoid"))
+
+    for product in products:
+        product_id = str(product.get("id") or "")
+        source_ids = _string_list(product.get("source_ids"))
+        if allowed_source_ids:
+            invalid_source_ids = [source_id for source_id in source_ids if source_id not in allowed_source_ids]
+            if not source_ids:
+                issues.append(
+                    _qa_issue(
+                        product_id,
+                        "high",
+                        "source_missing",
+                        "상품에 연결된 근거가 없습니다.",
+                        "상품마다 실제 근거 문서 1개 이상을 연결하세요.",
+                    )
+                )
+            elif invalid_source_ids:
+                issues.append(
+                    _qa_issue(
+                        product_id,
+                        "high",
+                        "source_missing",
+                        "상품이 실제 근거 목록에 없는 문서를 참조하고 있습니다.",
+                        "실제 근거 문서에 있는 source id만 연결하세요.",
+                    )
+                )
+
+        public_text = _public_product_text(product)
+        asset = assets_by_product_id.get(product_id)
+        if asset:
+            public_text = f"{public_text}\n{_public_marketing_text(asset)}"
+        issues.extend(_unsupported_claim_issues(product_id, public_text, unresolved_types))
+        for avoid in avoid_rules:
+            if avoid and avoid in public_text:
+                issues.append(
+                    _qa_issue(
+                        product_id,
+                        "medium",
+                        "avoid_rule",
+                        f"요청한 회피 조건과 충돌하는 표현이 포함되어 있습니다: {avoid}",
+                        "해당 표현을 제거하거나 운영자 확인 필요 문구로 바꾸세요.",
+                    )
+                )
+    return _dedupe_qa_issues(issues)
+
+
+def _qa_issue(
+    product_id: str | None,
+    severity: str,
+    issue_type: str,
+    message: str,
+    suggested_fix: str,
+) -> dict[str, Any]:
+    return {
+        "product_id": product_id,
+        "severity": severity,
+        "type": issue_type,
+        "message": message,
+        "field_path": "",
+        "suggested_fix": suggested_fix,
+    }
+
+
+def _public_product_text(product: dict[str, Any]) -> str:
+    itinerary_names = []
+    itinerary = product.get("itinerary") if isinstance(product.get("itinerary"), list) else []
+    for item in itinerary:
+        if isinstance(item, dict):
+            itinerary_names.append(str(item.get("name") or ""))
+    public_values = [
+        product.get("title"),
+        product.get("one_liner"),
+        " ".join(_string_list(product.get("core_value"))),
+        " ".join(itinerary_names),
+        product.get("estimated_duration"),
+        product.get("operation_difficulty"),
+    ]
+    return "\n".join(str(value or "") for value in public_values)
+
+
+def _public_marketing_text(asset: dict[str, Any]) -> str:
+    sales_copy = asset.get("sales_copy") if isinstance(asset.get("sales_copy"), dict) else {}
+    sections = sales_copy.get("sections") if isinstance(sales_copy.get("sections"), list) else []
+    faq = asset.get("faq") if isinstance(asset.get("faq"), list) else []
+    values: list[str] = [
+        str(sales_copy.get("headline") or ""),
+        str(sales_copy.get("subheadline") or ""),
+    ]
+    for section in sections:
+        if isinstance(section, dict):
+            values.extend([str(section.get("title") or ""), str(section.get("body") or "")])
+    for item in faq:
+        if isinstance(item, dict):
+            values.extend([str(item.get("question") or ""), str(item.get("answer") or "")])
+    values.extend(_string_list(asset.get("sns_posts")))
+    return "\n".join(values)
+
+
+def _unsupported_claim_issues(product_id: str, public_text: str, unresolved_types: set[str]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    checks = [
+        (
+            "missing_price_or_fee",
+            "price_claim",
+            [r"\d[\d,]*\s*원(?:입니다|으로|에|부터|까지)?", r"무료입니다", r"최저가(?:를)? 보장"],
+            "가격이나 무료 여부를 단정하고 있습니다.",
+            "가격/요금은 운영자 확인 필요 문구로 바꾸세요.",
+        ),
+        (
+            "missing_booking_info",
+            "booking_claim",
+            [r"예약 즉시 확정", r"예약이 확정", r"바로 확정", r"상시 예약 가능"],
+            "예약 가능 여부를 단정하고 있습니다.",
+            "예약 가능 여부는 확인 필요 문구로 바꾸세요.",
+        ),
+        (
+            "missing_operating_hours",
+            "operating_hours_claim",
+            [r"항상 운영", r"상시 운영", r"매일 운영합니다", r"운영시간은\s*\d"],
+            "운영시간이나 상시 운영 여부를 단정하고 있습니다.",
+            "운영시간은 공식 확인 후 게시한다고 안내하세요.",
+        ),
+        (
+            "missing_theme_specific_data",
+            "theme_claim",
+            [r"반려동물 동반 가능", r"영어 가이드 제공", r"외국어 안내 제공", r"웰니스 효능", r"치료", r"완치"],
+            "테마 조건이나 효능을 근거 없이 단정하고 있습니다.",
+            "테마 조건과 효능 표현은 운영자 확인 필요 항목으로 분리하세요.",
+        ),
+    ]
+    for gap_type, issue_type, patterns, message, suggested_fix in checks:
+        if gap_type not in unresolved_types:
+            continue
+        if any(re.search(pattern, public_text) for pattern in patterns):
+            issues.append(_qa_issue(product_id, "high", issue_type, message, suggested_fix))
+
+    absolute_safety_patterns = [r"100%\s*안전", r"완전 안전", r"안전(?:을)? 보장"]
+    if any(re.search(pattern, public_text) for pattern in absolute_safety_patterns):
+        issues.append(
+            _qa_issue(
+                product_id,
+                "high",
+                "safety_claim",
+                "절대적 안전 보장처럼 보이는 표현이 포함되어 있습니다.",
+                "안전 관련 표현은 현장 조건과 운영자 확인 기준으로 완화하세요.",
+            )
+        )
+    return issues
 
 
 def apply_revision_patch(
@@ -1971,7 +2608,15 @@ def _normalize_sales_copy(
     }
 
 
-def validate_qa_report(payload: dict[str, Any], products: list[dict[str, Any]]) -> dict[str, Any]:
+def validate_qa_report(
+    payload: dict[str, Any],
+    products: list[dict[str, Any]],
+    *,
+    docs: list[dict[str, Any]] | None = None,
+    evidence_context: dict[str, Any] | None = None,
+    marketing_assets: list[dict[str, Any]] | None = None,
+    qa_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     issues = payload.get("issues")
     if not isinstance(issues, list):
         raise ValueError("QA issues must be an array")
@@ -2000,7 +2645,21 @@ def validate_qa_report(payload: dict[str, Any], products: list[dict[str, Any]]) 
                 "suggested_fix": _enrich_qa_suggested_fix(message, suggested_fix, products),
             }
         )
+    validated_issues = _dedupe_qa_issues(
+        [
+            *validated_issues,
+            *_evidence_based_qa_issues(
+                products,
+                marketing_assets or [],
+                docs or [],
+                evidence_context or {},
+                qa_settings or {},
+            ),
+        ]
+    )
     overall_status = str(payload.get("overall_status") or ("needs_review" if validated_issues else "pass"))
+    if validated_issues and overall_status == "pass":
+        overall_status = "needs_review"
     if not validated_issues:
         return {
             "overall_status": "pass",
@@ -2012,12 +2671,291 @@ def validate_qa_report(payload: dict[str, Any], products: list[dict[str, Any]]) 
         }
     return {
         "overall_status": overall_status,
-        "summary": _normalize_qa_summary(payload.get("summary"), validated_issues),
+        "summary": _normalize_qa_summary(
+            _qa_summary_value_for_issues(payload.get("summary"), validated_issues),
+            validated_issues,
+        ),
         "issues": validated_issues,
         "pass_count": int(payload.get("pass_count") or (len(products) if not validated_issues else 0)),
         "needs_review_count": int(payload.get("needs_review_count") or (len(products) if validated_issues else 0)),
         "fail_count": int(payload.get("fail_count") or 0),
     }
+
+
+def build_offline_research_synthesis(state: GraphState) -> dict[str, Any]:
+    docs = state.get("retrieved_documents", [])
+    evidence_context = _evidence_context_from_state(state)
+    source_ids = [str(doc.get("doc_id")) for doc in docs[:5] if doc.get("doc_id")]
+    region_label = _region_label_from_normalized(state.get("normalized_request", {}))
+    payload = {
+        "research_brief": (
+            f"{region_label}은 수집된 TourAPI/RAG 근거를 기준으로 상품화 후보를 검토할 수 있습니다. "
+            "세부 운영 조건은 EvidenceFusion의 후보별 card와 unresolved gap을 따라야 합니다."
+        ),
+        "candidate_evidence_cards": _product_evidence_context_for_prompt(evidence_context)["candidate_evidence_cards"],
+        "usable_claims": _string_list(
+            (evidence_context.get("productization_advice") or {}).get("usable_claims")
+            if isinstance(evidence_context.get("productization_advice"), dict)
+            else []
+        ) or ["TourAPI에 있는 장소명, 주소, 개요는 근거와 함께 사용할 수 있습니다."],
+        "restricted_claims": _claim_limits_from_context(evidence_context)
+        or ["가격, 예약 가능 여부, 운영 시간은 운영자가 최종 확인해야 합니다."],
+        "operational_unknowns": _needs_review_from_context(evidence_context),
+        "unresolved_gaps": _compact_unresolved_gaps_for_product(evidence_context.get("unresolved_gaps")),
+        "product_generation_guidance": [
+            "각 상품은 실제 evidence_document_ids와 연결된 candidate evidence card를 사용하세요.",
+            "운영 조건이 부족한 항목은 상품 본문이 아니라 확인 필요 항목으로 분리하세요.",
+        ],
+        "qa_risk_notes": [
+            "근거 없는 가격, 예약, 운영시간, 안전, 외국어 지원, 의료/웰니스 효능 claim을 만들지 마세요."
+        ],
+        "region_insights": [
+            {
+                "claim": f"{region_label}의 수집 근거를 기준으로 후보 동선을 검토합니다.",
+                "evidence_source_ids": source_ids,
+                "confidence": evidence_context.get("source_confidence") or 0.0,
+            }
+        ],
+    }
+    return _complete_research_synthesis(payload, state)
+
+
+def validate_research_synthesis(payload: dict[str, Any], state: GraphState) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Research synthesis response must be an object")
+    return _complete_research_synthesis(payload, state)
+
+
+def _complete_research_synthesis(payload: dict[str, Any], state: GraphState) -> dict[str, Any]:
+    evidence_context = _evidence_context_from_state(state)
+    advice = (
+        evidence_context.get("productization_advice")
+        if isinstance(evidence_context.get("productization_advice"), dict)
+        else {}
+    )
+    base_cards = _product_evidence_context_for_prompt(evidence_context)["candidate_evidence_cards"]
+    payload_cards = payload.get("candidate_evidence_cards") if isinstance(payload.get("candidate_evidence_cards"), list) else []
+    cards = _merge_research_candidate_cards(base_cards, payload_cards)
+    unresolved = _merge_research_unresolved_gaps(
+        _compact_unresolved_gaps_for_product(evidence_context.get("unresolved_gaps")),
+        payload.get("unresolved_gaps"),
+    )
+    usable_claims = _dedupe_texts(
+        [
+            *_safe_korean_string_list(payload.get("usable_claims"), "research.usable_claims"),
+            *_string_list(advice.get("usable_claims")),
+        ]
+    )[:12]
+    restricted_claims = _dedupe_texts(
+        [
+            *_safe_korean_string_list(payload.get("restricted_claims"), "research.restricted_claims"),
+            *_claim_limits_from_context(evidence_context),
+            *[claim for card in cards for claim in _string_list(card.get("restricted_claims"))],
+        ]
+    )[:16]
+    operational_unknowns = _dedupe_texts(
+        [
+            *_safe_korean_string_list(payload.get("operational_unknowns"), "research.operational_unknowns"),
+            *_needs_review_from_context(evidence_context),
+            *[unknown for card in cards for unknown in _string_list(card.get("operational_unknowns"))],
+        ]
+    )[:16]
+    guidance = _safe_korean_string_list(
+        payload.get("product_generation_guidance"),
+        "research.product_generation_guidance",
+    ) or [
+        "candidate evidence card의 usable facts를 상품 본문에 우선 반영하세요.",
+        "운영 조건이 불확실한 내용은 needs_review와 claim_limits로 분리하세요.",
+    ]
+    qa_risk_notes = _safe_korean_string_list(payload.get("qa_risk_notes"), "research.qa_risk_notes") or [
+        "근거 없는 가격, 예약, 운영시간, 안전, 외국어 지원, 의료/웰니스 효능 claim을 만들지 마세요."
+    ]
+    summary = {
+        "research_brief": _safe_korean_text(
+            payload.get("research_brief"),
+            "research.research_brief",
+            fallback="EvidenceFusion 결과를 상품 생성에 사용할 수 있도록 후보별 근거와 제한 claim을 정리했습니다.",
+        ),
+        "candidate_evidence_cards": cards,
+        "usable_claims": usable_claims,
+        "restricted_claims": restricted_claims,
+        "operational_unknowns": operational_unknowns,
+        "unresolved_gaps": unresolved,
+        "product_generation_guidance": guidance[:10],
+        "qa_risk_notes": qa_risk_notes[:10],
+        "retrieved_documents": _summarize_evidence(state.get("retrieved_documents", []), limit=10),
+        "evidence_profile": evidence_context.get("evidence_profile") or {},
+        "productization_advice": {
+            **advice,
+            "candidate_evidence_cards": cards,
+        },
+        "data_coverage": evidence_context.get("data_coverage") or {},
+        "source_confidence": evidence_context.get("source_confidence") or 0.0,
+        "ui_highlights": evidence_context.get("ui_highlights") or [],
+    }
+    return summary
+
+
+def _merge_research_candidate_cards(
+    base_cards: list[dict[str, Any]],
+    payload_cards: list[Any],
+) -> list[dict[str, Any]]:
+    payload_by_key: dict[str, dict[str, Any]] = {}
+    for raw_card in payload_cards:
+        if not isinstance(raw_card, dict):
+            continue
+        key = _research_card_key(raw_card)
+        if key:
+            payload_by_key[key] = raw_card
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for base in base_cards:
+        key = _research_card_key(base)
+        raw = payload_by_key.get(key, {})
+        card = {**base, **raw}
+        for field in ["usable_facts", "operational_unknowns", "restricted_claims", "evidence_document_ids"]:
+            if not card.get(field):
+                card[field] = base.get(field) or []
+        for field in ["experience_hooks", "recommended_product_angles"]:
+            card[field] = _dedupe_texts(_string_list(card.get(field)) or _string_list(base.get(field)))[:4]
+        merged.append(card)
+        if key:
+            seen.add(key)
+
+    for raw_card in payload_cards:
+        if not isinstance(raw_card, dict):
+            continue
+        key = _research_card_key(raw_card)
+        if key and key in seen:
+            continue
+        compact = _compact_candidate_card_for_product(raw_card)
+        if compact.get("usable_facts") or compact.get("evidence_document_ids"):
+            merged.append(compact)
+    return merged[:12]
+
+
+def _research_card_key(card: dict[str, Any]) -> str:
+    for key in ["content_id", "source_item_id", "title"]:
+        value = str(card.get(key) or "").strip()
+        if value:
+            return f"{key}:{value}"
+    return ""
+
+
+def _merge_research_unresolved_gaps(base_gaps: list[dict[str, Any]], payload_gaps: Any) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw_gap in [*base_gaps, *(payload_gaps if isinstance(payload_gaps, list) else [])]:
+        if not isinstance(raw_gap, dict):
+            continue
+        gap = {
+            "gap_type": raw_gap.get("gap_type"),
+            "label": raw_gap.get("label") or _human_gap_type(raw_gap.get("gap_type")),
+            "severity": raw_gap.get("severity"),
+            "reason": str(raw_gap.get("reason") or "")[:180],
+            "target_content_id": raw_gap.get("target_content_id"),
+            "target_item_id": raw_gap.get("target_item_id"),
+            "source_item_title": raw_gap.get("source_item_title"),
+        }
+        key = (str(gap["gap_type"] or ""), str(gap["target_content_id"] or ""), str(gap["target_item_id"] or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(gap)
+    return merged[:16]
+
+
+def _planner_prompt(request: dict[str, Any]) -> str:
+    context = {
+        "역할": "PlannerAgent",
+        "목표": "사용자 요청을 관광 상품 생성 workflow가 사용할 실행 의도와 제약으로 정규화합니다.",
+        "요청": {
+            "message": request.get("message"),
+            "region_hint": request.get("region"),
+            "period": request.get("period"),
+            "target_customer": request.get("target_customer"),
+            "product_count": request.get("product_count"),
+            "preferences": request.get("preferences"),
+            "avoid": request.get("avoid"),
+            "output_language": request.get("output_language"),
+        },
+        "역할_경계": [
+            "지역명, 지역 코드, lDongRegnCd/lDongSignguCd는 절대 확정하지 마세요. 지역 확정은 GeoResolverAgent가 합니다.",
+            "해외/지원 범위 밖 판단은 preflight와 GeoResolver 정책을 따릅니다. Planner는 region code를 만들지 않습니다.",
+            "Baseline TourAPI 검색 전략은 현재 deterministic 수집 코드가 담당합니다. Planner는 API query plan을 만들지 않습니다.",
+        ],
+        "출력_규칙": [
+            "product_count는 1~5 사이 정수로 반환하세요. 사용자가 6개 이상을 말해도 5로 제한하세요.",
+            "preferred_themes와 avoid는 사용자가 준 값과 자연어 요청에서 명확한 값만 포함하세요.",
+            "product_generation_constraints에는 상품 생성 단계가 지켜야 할 제약을 한국어 문장으로 넣으세요.",
+            "evidence_requirements에는 근거 연결, 단정 금지, 운영자 확인 항목 분리 기준을 한국어 문장으로 넣으세요.",
+            "TourAPI code, areaCode, ldong code, sigungu code, geo_scope 필드는 출력하지 마세요.",
+            "사용자에게 보이는 모든 텍스트는 한국어로 작성하세요.",
+        ],
+        "출력_예시": {
+            "user_intent": "대전에서 외국인 대상 야간 관광 상품을 기획합니다.",
+            "product_count": 3,
+            "target_customer": "외국인",
+            "preferred_themes": ["야간 관광"],
+            "avoid": ["가격 단정 표현"],
+            "period": "2026-05",
+            "output_language": "ko",
+            "request_type": "tourism_product_generation",
+            "product_generation_constraints": ["상품 개수는 최대 5개입니다."],
+            "evidence_requirements": ["각 상품은 실제 근거 문서와 연결되어야 합니다."],
+        },
+    }
+    return json.dumps(context, ensure_ascii=False)
+
+
+def _research_synthesis_prompt(
+    *,
+    normalized: dict[str, Any],
+    docs: list[dict[str, Any]],
+    evidence_context: dict[str, Any],
+    data_gap_report: dict[str, Any],
+    enrichment_summary: dict[str, Any],
+) -> str:
+    product_evidence_context = _product_evidence_context_for_prompt(evidence_context)
+    context = {
+        "역할": "ResearchSynthesisAgent",
+        "목표": (
+            "EvidenceFusion 결과를 ProductAgent가 바로 사용할 수 있는 근거 브리프로 재구성합니다. "
+            "요약해서 정보를 줄이는 단계가 아니라, 상품 생성에 필요한 후보별 사실과 제한 claim을 보존하는 단계입니다."
+        ),
+        "요청": {
+            "normalized_request": normalized,
+            "geo_scope": normalized.get("geo_scope"),
+            "target_customer": normalized.get("target_customer"),
+            "preferred_themes": normalized.get("preferred_themes"),
+            "avoid": normalized.get("avoid"),
+        },
+        "retrieved_documents": _summarize_evidence(docs, limit=10),
+        "evidence_context": product_evidence_context,
+        "data_gap_summary": {
+            "gap_count": len(data_gap_report.get("gaps") or []) if isinstance(data_gap_report.get("gaps"), list) else 0,
+            "coverage": data_gap_report.get("coverage") if isinstance(data_gap_report, dict) else {},
+        },
+        "enrichment_summary": enrichment_summary,
+        "보존해야_하는_정보": [
+            "candidate_evidence_cards[].usable_facts",
+            "candidate_evidence_cards[].operational_unknowns",
+            "candidate_evidence_cards[].restricted_claims",
+            "candidate_evidence_cards[].evidence_document_ids",
+            "unresolved_gaps",
+            "data_coverage와 source_confidence의 의미",
+        ],
+        "출력_규칙": [
+            "raw TourAPI/RAG 전체를 그대로 복사하지 마세요.",
+            "하지만 candidate_evidence_cards의 상품화에 필요한 세부 facts는 삭제하지 마세요.",
+            "근거가 없는 운영시간, 요금, 예약 가능 여부, 외국어 지원, 안전성, 의료/웰니스 효능은 restricted_claims 또는 operational_unknowns로 분리하세요.",
+            "candidate_evidence_cards는 evidence_context.candidate_evidence_cards의 후보를 유지하고, 필요한 guidance만 보강하세요.",
+            "evidence_document_ids는 실제 doc_id만 유지하세요. 임의 id를 만들지 마세요.",
+            "사용자에게 보이는 모든 텍스트는 한국어로 작성하세요.",
+        ],
+    }
+    return json.dumps(context, ensure_ascii=False)
 
 
 def _geo_resolution_prompt(resolver_input: dict[str, Any]) -> str:
@@ -2059,17 +2997,43 @@ def _product_prompt(
     normalized: dict[str, Any],
     research_summary: dict[str, Any],
     docs: list[dict[str, Any]],
+    *,
+    evidence_context: dict[str, Any] | None = None,
+    source_items: list[dict[str, Any]] | None = None,
+    qa_settings: dict[str, Any] | None = None,
 ) -> str:
+    evidence_context = evidence_context or {}
+    qa_settings = qa_settings or {}
     context = {
-        "요청": normalized,
+        "요청": {
+            "normalized_request": normalized,
+            "geo_scope": normalized.get("geo_scope"),
+            "product_count": _desired_product_count(normalized, fallback=3),
+            "target_customer": normalized.get("target_customer"),
+            "preferred_themes": normalized.get("preferred_themes"),
+            "avoid": _string_list(normalized.get("avoid")),
+        },
         "리서치_요약": research_summary,
-        "근거_문서": _summarize_evidence(docs),
+        "source_items_shortlist": _summarize_source_items_for_prompt(source_items or []),
+        "retrieved_documents": _summarize_evidence(docs, limit=10),
+        "evidence_based_generation_context": _product_evidence_context_for_prompt(evidence_context),
+        "QA_avoid_rules": _string_list(qa_settings.get("avoid")),
         "수정_요청": _prompt_revision_context(normalized.get("revision_context")),
+        "출력_필드_추가_의미": {
+            "evidence_summary": "상품이 어떤 근거를 썼는지 한 문장으로 요약",
+            "needs_review": "상품 본문에 단정하지 말고 운영자가 확인해야 할 항목",
+            "coverage_notes": "이 상품의 근거 커버리지와 남은 공백",
+            "claim_limits": "본문/마케팅에서 단정하면 안 되는 claim 제한",
+        },
         "규칙": [
-            "request.product_count 값과 정확히 같은 개수의 상품을 생성하세요.",
-            "source_ids는 반드시 근거_문서 안에 있는 doc_id만 사용하세요.",
-            "근거 문서에 없는 운영 정보를 사실처럼 새로 만들지 마세요.",
-            "요청의 avoid에 포함되지 않은 제한을 새 금지 기준으로 만들지 마세요.",
+            "요청.product_count 값과 정확히 같은 개수의 상품을 생성하세요. 최대 5개를 절대 넘지 마세요.",
+            "각 product는 최소 1개 이상의 source_id를 가져야 합니다.",
+            "source_ids는 반드시 retrieved_documents 안에 있는 doc_id만 사용하세요. content_id나 임의 id를 쓰지 마세요.",
+            "candidate_evidence_cards의 usable_facts, experience_hooks, recommended_product_angles를 우선 활용하세요.",
+            "unresolved_gaps에 남은 정보는 상품 본문에 단정하지 말고 needs_review, assumptions, not_to_claim, claim_limits로 분리하세요.",
+            "운영시간, 요금, 예약 가능 여부, 외국어 지원, 안전성, 의료/웰니스 효능은 근거가 없으면 절대 단정하지 마세요.",
+            "지역 mismatch가 있거나 source_confidence가 낮은 근거는 핵심 claim에 쓰지 말고 coverage_notes에 확인 필요로 남기세요.",
+            "요청의 avoid에 포함된 제한은 claim_limits와 not_to_claim에 반영하세요.",
             "사용자에게 보이는 모든 텍스트 필드는 반드시 한국어로 작성하세요. 영어 문장을 쓰지 마세요.",
         ],
     }
@@ -2081,11 +3045,13 @@ def _marketing_prompt(
     docs: list[dict[str, Any]],
     revision_context: dict[str, Any] | None = None,
     evidence_context: dict[str, Any] | None = None,
+    qa_settings: dict[str, Any] | None = None,
 ) -> str:
     context = {
         "상품_목록": products,
         "근거_문서": _summarize_evidence(docs),
-        "근거_프로필": evidence_context or {},
+        "근거_프로필": _product_evidence_context_for_prompt(evidence_context or {}),
+        "QA_avoid_rules": _string_list((qa_settings or {}).get("avoid")),
         "수정_요청": _prompt_revision_context(revision_context),
         "규칙": [
             "각 product_id마다 marketing_asset을 정확히 1개씩 생성하세요. product_id 값은 상품_목록의 id를 그대로 사용하세요.",
@@ -2095,7 +3061,11 @@ def _marketing_prompt(
             "sns_posts는 상품당 최대 3개만 작성하고, 각 항목은 platform/content 객체가 아니라 한국어 문자열이어야 합니다.",
             "search_keywords는 상품당 최대 10개만 작성하고, 각 항목은 한국어 문자열이어야 합니다.",
             "search_keywords에는 Busan, yacht, food tour 같은 영어만 있는 값을 쓰지 말고 부산, 요트, 푸드투어처럼 한국어로 작성하세요.",
+            "상품_목록의 needs_review, assumptions, not_to_claim, claim_limits는 hard constraint입니다.",
             "근거 문서에 없는 운영 정보를 사실처럼 새로 만들지 마세요.",
+            "가격, 예약, 운영시간, 외국어 지원, 안전 보장, 의료/웰니스 효능은 근거가 없으면 FAQ와 유의 문구에서 확인 필요로만 표현하세요.",
+            "evidence_disclaimer에는 data_coverage와 unresolved_gaps를 반영한 검토 필요 문장을 쓰세요.",
+            "claim_limits에는 상품별 not_to_claim과 unresolved gap 기반 금지 claim을 요약하세요.",
             "요청의 avoid에 포함된 금지 기준을 우선 적용하세요.",
             "운영자가 바로 검토할 수 있게 간결하고 실무적인 문장으로 작성하세요.",
             "사용자에게 보이는 모든 텍스트 필드는 반드시 한국어로 작성하세요. 영어 문장을 쓰지 마세요.",
@@ -2113,21 +3083,26 @@ def _qa_prompt(
 ) -> str:
     avoid = _string_list(qa_settings.get("avoid"))
     extra_checks = avoid if avoid else ["가격 단정 표현", "과장 표현", "출처 없는 주장"]
+    allowed_doc_ids = [str(doc.get("doc_id")) for doc in docs if doc.get("doc_id")]
     context = {
         "상품_목록": products,
         "마케팅_자산": assets,
         "근거_문서": _summarize_evidence(docs),
-        "근거_프로필": evidence_context or {},
+        "허용된_source_ids": allowed_doc_ids,
+        "근거_프로필": _product_evidence_context_for_prompt(evidence_context or {}),
         "검수_설정": qa_settings,
         "검수_항목": [
             "금지 표현 포함 여부",
             "출처 근거 누락 여부",
+            "존재하지 않는 source_id 참조 여부",
+            "unresolved gap을 고객 노출 문구에서 단정 claim으로 바꾼 경우",
+            "근거 없는 운영시간/요금/예약/안전/외국어/의료/웰니스 claim",
             *extra_checks,
         ],
         "규칙": [
             "사용자에게 보이는 모든 텍스트 필드는 반드시 한국어로 작성하세요. 영어 문장을 쓰지 마세요.",
             "QA 요약, 이슈 메시지, 수정 제안은 반드시 한국어로 작성하세요.",
-            "검수_항목에 없는 제한을 새로 만들지 마세요. 예를 들어 검수_항목에 '가격 단정 표현'만 있으면 일정, 예약 가능 여부, 안전 보장은 별도 이슈로 만들지 마세요.",
+            "검수_항목에 있는 근거 기반 제한은 요청 avoid에 없더라도 반드시 검수하세요.",
             "검수 대상은 상품_목록과 마케팅_자산의 고객 노출 문구입니다. 근거_문서 자체의 메타데이터 품질 문제를 이슈로 만들지 마세요.",
             "상품_목록의 not_to_claim과 assumptions는 내부 운영 참고 항목입니다. 이 항목 자체를 고객 노출 문구 위반으로 지적하지 마세요.",
             "sales_copy.disclaimer의 '운영자가 최종 확정해야 합니다', '확인 필요', '변동될 수 있습니다' 같은 문구는 단정 표현이 아니라 안전한 완화 문구입니다.",
@@ -2271,6 +3246,101 @@ def _summarize_evidence(docs: list[dict[str, Any]], limit: int = 6) -> list[dict
             }
         )
     return summarized
+
+
+def _summarize_source_items_for_prompt(source_items: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
+    summarized: list[dict[str, Any]] = []
+    for item in source_items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        summarized.append(
+            {
+                "id": item.get("id"),
+                "content_id": item.get("content_id"),
+                "title": item.get("title"),
+                "content_type": item.get("content_type"),
+                "address": item.get("address"),
+                "overview": str(item.get("overview") or "")[:300],
+                "event_start_date": item.get("event_start_date"),
+                "event_end_date": item.get("event_end_date"),
+            }
+        )
+    return summarized
+
+
+def _product_evidence_context_for_prompt(evidence_context: dict[str, Any]) -> dict[str, Any]:
+    cards = _candidate_cards_from_context(evidence_context)
+    advice = evidence_context.get("productization_advice")
+    advice = advice if isinstance(advice, dict) else {}
+    recommendations = advice.get("candidate_recommendations")
+    recommendations = recommendations if isinstance(recommendations, list) else []
+    return {
+        "source_confidence": evidence_context.get("source_confidence"),
+        "data_coverage": evidence_context.get("data_coverage") or {},
+        "ui_highlights": _compact_ui_highlights(evidence_context.get("ui_highlights")),
+        "usable_claims": _string_list(advice.get("usable_claims"))[:8],
+        "candidate_recommendations": [
+            item for item in recommendations[:8] if isinstance(item, dict)
+        ],
+        "candidate_evidence_cards": [_compact_candidate_card_for_product(card) for card in cards[:10]],
+        "unresolved_gaps": _compact_unresolved_gaps_for_product(evidence_context.get("unresolved_gaps")),
+        "claim_limits": _claim_limits_from_context(evidence_context),
+        "needs_review": _needs_review_from_context(evidence_context),
+    }
+
+
+def _compact_candidate_card_for_product(card: dict[str, Any]) -> dict[str, Any]:
+    usable_facts = card.get("usable_facts") if isinstance(card.get("usable_facts"), list) else []
+    return {
+        "content_id": card.get("content_id"),
+        "source_item_id": card.get("source_item_id"),
+        "title": card.get("title"),
+        "address": card.get("address"),
+        "evidence_strength": card.get("evidence_strength"),
+        "source_confidence": card.get("source_confidence"),
+        "usable_facts": [fact for fact in usable_facts[:8] if isinstance(fact, dict)],
+        "experience_hooks": _string_list(card.get("experience_hooks"))[:3],
+        "recommended_product_angles": _string_list(card.get("recommended_product_angles"))[:3],
+        "operational_unknowns": _string_list(card.get("operational_unknowns"))[:6],
+        "restricted_claims": _string_list(card.get("restricted_claims"))[:6],
+        "evidence_document_ids": _string_list(card.get("evidence_document_ids"))[:6],
+    }
+
+
+def _compact_unresolved_gaps_for_product(value: Any, limit: int = 12) -> list[dict[str, Any]]:
+    gaps = value if isinstance(value, list) else []
+    compact: list[dict[str, Any]] = []
+    for gap in gaps[:limit]:
+        if not isinstance(gap, dict):
+            continue
+        compact.append(
+            {
+                "gap_type": gap.get("gap_type"),
+                "label": _human_gap_type(gap.get("gap_type")),
+                "severity": gap.get("severity"),
+                "reason": str(gap.get("productization_impact") or gap.get("reason") or "")[:180],
+                "target_content_id": gap.get("target_content_id"),
+                "target_item_id": gap.get("target_item_id"),
+                "source_item_title": gap.get("source_item_title"),
+            }
+        )
+    return compact
+
+
+def _compact_ui_highlights(value: Any, limit: int = 5) -> list[dict[str, Any]]:
+    highlights = value if isinstance(value, list) else []
+    compact: list[dict[str, Any]] = []
+    for highlight in highlights[:limit]:
+        if not isinstance(highlight, dict):
+            continue
+        compact.append(
+            {
+                "title": highlight.get("title"),
+                "body": highlight.get("body"),
+                "severity": highlight.get("severity"),
+            }
+        )
+    return compact
 
 
 def _rule_based_generation_meta(agent_name: str, purpose: str) -> dict[str, Any]:
@@ -2547,6 +3617,16 @@ def _normalize_qa_summary(value: Any, issues: list[dict[str, Any]]) -> str:
     if issues:
         return f"QA 검수에서 추가 확인이 필요한 이슈 {len(issues)}건이 발견되었습니다."
     return "QA 검수 완료. 차단 수준의 이슈가 없습니다."
+
+
+def _qa_summary_value_for_issues(value: Any, issues: list[dict[str, Any]]) -> Any:
+    if not issues:
+        return value
+    raw_summary = str(value or "").strip()
+    pass_like_terms = ["검수 완료", "이슈가 없습니다", "문제가 없습니다", "pass"]
+    if any(term in raw_summary for term in pass_like_terms):
+        return None
+    return value
 
 
 def _qa_issue_default_message(issue_type: str) -> str:

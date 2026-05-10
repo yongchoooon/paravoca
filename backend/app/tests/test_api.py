@@ -8,7 +8,7 @@ from sqlalchemy import inspect
 from app.agents.workflow import validate_qa_report
 from app.core.config import Settings, get_settings
 from app.db import models
-from app.db.session import SessionLocal, engine
+from app.db.session import SessionLocal, engine, init_db
 from app.llm.gemini_gateway import call_gemini_json, _is_retryable_response, _parse_json, _retry_delay_seconds
 from app.main import app
 from app.rag.source_documents import build_source_document
@@ -653,6 +653,7 @@ class DaejeonTourApiProvider(TestTourApiProvider):
 
 
 def use_test_tourapi_provider(monkeypatch):
+    init_db()
     with SessionLocal() as db:
         seed_test_ldong_catalog(db)
     monkeypatch.setattr(
@@ -666,6 +667,7 @@ def use_test_tourapi_provider(monkeypatch):
 
 
 def use_daejeon_tourapi_provider(monkeypatch):
+    init_db()
     with SessionLocal() as db:
         seed_test_ldong_catalog(db)
     monkeypatch.setattr(
@@ -838,7 +840,7 @@ def test_create_and_read_workflow_run(monkeypatch):
         "TourApiDetailPlannerAgent",
         "EnrichmentExecutor",
         "EvidenceFusionAgent",
-        "ResearchAgent",
+        "ResearchSynthesisAgent",
         "ProductAgent",
         "MarketingAgent",
         "QAComplianceAgent",
@@ -853,7 +855,8 @@ def test_create_and_read_workflow_run(monkeypatch):
     assert enrichment["latest"]["status"] == "completed"
     assert result["evidence_profile"]["entities"]
     assert result["data_coverage"]["total_items"] >= 1
-    assert len(llm_calls) >= 7
+    assert len(llm_calls) >= 5
+    assert all(call["purpose"] != "data_summary" for call in llm_calls)
 
 
 def test_workflow_resolves_non_busan_ldong_scope_from_prompt(monkeypatch):
@@ -1423,5 +1426,5 @@ def test_gemini_mode_fails_and_logs_when_key_missing(monkeypatch):
     assert body["data"]["status"] == "pending"
     assert run["status"] == "failed"
     assert run["error"]["message"] == "GEMINI_API_KEY is not configured"
-    assert any(step["agent_name"] == "GeoResolverAgent" and step["status"] == "failed" for step in steps)
-    assert any(call["provider"] == "gemini" and call["purpose"] == "geo_resolution_failed" for call in llm_calls)
+    assert any(step["agent_name"] == "PlannerAgent" and step["status"] == "failed" for step in steps)
+    assert any(call["provider"] == "gemini" and call["purpose"] == "planner_failed" for call in llm_calls)
