@@ -619,6 +619,7 @@ export function RunDetail({
               </Text>
             </div>
           </Group>
+          <RequestPromptPanel run={run} originalRun={rootRun ?? run} />
           <Alert
             color={run.status === "failed" ? "red" : "blue"}
             title={run.status === "failed" ? "Workflow failed" : "Result is not ready"}
@@ -704,6 +705,8 @@ export function RunDetail({
           </Group>
         </Group>
 
+        <RequestPromptPanel run={run} originalRun={rootRun ?? run} />
+
         {isActiveRun ? (
           <Alert color="blue">
             <Group gap="sm" align="flex-start">
@@ -716,7 +719,7 @@ export function RunDetail({
           </Alert>
         ) : null}
 
-        {run.status === "failed" && !isGeoClarificationResult(result) ? (
+        {run.status === "failed" && !isGeoClarificationResult(result) && !isInsufficientSourceDataResult(result) ? (
           <Alert color="red" title="Workflow failed">
             {run.error ? errorMessage(run.error) : "Developer 탭에서 실패한 step과 error log를 확인하세요."}
           </Alert>
@@ -728,6 +731,10 @@ export function RunDetail({
 
         {isGeoClarificationResult(result) ? (
           <GeoClarificationNotice result={result} />
+        ) : null}
+
+        {isInsufficientSourceDataResult(result) ? (
+          <InsufficientSourceDataNotice result={result} />
         ) : null}
 
         <SimpleGrid cols={{ base: 1, sm: 4 }}>
@@ -773,7 +780,11 @@ export function RunDetail({
 
                 <Paper withBorder p="md" className={classes.panel}>
                   {selectedProduct ? (
-                    <ProductDetail product={selectedProduct} marketing={selectedMarketing} />
+                    <ProductDetail
+                      product={selectedProduct}
+                      marketing={selectedMarketing}
+                      evidenceDocuments={result.retrieved_documents}
+                    />
                   ) : (
                     <Text c="dimmed">생성된 상품이 없습니다.</Text>
                   )}
@@ -782,7 +793,9 @@ export function RunDetail({
             ) : result.status === "unsupported" ? (
               <SupportScopeNotice result={result} />
             ) : isGeoClarificationResult(result) ? (
-              <GeoClarificationReviewNotice />
+              <GeoClarificationReviewNotice result={result} />
+            ) : isInsufficientSourceDataResult(result) ? (
+              <InsufficientSourceDataNotice result={result} compact />
             ) : (
               <Alert color="gray">
                 <Group gap="sm" align="flex-start">
@@ -1101,30 +1114,75 @@ function SupportScopeNotice({ result }: { result: WorkflowResult }) {
 }
 
 function GeoClarificationNotice({ result }: { result: WorkflowResult }) {
+  const userMessage = recordOrNull(result.user_message);
+  const title = String(userMessage?.title ?? "지역을 하나로 좁혀 주세요");
+  const message = String(
+    userMessage?.message ?? "요청 문장만으로는 어느 지역인지 확정하기 어려워 데이터 수집을 시작하지 않았습니다."
+  );
+  const detail = String(
+    userMessage?.detail ?? "예: `서울 중구 야간 관광 상품`처럼 시도와 시군구를 함께 넣어 다시 요청해 주세요."
+  );
   return (
-    <Alert color="yellow" title="지역을 하나로 좁혀 주세요">
+    <Alert color="yellow" title={title}>
       <Stack gap={4}>
-        <Text size="sm">
-          요청 문장만으로는 어느 지역인지 확정하기 어려워 데이터 수집을 시작하지 않았습니다.
-        </Text>
-        <Text size="sm" c="dimmed">
-          예: `서울 중구 야간 관광 상품`처럼 시도와 시군구를 함께 넣어 다시 요청해 주세요.
-        </Text>
+        <Text size="sm">{message}</Text>
+        <Text size="sm" c="dimmed">{detail}</Text>
       </Stack>
     </Alert>
   );
 }
 
-function GeoClarificationReviewNotice() {
+function GeoClarificationReviewNotice({ result }: { result: WorkflowResult }) {
+  const userMessage = recordOrNull(result.user_message);
+  const title = String(userMessage?.title ?? "아직 상품을 만들지 않았습니다");
+  const message = String(userMessage?.message ?? "요청한 지역을 하나로 정하지 못해 관광 데이터 검색 전에 멈췄습니다.");
+  const detail = String(userMessage?.detail ?? "위의 지역 후보를 보고 원하는 지역명을 더 구체적으로 넣어 새 run을 만들어 주세요.");
   return (
-    <Alert color="gray" title="아직 상품을 만들지 않았습니다">
+    <Alert color="gray" title={title}>
       <Stack gap={4}>
+        <Text size="sm">{message}</Text>
+        <Text size="sm" c="dimmed">{detail}</Text>
+      </Stack>
+    </Alert>
+  );
+}
+
+function InsufficientSourceDataNotice({
+  result,
+  compact = false,
+}: {
+  result: WorkflowResult;
+  compact?: boolean;
+}) {
+  const userMessage = recordOrNull(result.user_message);
+  const suggestions = stringListFromUnknown(result.suggested_next_requests).length > 0
+    ? stringListFromUnknown(result.suggested_next_requests)
+    : stringListFromUnknown(userMessage?.suggestions);
+  return (
+    <Alert color="blue" title={String(userMessage?.title ?? "관광 근거 데이터가 부족합니다")}>
+      <Stack gap={compact ? 6 : "xs"}>
         <Text size="sm">
-          요청한 지역을 하나로 정하지 못해 관광 데이터 검색 전에 멈췄습니다.
+          {String(
+            userMessage?.message
+              ?? "요청한 지역과 조건에서 상품 기획에 사용할 수 있는 관광 근거를 충분히 찾지 못했습니다."
+          )}
         </Text>
         <Text size="sm" c="dimmed">
-          위의 지역 후보를 보고 원하는 지역명을 더 구체적으로 넣어 새 run을 만들어 주세요.
+          {String(
+            userMessage?.detail
+              ?? "지역을 조금 넓히거나, 테마 또는 기간을 바꿔 새 run을 만들어 주세요."
+          )}
         </Text>
+        {suggestions.length > 0 ? (
+          <Stack gap={4}>
+            <Text size="sm" fw={700}>다시 요청해볼 수 있는 방향</Text>
+            {suggestions.map((suggestion) => (
+              <Text key={suggestion} size="sm" c="blue.7">
+                {suggestion}
+              </Text>
+            ))}
+          </Stack>
+        ) : null}
       </Stack>
     </Alert>
   );
@@ -1351,6 +1409,34 @@ function RevisionMeta({
   );
 }
 
+function RequestPromptPanel({
+  run,
+  originalRun,
+}: {
+  run: WorkflowRun;
+  originalRun: WorkflowRun;
+}) {
+  const prompt = (originalRun.input.message || run.input.message || "").trim();
+  if (!prompt) return null;
+  const isRevision = run.id !== originalRun.id;
+
+  return (
+    <div className={classes.requestPrompt}>
+      <Group gap="xs" justify="space-between" align="center">
+        <Text fw={700} size="sm">최초 요청 문장</Text>
+        {isRevision ? (
+          <Badge size="sm" variant="light" color="gray">
+            원본 Run 기준
+          </Badge>
+        ) : null}
+      </Group>
+      <Text size="sm" className={classes.requestPromptText}>
+        {prompt}
+      </Text>
+    </div>
+  );
+}
+
 function UserWorkflowProgress({
   steps,
   run,
@@ -1548,6 +1634,7 @@ function DeveloperDebugPanel({
           사용자 검토 흐름은 Result Review와 Evidence + QA 탭을 기준으로 확인하세요.
         </Text>
       </Alert>
+      <RetrievalDiagnosticsPanel diagnostics={result.retrieval_diagnostics} />
       <Accordion variant="contained" multiple defaultValue={["logs"]}>
         <Accordion.Item value="progress">
           <Accordion.Control>Detailed agent progress</Accordion.Control>
@@ -1581,6 +1668,35 @@ function DeveloperDebugPanel({
         </Accordion.Item>
       </Accordion>
     </Stack>
+  );
+}
+
+function RetrievalDiagnosticsPanel({ diagnostics }: { diagnostics?: Record<string, unknown> }) {
+  const record = recordOrNull(diagnostics);
+  if (!record || Object.keys(record).length === 0) return null;
+  const rows = [
+    ["TourAPI raw collected", record.tourapi_raw_collected_count],
+    ["Geo-filtered items", record.geo_filtered_item_count],
+    ["Source documents upserted", record.source_document_upsert_count],
+    ["Indexed documents", record.indexed_document_count],
+    ["Vector search results", record.vector_search_result_count],
+    ["Post geo-filter results", record.post_geo_filter_result_count],
+    ["Reason", record.reason],
+  ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  return (
+    <Paper withBorder p="sm">
+      <Stack gap="xs">
+        <Text fw={700} size="sm">Retrieval diagnostics</Text>
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 4 }}>
+          {rows.map(([label, value]) => (
+            <div key={String(label)}>
+              <Text size="xs" c="dimmed">{String(label)}</Text>
+              <Text size="sm" fw={600}>{String(value)}</Text>
+            </div>
+          ))}
+        </SimpleGrid>
+      </Stack>
+    </Paper>
   );
 }
 
@@ -1635,18 +1751,20 @@ function GeoScopePanel({ scope }: { scope: Record<string, unknown> | null }) {
   const displayCandidates = geoCandidateNames(candidates, unresolved);
   const needsClarification = scope.needs_clarification === true;
   const isUnsupported = scope.status === "unsupported" || scope.mode === "unsupported_region";
+  const isUnsupportedMultiRegion = scope.mode === "unsupported_multi_region"
+    || scope.resolution_strategy === "unsupported_multi_region";
   const unsupportedLocations = Array.isArray(scope.unsupported_locations)
     ? scope.unsupported_locations.map(String).filter(Boolean)
     : [];
   const statusLabel = isUnsupported
     ? "지원 범위 안내"
+    : isUnsupportedMultiRegion
+      ? "단일 지역 필요"
     : needsClarification
       ? "확인 필요"
       : scope.allow_nationwide === true
         ? "전국"
-        : scope.mode === "route"
-          ? "동선"
-          : "지역 확정";
+        : "지역 확정";
   return (
     <Paper withBorder p="md">
       <Stack gap="sm">
@@ -1670,10 +1788,12 @@ function GeoScopePanel({ scope }: { scope: Record<string, unknown> | null }) {
           </Alert>
         ) : null}
         {needsClarification ? (
-          <Alert color="yellow" title="지역을 하나로 좁혀 주세요">
+          <Alert color="yellow" title={isUnsupportedMultiRegion ? "단일 지역만 지원합니다" : "지역을 하나로 좁혀 주세요"}>
             <Stack gap="xs">
               <Text size="sm">
-                요청 문장만으로는 어느 지역인지 확정하기 어렵습니다. 아래 후보 중 원하는 지역명을 포함해 다시 요청해 주세요.
+                {isUnsupportedMultiRegion
+                  ? "지역 이동형 코스나 복수 지역 동시 기획은 아직 지원하지 않습니다. 아래 후보 중 하나만 포함해 다시 요청해 주세요."
+                  : "요청 문장만으로는 어느 지역인지 확정하기 어렵습니다. 아래 후보 중 원하는 지역명을 포함해 다시 요청해 주세요."}
               </Text>
             </Stack>
           </Alert>
@@ -1716,14 +1836,20 @@ function isGeoClarificationResult(result: WorkflowResult) {
   return result.status === "needs_clarification" || scope?.needs_clarification === true;
 }
 
+function isInsufficientSourceDataResult(result: WorkflowResult) {
+  return result.status === "insufficient_source_data" || result.reason === "insufficient_source_data";
+}
+
 function geoScopeLabel(scope: Record<string, unknown>) {
   if (scope.status === "unsupported" || scope.mode === "unsupported_region") return "지원 범위 밖";
+  if (scope.mode === "unsupported_multi_region" || scope.resolution_strategy === "unsupported_multi_region") {
+    return "단일 지역만 지원합니다";
+  }
   if (scope.allow_nationwide === true) return "전국";
   if (scope.needs_clarification === true) return "지역을 더 구체적으로 입력해 주세요";
   const locations = arrayOfRecords(scope.locations);
   const names = locations.map((location) => String(location.name ?? "").trim()).filter(Boolean);
-  const separator = scope.mode === "route" ? " → " : ", ";
-  return names.length > 0 ? names.join(separator) : "-";
+  return names.length > 0 ? names.join(", ") : "-";
 }
 
 function geoCandidateNames(
@@ -1747,9 +1873,6 @@ function geoCandidateNames(
 function geoRoleLabel(value: unknown) {
   const role = String(value ?? "primary");
   return {
-    origin: "출발: ",
-    destination: "도착: ",
-    stopover: "경유: ",
     primary: "",
     comparison: "비교: ",
     nearby_anchor: "주변: ",
@@ -1905,6 +2028,9 @@ function enrichmentStatusLabel(value: string) {
 function callStatusLabel(row: EnrichmentCallRow) {
   const value = row.status;
   const skipReason = row.skip_reason || row.reason;
+  if (value === "skipped" && String(skipReason).includes("feature_flag_disabled")) {
+    return "비활성";
+  }
   if (value === "skipped" && String(skipReason).includes("future_provider_not_implemented")) {
     return "향후 연결 예정";
   }
@@ -1934,7 +2060,7 @@ function callStatusColor(value: string) {
 
 function humanReadableCallReason(row: EnrichmentCallRow) {
   if (row.status === "skipped") {
-    return skipReasonLabel(row.skip_reason) || row.reason;
+    return skipReasonLabel(row.skip_reason || row.reason) || row.reason;
   }
   if (row.status === "failed") {
     return row.reason || "호출 중 오류가 발생했습니다. Developer 탭에서 상세 로그를 확인하세요.";
@@ -1994,12 +2120,26 @@ function sourceFamilyLabel(value: string) {
 function toolLabel(value: string) {
   return {
     kto_tour_detail_enrichment: "상세/이미지 보강",
+    kto_tourism_photo_search: "관광사진 후보",
+    kto_photo_contest_award_list: "공모전 사진 후보",
     kto_related_places_area: "주변 관광지",
+    kto_related_places_keyword: "연관 관광지",
     kto_durunubi_course_list: "코스/동선",
+    kto_tourism_bigdata_metco_visitors: "광역 방문자 신호",
+    kto_tourism_bigdata_locgo_visitors: "시군구 방문자 신호",
+    kto_attraction_crowding_forecast: "혼잡도 예측",
+    kto_regional_tourism_demand_area: "지역 수요 신호",
+    kto_regional_tourism_service_demand: "관광서비스 수요",
+    kto_regional_culture_resource_demand: "문화자원 수요",
     kto_pet_area_search: "반려동물 테마",
+    kto_pet_keyword_search: "반려동물 테마",
+    kto_pet_detail_pet: "반려동물 조건",
     kto_wellness_keyword_search: "웰니스 테마",
     kto_audio_keyword_search: "오디오 해설",
+    kto_audio_story_search: "오디오 스토리",
+    kto_audio_theme_search: "오디오 테마",
     kto_eco_tourism_search: "생태관광",
+    kto_eco_area_search: "생태관광",
     kto_medical_keyword_search: "의료관광",
   }[value] ?? (value || "-");
 }
@@ -2046,6 +2186,9 @@ function evidenceTypeLabel(row: EvidenceDocument) {
     accommodation: "숙박",
     shopping: "쇼핑",
     restaurant: "음식점",
+    theme: "테마 근거",
+    route: "동선 후보",
+    signal: "보조 신호",
   }[rawType] ?? (rawType ? rawType : "-");
 }
 
@@ -2115,9 +2258,11 @@ function StageIndicator({ status }: { status: string }) {
 function ProductDetail({
   product,
   marketing,
+  evidenceDocuments,
 }: {
   product: ProductIdea;
   marketing: MarketingAsset | null;
+  evidenceDocuments: EvidenceDocument[];
 }) {
   const needsReview = stringListFromUnknown(product.needs_review);
   const claimLimits = stringListFromUnknown(product.claim_limits);
@@ -2130,6 +2275,7 @@ function ProductDetail({
   const evidenceDisclaimer =
     typeof marketing?.evidence_disclaimer === "string" ? marketing.evidence_disclaimer : "";
   const sourceIds = stringListFromUnknown(product.source_ids);
+  const visualCandidates = productVisualCandidates(product, evidenceDocuments);
 
   return (
     <Stack gap="md">
@@ -2169,6 +2315,41 @@ function ProductDetail({
           </Group>
 
           {evidenceSummary ? <Text size="sm">{evidenceSummary}</Text> : null}
+
+          {visualCandidates.length > 0 ? (
+            <SimpleGrid cols={{ base: 1, sm: 2 }}>
+              {visualCandidates.slice(0, 2).map((candidate) => (
+                <Paper key={candidate.image_url} withBorder p="xs">
+                  <Group align="flex-start" wrap="nowrap">
+                    <Image
+                      src={candidate.thumbnail_url || candidate.image_url}
+                      alt={candidate.title || product.title}
+                      w={96}
+                      h={72}
+                      fit="cover"
+                      radius="sm"
+                    />
+                    <Stack gap={4}>
+                      <Text size="xs" fw={700} lineClamp={1}>
+                        {candidate.title || "이미지 후보"}
+                      </Text>
+                      <Text size="xs" c="dimmed" lineClamp={2}>
+                        게시 확정 이미지가 아니라 상품 검토용 후보입니다.
+                      </Text>
+                      <Group gap={6}>
+                        <Badge size="xs" variant="light" color="yellow">
+                          사용권 확인 필요
+                        </Badge>
+                        <Badge size="xs" variant="light">
+                          {candidate.source || "Visual API"}
+                        </Badge>
+                      </Group>
+                    </Stack>
+                  </Group>
+                </Paper>
+              ))}
+            </SimpleGrid>
+          ) : null}
 
           <SimpleGrid cols={{ base: 1, md: 3 }}>
             <EvidenceStateList title="확인 필요" items={needsReview} emptyText="별도 확인 항목 없음" />
@@ -2495,9 +2676,9 @@ function RevisionQaSettingsPanel({
           <NumberInput
             label="Product count"
             min={1}
-            max={5}
+            max={20}
             value={settings.product_count}
-            onChange={(value) => onChange({ product_count: Math.min(Number(value) || 1, 5) })}
+            onChange={(value) => onChange({ product_count: Math.min(Number(value) || 1, 20) })}
           />
         </SimpleGrid>
         <SimpleGrid cols={{ base: 1, md: 2 }}>
@@ -2723,7 +2904,7 @@ function EvidenceImageCandidates({ row }: { row: EvidenceDocument }) {
 
   return (
     <Stack gap="xs">
-      <Text fw={700} size="sm">Image candidates</Text>
+      <Text fw={700} size="sm">이미지 후보</Text>
       <SimpleGrid cols={{ base: 1, sm: 2 }}>
         {candidates.slice(0, 4).map((candidate) => (
           <Paper key={candidate.image_url} withBorder p="xs">
@@ -2786,6 +2967,37 @@ function evidenceImageCandidates(row: EvidenceDocument): EvidenceImageCandidate[
         },
       ]
     : [];
+}
+
+function productVisualCandidates(
+  product: ProductIdea,
+  evidenceDocuments: EvidenceDocument[],
+): EvidenceImageCandidate[] {
+  const sourceIds = new Set(stringListFromUnknown(product.source_ids));
+  if (sourceIds.size === 0) return [];
+  const linkedContentIds = new Set(
+    evidenceDocuments
+      .filter((document) => sourceIds.has(document.doc_id))
+      .map((document) => String(document.metadata.content_id ?? "").trim())
+      .filter(Boolean)
+  );
+  const candidates: EvidenceImageCandidate[] = [];
+  evidenceDocuments.forEach((document) => {
+    const contentId = String(document.metadata.content_id ?? "").trim();
+    if (!sourceIds.has(document.doc_id) && (!contentId || !linkedContentIds.has(contentId))) return;
+    evidenceImageCandidates(document).forEach((candidate) => {
+      candidates.push({
+        ...candidate,
+        source: candidate.source ? sourceFamilyLabel(candidate.source) : "이미지 후보",
+      });
+    });
+  });
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate.image_url)) return false;
+    seen.add(candidate.image_url);
+    return true;
+  });
 }
 
 function parseMetadataJson(value: unknown): unknown {

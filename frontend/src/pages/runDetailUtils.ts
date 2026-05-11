@@ -214,7 +214,7 @@ export function revisionQaSettingsFromRun(run: WorkflowRun | null): RevisionQaSe
     region: run?.input.region ?? "",
     period: run?.input.period ?? "",
     target_customer: run?.input.target_customer ?? "외국인",
-    product_count: Math.min(run?.input.product_count ?? 3, 5),
+    product_count: Math.min(run?.input.product_count ?? 3, 20),
     preferences: run?.input.preferences ?? [],
     avoid: run?.input.avoid ?? [],
     output_language: run?.input.output_language ?? "ko",
@@ -387,11 +387,14 @@ export function normalizeWorkflowResult(raw: unknown): WorkflowResult {
   const result = recordOrEmpty(raw);
   return {
     status: typeof result.status === "string" ? result.status : "not_available",
+    reason: typeof result.reason === "string" ? result.reason : undefined,
     normalized_request: recordOrEmpty(result.normalized_request),
     geo_scope: recordOrEmpty(result.geo_scope),
     user_message: recordOrEmpty(result.user_message),
     source_items: arrayOrEmpty(result.source_items),
     retrieved_documents: arrayOrEmpty<EvidenceDocument>(result.retrieved_documents),
+    retrieval_diagnostics: recordOrEmpty(result.retrieval_diagnostics),
+    suggested_next_requests: arrayOrEmpty<string>(result.suggested_next_requests),
     data_gap_report: recordOrEmpty(result.data_gap_report),
     enrichment_plan: recordOrEmpty(result.enrichment_plan),
     enrichment_summary: recordOrEmpty(result.enrichment_summary),

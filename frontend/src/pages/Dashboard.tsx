@@ -392,7 +392,7 @@ const workflowNodes: Node[] = [
     type: "exitAction",
     data: {
       title: "요청 종료",
-      description: "지역 후보 안내 또는 국내 지원 범위 안내",
+      description: "단일 지역 선택 또는 국내 지원 범위 안내",
     },
   },
   {
@@ -570,7 +570,7 @@ const workflowEdges: Edge[] = [
     sourceHandle: "exit-top",
     target: "geo-exit",
     targetHandle: "in-bottom",
-    label: "확정 불가 / 해외",
+    label: "단일 지역 필요 / 해외",
     type: "smoothstep",
     style: geoExitEdgeStyle,
     markerEnd: { type: MarkerType.ArrowClosed, color: "var(--mantine-color-red-6)" },
@@ -661,6 +661,9 @@ function getRunGeoLabel(run: WorkflowRun) {
   if (scope.status === "unsupported" || scope.mode === "unsupported_region") {
     return "지원 불가";
   }
+  if (scope.mode === "unsupported_multi_region" || scope.resolution_strategy === "unsupported_multi_region") {
+    return "단일 지역 필요";
+  }
   if (scope.allow_nationwide === true) {
     return "전국";
   }
@@ -673,8 +676,7 @@ function getRunGeoLabel(run: WorkflowRun) {
   const names = locations
     .map((location) => String(location.name ?? "").trim())
     .filter(Boolean);
-  const separator = scope.mode === "route" ? " → " : ", ";
-  return names.length > 0 ? names.join(separator) : run.input.region || "-";
+  return names.length > 0 ? names.join(", ") : run.input.region || "-";
 }
 
 function recordOrNull(value: unknown): Record<string, unknown> | null {
@@ -788,13 +790,13 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
       period: "2026-05",
       target_customer: "외국인",
       product_count: 5,
-      preferences: ["야간 관광", "축제"],
+      preferences: [],
       avoid: ["가격 단정 표현"],
       output_language: "ko" as const,
     },
     validate: {
       message: (value) => (value.trim().length > 0 ? null : "요청 내용을 입력해 주세요."),
-      product_count: (value) => (Number(value) <= 5 ? null : "상품은 최대 5개까지 생성할 수 있습니다."),
+      product_count: (value) => (Number(value) <= 20 ? null : "상품은 최대 20개까지 생성할 수 있습니다."),
       period: (value) =>
         PERIOD_PATTERN.test(value)
           ? null
@@ -1473,8 +1475,8 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
               <NumberInput
                 label="Product count"
                 min={1}
-                max={5}
-                description="최대 5개까지 생성할 수 있습니다."
+                max={20}
+                description="최대 20개까지 생성할 수 있습니다."
                 {...form.getInputProps("product_count")}
               />
             </Group>
@@ -1485,7 +1487,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
             ) : null}
             <MultiSelect
               label="Preferences"
-              data={["야간 관광", "축제", "전통시장", "해변", "요트", "푸드투어"]}
+              data={["웰니스", "반려동물", "생태", "오디오 해설", "야간 관광", "축제", "전통시장", "해변", "요트", "푸드투어"]}
               searchable
               {...form.getInputProps("preferences")}
             />

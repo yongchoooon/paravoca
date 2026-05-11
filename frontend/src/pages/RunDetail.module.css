@@ -30,6 +30,20 @@
   min-width: 0;
 }
 
+.requestPrompt {
+  border: 1px solid var(--mantine-color-gray-3);
+  border-radius: 8px;
+  background: var(--mantine-color-gray-0);
+  padding: 12px 14px;
+}
+
+.requestPromptText {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
 .evidenceTable {
   overflow: hidden;
 }

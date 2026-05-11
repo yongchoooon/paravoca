@@ -36,6 +36,8 @@ type RunLogsProps = {
   agentExecution: Array<Record<string, unknown>>;
 };
 
+const KRW_PER_USD = 1460;
+
 function buildErrorRows({
   run,
   steps,
@@ -114,6 +116,15 @@ export function RunLogs({
     () => llmCalls.filter((call) => !isDeterministicCollectionLlmRow(call)),
     [llmCalls]
   );
+  const visibleLlmTotalTokens = useMemo(
+    () => visibleLlmCalls.reduce((sum, call) => sum + Number(call.total_tokens ?? 0), 0),
+    [visibleLlmCalls]
+  );
+  const visibleLlmTotalCostUsd = useMemo(
+    () => visibleLlmCalls.reduce((sum, call) => sum + Number(call.cost_usd ?? 0), 0),
+    [visibleLlmCalls]
+  );
+  const visibleLlmTotalCostKrw = visibleLlmTotalCostUsd * KRW_PER_USD;
   const hiddenDeterministicCallCount = llmCalls.length - visibleLlmCalls.length;
   const errorRows = useMemo(
     () => buildErrorRows({ run, steps, toolCalls, llmCalls }),
@@ -325,15 +336,32 @@ export function RunLogs({
             </Table.Thead>
             <Table.Tbody>
               {visibleLlmCalls.length > 0 ? (
-                visibleLlmCalls.map((call) => (
-                  <Table.Tr key={call.id}>
-                    <Table.Td>{call.provider}</Table.Td>
-                    <Table.Td>{call.model}</Table.Td>
-                    <Table.Td>{call.purpose}</Table.Td>
-                    <Table.Td>{call.total_tokens}</Table.Td>
-                    <Table.Td>${call.cost_usd.toFixed(6)}</Table.Td>
+                <>
+                  {visibleLlmCalls.map((call) => (
+                    <Table.Tr key={call.id}>
+                      <Table.Td>{call.provider}</Table.Td>
+                      <Table.Td>{call.model}</Table.Td>
+                      <Table.Td>{call.purpose}</Table.Td>
+                      <Table.Td>{call.total_tokens}</Table.Td>
+                      <Table.Td>${call.cost_usd.toFixed(6)}</Table.Td>
+                    </Table.Tr>
+                  ))}
+                  <Table.Tr>
+                    <Table.Td colSpan={3}>
+                      <Text fw={700}>Total cost</Text>
+                      <Text size="xs" c="dimmed">환율 1 USD = 1,460원 기준</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text fw={700}>{visibleLlmTotalTokens.toLocaleString("ko-KR")}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text fw={700}>${visibleLlmTotalCostUsd.toFixed(6)}</Text>
+                      <Text size="xs" c="dimmed">
+                        약 ₩{Math.round(visibleLlmTotalCostKrw).toLocaleString("ko-KR")}
+                      </Text>
+                    </Table.Td>
                   </Table.Tr>
-                ))
+                </>
               ) : (
                 <Table.Tr>
                   <Table.Td colSpan={5}>

@@ -92,11 +92,14 @@ export type QAReport = {
 
 export type WorkflowResult = {
   status: string;
+  reason?: string;
   normalized_request: Record<string, unknown>;
   geo_scope: Record<string, unknown>;
   user_message?: Record<string, unknown>;
   source_items: Array<Record<string, unknown>>;
   retrieved_documents: EvidenceDocument[];
+  retrieval_diagnostics?: Record<string, unknown>;
+  suggested_next_requests?: string[];
   data_gap_report: Record<string, unknown>;
   enrichment_plan: Record<string, unknown>;
   enrichment_summary: Record<string, unknown>;
