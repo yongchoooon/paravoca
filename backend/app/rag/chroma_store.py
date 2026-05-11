@@ -95,9 +95,11 @@ def search_source_documents(
             return []
 
         requested = min(max(top_k * 3, top_k), count)
+        where = _filters_to_chroma_where(filters or {})
         result = collection.query(
             query_embeddings=[provider.embed_query(query)],
             n_results=requested,
+            where=where,
             include=["documents", "metadatas", "distances"],
         )
     except Exception:
@@ -156,3 +158,22 @@ def _matches_filters(metadata: dict[str, Any], filters: dict[str, Any]) -> bool:
         elif actual != expected:
             return False
     return True
+
+
+def _filters_to_chroma_where(filters: dict[str, Any]) -> dict[str, Any] | None:
+    clauses: list[dict[str, Any]] = []
+    for key, expected in filters.items():
+        if expected in (None, "", []):
+            continue
+        if isinstance(expected, list):
+            values = [value for value in expected if value not in (None, "")]
+            if not values:
+                continue
+            clauses.append({key: values[0] if len(values) == 1 else {"$in": values}})
+        elif isinstance(expected, (str, int, float, bool)):
+            clauses.append({key: expected})
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}

@@ -5,6 +5,7 @@ import json
 from collections import defaultdict
 from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -12,12 +13,19 @@ from app.db import models
 from app.rag.chroma_store import index_source_documents
 from app.rag.source_documents import upsert_source_documents_from_items
 from app.tools.kto_capabilities import list_kto_capabilities
+from app.tools.route_signals import (
+    RouteSignalProvider,
+    execute_route_signal_search,
+    get_route_signal_provider,
+)
+from app.tools.themes import ThemeDataProvider, execute_theme_search, get_theme_provider
 from app.tools.tourism import TourismDataProvider
 from app.tools.tourism_enrichment import (
     detail_info_to_lines,
     detail_intro_to_lines,
     enrich_items_with_tourapi_details,
 )
+from app.tools.visuals import VisualDataProvider, execute_visual_search, get_visual_provider
 
 
 DETAIL_GAP_TYPES = {
@@ -27,11 +35,53 @@ DETAIL_GAP_TYPES = {
     "missing_booking_info",
     "missing_image_asset",
 }
+VISUAL_SOURCE_FAMILIES = {"kto_tourism_photo", "kto_photo_contest"}
+VISUAL_GAP_TYPES = {"missing_image_asset", "missing_visual_reference"}
+ROUTE_SIGNAL_SOURCE_FAMILIES = {
+    "kto_durunubi",
+    "kto_related_places",
+    "kto_tourism_bigdata",
+    "kto_crowding_forecast",
+    "kto_regional_tourism_demand",
+}
+ROUTE_SIGNAL_GAP_TYPES = {
+    "missing_route_context",
+    "missing_related_places",
+    "missing_demand_signal",
+    "missing_crowding_signal",
+    "missing_regional_demand_signal",
+}
+THEME_SOURCE_FAMILIES = {"kto_wellness", "kto_pet", "kto_audio", "kto_eco", "kto_medical"}
+THEME_GAP_TYPES = {
+    "missing_theme_specific_data",
+    "missing_pet_policy",
+    "missing_wellness_attributes",
+    "missing_medical_context",
+    "missing_story_asset",
+    "missing_sustainability_context",
+    "missing_multilingual_story",
+}
+
+DATA_GAP_PROFILE_MAX_GAPS = 24
+DATA_GAP_PROFILE_MAX_NEEDS_REVIEW = 8
+
+GAP_TYPE_ALIASES = {
+    "missing_overview": "missing_detail_info",
+}
 
 FUTURE_SOURCE_BY_GAP = {
     "missing_related_places": "kto_related_places",
     "missing_route_context": "kto_durunubi",
+    "missing_demand_signal": "kto_tourism_bigdata",
+    "missing_crowding_signal": "kto_crowding_forecast",
+    "missing_regional_demand_signal": "kto_regional_tourism_demand",
     "missing_theme_specific_data": "kto_wellness",
+    "missing_pet_policy": "kto_pet",
+    "missing_wellness_attributes": "kto_wellness",
+    "missing_story_asset": "kto_audio",
+    "missing_multilingual_story": "kto_audio",
+    "missing_sustainability_context": "kto_eco",
+    "missing_medical_context": "kto_medical",
 }
 
 THEME_SOURCE_HINTS = {
@@ -63,7 +113,7 @@ PLANNER_DEFINITIONS: dict[str, dict[str, Any]] = {
         "display_name": "시각 자료 Planner",
         "source_families": ["kto_tourism_photo", "kto_photo_contest"],
         "gap_types": ["missing_image_asset", "missing_visual_reference"],
-        "phase10_2_execution": "future_provider",
+        "phase10_2_execution": "implemented_when_enabled",
     },
     "route_signal": {
         "agent_name": "RouteSignalPlannerAgent",
@@ -83,7 +133,7 @@ PLANNER_DEFINITIONS: dict[str, dict[str, Any]] = {
             "missing_crowding_signal",
             "missing_regional_demand_signal",
         ],
-        "phase10_2_execution": "future_provider",
+        "phase10_2_execution": "phase12_2_implemented_when_enabled",
     },
     "theme_data": {
         "agent_name": "ThemeDataPlannerAgent",
@@ -99,7 +149,7 @@ PLANNER_DEFINITIONS: dict[str, dict[str, Any]] = {
             "missing_sustainability_context",
             "missing_multilingual_story",
         ],
-        "phase10_2_execution": "future_provider",
+        "phase10_2_execution": "phase12_3_implemented_when_enabled",
     },
 }
 
@@ -180,11 +230,11 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "document": "99_02_KTO_PHOTO_CONTEST_AWARD_SPEC.md",
         "operations": ["ldongCode", "phokoAwrdList", "phokoAwrdSyncList"],
         "fills_gaps": ["missing_image_asset", "missing_visual_reference"],
-        "request_fields": ["법정동/지역, 키워드, paging"],
-        "response_fields": ["galTitle", "galPhotographyLocation", "orgImage", "thumbImage"],
-        "db_targets": ["tourism_visual_assets"],
+        "request_fields": ["keyword", "lDongRegnCd", "numOfRows", "pageNo"],
+        "response_fields": ["koTitle", "koFilmst", "filmDay", "koCmanNm", "koKeyWord", "orgImage", "thumbImage", "cpyrhtDivCd"],
+        "db_targets": ["tourism_visual_assets", "source_documents"],
         "ui_use": "게시 후보가 아니라 시각 참고/이미지 후보로 표시하고 저작권 확인을 요구합니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_1_implemented_when_enabled",
     },
     {
         "source_family": "kto_wellness",
@@ -211,7 +261,7 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "response_fields": ["baseAddr", "mapX/mapY", "orgImage", "thumbImage", "operationtime*", "detail info"],
         "db_targets": ["tourism_entities", "tourism_visual_assets", "source_documents"],
         "ui_use": "웰니스 테마 적합성과 운영 조건을 표시하되 건강효능 claim은 금지합니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_3_implemented_when_enabled",
     },
     {
         "source_family": "kto_medical",
@@ -232,7 +282,7 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "response_fields": ["baseAddr", "mapX/mapY", "detailMdclTursm fields", "orgImage", "thumbImage"],
         "db_targets": ["tourism_entities", "source_documents", "tourism_visual_assets"],
         "ui_use": "고위험 의료관광 근거로 분리 표시하고 allow_medical_api가 꺼져 있으면 호출하지 않습니다.",
-        "phase10_2_status": "feature_flag_future",
+        "phase10_2_status": "phase12_3_medical_flag_required",
     },
     {
         "source_family": "kto_pet",
@@ -259,7 +309,7 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "response_fields": ["addr1", "mapx/mapy", "detailIntro2 pet fields", "detailPetTour2 fields"],
         "db_targets": ["tourism_entities", "source_documents", "tourism_visual_assets"],
         "ui_use": "반려동물 동반 가능 조건, 제한, 필요사항을 운영 확인 항목으로 표시합니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_3_implemented_when_enabled",
     },
     {
         "source_family": "kto_durunubi",
@@ -270,7 +320,7 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "response_fields": ["course name", "distance", "difficulty", "route/path fields"],
         "db_targets": ["tourism_route_assets", "source_documents"],
         "ui_use": "route형 상품의 거리, 난이도, 코스 근거로 표시합니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_2_implemented_when_enabled",
     },
     {
         "source_family": "kto_audio",
@@ -288,7 +338,7 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "response_fields": ["title", "script/story summary", "audio/image URL", "language fields"],
         "db_targets": ["source_documents", "tourism_entities"],
         "ui_use": "스토리텔링/해설 후보로 요약 표시하고 원문 장문 복제는 피합니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_3_implemented_when_enabled",
     },
     {
         "source_family": "kto_eco",
@@ -299,7 +349,7 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "response_fields": ["생태 관광명, 주소/지역, 설명 계열 field"],
         "db_targets": ["tourism_entities", "source_documents"],
         "ui_use": "생태/친환경 테마 적합성만 표시하고 정량 ESG 효과는 claim하지 않습니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_3_implemented_when_enabled",
     },
     {
         "source_family": "kto_tourism_photo",
@@ -308,9 +358,9 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "fills_gaps": ["missing_image_asset", "missing_visual_reference"],
         "request_fields": ["keyword, gallery id, paging"],
         "response_fields": ["galTitle", "galPhotographyLocation", "galWebImageUrl", "galSearchKeyword"],
-        "db_targets": ["tourism_visual_assets"],
+        "db_targets": ["tourism_visual_assets", "source_documents"],
         "ui_use": "상세페이지/포스터 시각 후보로 표시하고 사용 조건 확인을 요구합니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_1_implemented_when_enabled",
     },
     {
         "source_family": "kto_tourism_bigdata",
@@ -319,9 +369,9 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "fills_gaps": ["missing_demand_signal"],
         "request_fields": ["광역/기초 지자체, 일자/기간"],
         "response_fields": ["방문자수/집계 일자/지역 코드"],
-        "db_targets": ["tourism_signal_records"],
+        "db_targets": ["tourism_signal_records", "source_documents"],
         "ui_use": "수요 신호와 후보 ranking 보조 지표로 표시하되 판매량으로 단정하지 않습니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_2_implemented_when_enabled",
     },
     {
         "source_family": "kto_crowding_forecast",
@@ -330,9 +380,9 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "fills_gaps": ["missing_crowding_signal"],
         "request_fields": ["관광지/예측 기준, paging"],
         "response_fields": ["향후 30일 집중률/혼잡 예측 field"],
-        "db_targets": ["tourism_signal_records"],
+        "db_targets": ["tourism_signal_records", "source_documents"],
         "ui_use": "혼잡 리스크와 대체 시간 검토 신호로 표시합니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_2_implemented_when_enabled",
     },
     {
         "source_family": "kto_related_places",
@@ -341,9 +391,9 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "fills_gaps": ["missing_related_places", "missing_route_context"],
         "request_fields": ["지역, 키워드, paging"],
         "response_fields": ["관광지명, 연관 순위/분류/지역 fields"],
-        "db_targets": ["tourism_signal_records", "tourism_entities"],
+        "db_targets": ["tourism_signal_records", "tourism_entities", "source_documents"],
         "ui_use": "주변/대체 후보와 코스 확장 근거로 표시합니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_2_implemented_when_enabled",
     },
     {
         "source_family": "kto_regional_tourism_demand",
@@ -352,9 +402,9 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "fills_gaps": ["missing_regional_demand_signal", "missing_demand_signal"],
         "request_fields": ["지역, paging"],
         "response_fields": ["관광 서비스 수요, 문화 자원 수요 fields"],
-        "db_targets": ["tourism_signal_records"],
+        "db_targets": ["tourism_signal_records", "source_documents"],
         "ui_use": "지역 매력도와 수요 보조 신호로 표시하되 예약/판매 가능성으로 단정하지 않습니다.",
-        "phase10_2_status": "future_provider",
+        "phase10_2_status": "phase12_2_implemented_when_enabled",
     },
 ]
 
@@ -479,23 +529,24 @@ EVIDENCE_FUSION_RESPONSE_SCHEMA = {
             "type": "object",
             "properties": {
                 "summary": {"type": "string"},
-                "candidate_evidence_cards": {
+                "candidate_interpretations": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
                             "content_id": {"type": "string"},
+                            "source_item_id": {"type": "string"},
                             "title": {"type": "string"},
-                            "evidence_strength": {"type": "string"},
-                            "usable_facts": {"type": "array", "items": {"type": "object"}},
+                            "priority": {"type": "string"},
+                            "product_angle": {"type": "string"},
+                            "rationale": {"type": "string"},
                             "experience_hooks": {"type": "array", "items": {"type": "string"}},
                             "recommended_product_angles": {"type": "array", "items": {"type": "string"}},
-                            "operational_unknowns": {"type": "array", "items": {"type": "string"}},
-                            "restricted_claims": {"type": "array", "items": {"type": "string"}},
-                            "evidence_document_ids": {"type": "array", "items": {"type": "string"}},
+                            "use_with_caution": {"type": "array", "items": {"type": "string"}},
                         },
                     },
                 },
+                "global_claim_policy": {"type": "object"},
                 "usable_claims": {"type": "array", "items": {"type": "string"}},
                 "restricted_claims": {"type": "array", "items": {"type": "string"}},
                 "candidate_recommendations": {"type": "array", "items": {"type": "object"}},
@@ -558,10 +609,10 @@ def capability_brief_for_prompt(settings: Settings | None = None) -> str:
     return "\n".join(
         [
             "KorService2 상세 API는 contentId/contentTypeId로 개요, 홈페이지, 문의처, 이용시간, 요금성 정보, 예약/이용 안내, 상세 이미지 후보를 보강할 수 있습니다. 현재 workflow에서 실제 실행 가능한 core 보강입니다.",
-            "사진 공모전/관광사진 API는 장소나 지역 키워드로 시각 참고 이미지를 찾을 수 있지만, 현재 workflow에서는 실제 호출하지 않고 향후 연결 대상으로만 판단합니다.",
-            "두루누비, 연관관광지, 관광빅데이터, 혼잡 예측, 지역 관광수요 API는 동선, 주변 장소, 수요/혼잡 신호를 줄 수 있지만, 현재 workflow에서는 실제 호출하지 않고 향후 연결 대상으로만 판단합니다.",
-            "웰니스, 반려동물, 오디오, 생태 API는 테마 특화 조건과 스토리 소재를 줄 수 있지만, 현재 workflow에서는 실제 호출하지 않고 향후 연결 대상으로만 판단합니다.",
-            "의료관광 API는 고위험 정보이므로 allow_medical_api가 true일 때만 고려하고, 현재 false이면 호출 대상으로 만들지 않습니다.",
+            "사진 공모전/관광사진 API는 장소나 지역 키워드로 시각 참고 이미지를 찾을 수 있습니다. KTO_TOURISM_PHOTO_ENABLED 또는 KTO_PHOTO_CONTEST_ENABLED가 켜져 있고 서비스키가 있으면 workflow에서 실제 이미지 후보를 조회합니다.",
+            "두루누비, 연관관광지, 관광빅데이터, 혼잡 예측, 지역 관광수요 API는 동선, 주변 장소, 수요/혼잡 신호를 줄 수 있습니다. Phase 12.2부터 관련 feature flag와 서비스키가 있으면 workflow에서 실제 보조 근거를 조회합니다.",
+            "웰니스, 반려동물, 오디오, 생태 API는 테마 특화 조건과 스토리 소재를 줄 수 있습니다. Phase 12.3부터 관련 feature flag와 서비스키가 있으면 workflow에서 실제 테마 후보를 조회합니다.",
+            "의료관광 API는 고위험 정보이므로 allow_medical_api가 true일 때만 실제 호출하고, false이면 호출 대상으로 만들지 않습니다.",
             "현재 feature flag: "
             + ", ".join(f"{name}={'on' if enabled else 'off'}" for name, enabled in flags.items()),
         ]
@@ -614,6 +665,7 @@ def build_data_gap_profile_prompt(
     capability_brief: str,
     candidate_pool_summary: dict[str, Any] | None = None,
 ) -> str:
+    max_gap_count = min(DATA_GAP_PROFILE_MAX_GAPS, max(8, len(source_items) + 4))
     context = {
         "역할": "DataGapProfilerAgent",
         "목표": "shortlist 후보를 보고 상품 기획에 필요한 근거 중 부족한 항목만 구조화합니다.",
@@ -623,22 +675,36 @@ def build_data_gap_profile_prompt(
         "retrieved_documents": [_compact_document(doc) for doc in retrieved_documents[:10]],
         "api_capability_brief": capability_brief,
         "허용_gap_type": sorted(GAP_TYPES),
+        "출력_상한": {
+            "max_gap_count": max_gap_count,
+            "max_item_level_gaps": min(len(source_items), max_gap_count),
+            "max_request_level_gaps": 4,
+            "max_needs_review": DATA_GAP_PROFILE_MAX_NEEDS_REVIEW,
+        },
         "판단_기준": [
             "입력 source_items는 이미 raw 후보에서 추린 shortlist입니다. shortlist 밖 후보는 개별 gap으로 만들지 마세요.",
+            "모든 후보의 누락 항목을 전부 펼치는 보고서가 아니라, 이후 API planner가 실행할 우선순위 gap report를 만듭니다.",
             "상품 상세페이지에 직접 노출할 수 있는 사실과 운영자가 확인해야 하는 정보를 분리하세요.",
             "요청 상품 유형과 무관한 gap을 만들지 마세요.",
             "근거에 없는 운영시간, 요금, 예약정보, 언어지원, 동선, 반려동물 정책을 추측하지 마세요.",
             "이미 상세 정보가 있으면 동일 gap을 반복 생성하지 마세요.",
+            "같은 target_item_id에 여러 detail 계열 누락이 있으면 하나의 대표 gap만 만드세요. KorService2 상세 보강은 한 번의 호출로 상세/이미지/운영정보 후보를 함께 확인할 수 있습니다.",
+            "overview가 없다는 이유만으로 missing_overview를 만들지 마세요. missing_overview는 허용 gap_type이 아닙니다. 개요/상세 설명 부족은 missing_detail_info로 통합하세요.",
+            "낮은 심각도의 반복 gap은 개별 gaps로 모두 만들지 말고 coverage.gap_counts와 reasoning_summary에 요약하세요.",
             "코스/동선형 요청이면 route context가 필요한지 판단하세요.",
             "웰니스/반려동물/생태/오디오/의료 같은 테마 요청은 api_capability_brief에서 설명한 source family와 연결하세요.",
             "의료관광은 고위험 정보이므로 needs_review를 true로 두세요.",
         ],
         "출력_규칙": [
+            f"gaps는 반드시 {max_gap_count}개 이하로 작성하세요. 이 상한을 넘기면 실패입니다.",
             "gaps[].id는 gap:<gap_type>:<target_item_id 또는 request> 형식으로 작성하세요.",
             "target_item_id는 입력 source_items에 실제 있는 id만 사용하세요. request-level gap이면 빈 문자열로 두세요.",
+            "하나의 target_item_id에는 item-level gap을 최대 1개만 작성하세요.",
+            "gap_type은 허용_gap_type 중 하나만 쓰세요. missing_overview는 절대 쓰지 마세요.",
             "severity는 high, medium, low 중 하나만 쓰세요.",
+            "reason은 80자 이내, productization_impact는 100자 이내로 쓰세요.",
             "coverage에는 total_items, gap_count, detail_info_coverage, image_coverage, operating_hours_coverage, price_or_fee_coverage, booking_info_coverage, gap_counts를 포함하세요.",
-            "needs_review에는 운영자가 확인해야 하는 핵심 항목을 한국어 문장으로 넣으세요.",
+            f"needs_review에는 운영자가 확인해야 하는 핵심 항목만 최대 {DATA_GAP_PROFILE_MAX_NEEDS_REVIEW}개 한국어 문장으로 넣으세요.",
         ],
     }
     return json.dumps(context, ensure_ascii=False)
@@ -675,9 +741,11 @@ def build_api_capability_router_prompt(
         "라우팅_규칙": [
             "API endpoint와 arguments를 만들지 마세요. 그것은 각 planner가 담당합니다.",
             "각 gap_id를 가장 적절한 planner 하나에만 배정하세요.",
-            "tourapi_detail은 현재 실제 실행 가능한 KorService2 상세 보강 lane입니다.",
-            "visual_data, route_signal, theme_data는 Phase 12 전까지 future provider lane입니다.",
-            "의료관광 source family는 allow_medical_api가 false면 theme_data route는 만들 수 있지만 priority는 low로 두고 reason에 비활성이라고 쓰세요.",
+            "tourapi_detail은 실제 실행 가능한 KorService2 상세 보강 lane입니다.",
+            "visual_data는 Phase 12.1부터 사진 공모전/관광사진 feature flag가 켜진 경우 실제 실행 가능한 lane입니다.",
+            "route_signal은 Phase 12.2부터 feature flag와 서비스키가 있으면 실제 실행 가능한 lane입니다.",
+            "theme_data는 Phase 12.3부터 feature flag와 서비스키가 있으면 실제 실행 가능한 lane입니다.",
+            "의료관광 source family는 allow_medical_api가 false면 호출 대상으로 만들지 말고 비활성 route/skipped 이유를 남기세요.",
             "family_routes[].reason은 80자 이내, routing_reasoning은 240자 이내로 제한하세요.",
             "gap_report_summary.gaps에 없는 gap_id를 만들지 마세요.",
         ],
@@ -733,9 +801,15 @@ def build_api_family_planner_prompt(
         "출력_규칙": [
             "assigned_gaps에 있는 gap_id만 사용하세요.",
             "reason은 80자 이내, planning_reasoning은 240자 이내로 작성하세요.",
-            "tourapi_detail planner만 실제 planned_calls를 만들 수 있습니다.",
+            "tourapi_detail planner는 실제 planned_calls를 만들 수 있습니다.",
             "tourapi_detail planned call은 tool_name=kto_tour_detail_enrichment, operation=detailCommon2/detailIntro2/detailInfo2/detailImage2로 묶으세요.",
-            "다른 planner는 Phase 12 전까지 skipped_calls에 future_provider_not_implemented 또는 feature_flag_disabled로 남기세요.",
+            "visual_data planner는 KTO_TOURISM_PHOTO_ENABLED 또는 KTO_PHOTO_CONTEST_ENABLED가 켜진 source family에 대해서만 planned_calls를 만들 수 있습니다.",
+            "visual_data planned call은 kto_tourism_photo_search/gallerySearchList1 또는 kto_photo_contest_award_list/phokoAwrdList 중 하나를 사용하세요.",
+            "route_signal planner는 두루누비/연관관광지/수요/혼잡/지역수요 source family가 workflow_enabled이면 planned_calls를 만들 수 있습니다.",
+            "route_signal planned call은 kto_durunubi_course_list/courseList, kto_related_places_keyword/searchKeyword1, kto_related_places_area/areaBasedList1, kto_tourism_bigdata_locgo_visitors/locgoRegnVisitrDDList, kto_tourism_bigdata_metco_visitors/metcoRegnVisitrDDList, kto_attraction_crowding_forecast/tatsCnctrRatedList, kto_regional_tourism_demand_area/areaTarSvcDemList 중 하나를 사용하세요.",
+            "theme_data planner는 웰니스/반려동물/오디오/생태/의료 source family가 workflow_enabled이면 planned_calls를 만들 수 있습니다.",
+            "theme_data planned call은 kto_wellness_keyword_search/searchKeyword, kto_pet_keyword_search/searchKeyword2, kto_audio_story_search/storySearchList, kto_audio_theme_search/themeSearchList, kto_eco_area_search/areaBasedList1, kto_medical_keyword_search/searchKeyword 중 하나를 사용하세요.",
+            "의료관광은 allow_medical_api가 false이면 반드시 skipped_calls에 feature_flag_disabled로 남기세요.",
             "remaining_budget을 넘기지 마세요.",
         ],
     }
@@ -803,7 +877,7 @@ def build_evidence_fusion_prompt(
 ) -> str:
     context = {
         "역할": "EvidenceFusionAgent",
-        "목표": "보강된 후보별 근거를 Product/Marketing/QA가 바로 사용할 수 있는 candidate evidence card와 claim policy로 재구성합니다. 전체 raw evidence를 복사하지는 않되, 후보별로 상품화에 필요한 사실은 누락하지 않습니다.",
+        "목표": "코드가 이미 묶어 둔 후보별 근거를 재작성하지 말고, Product/Marketing/QA가 참고할 짧은 상품화 해석 델타와 claim policy만 작성합니다.",
         "base_evidence_summary": _compact_base_fusion_for_prompt(base_fusion),
         "retrieved_documents": [_compact_document(doc) for doc in retrieved_documents[:6]],
         "gap_summary": _compact_gap_report_for_router(gap_report),
@@ -815,11 +889,12 @@ def build_evidence_fusion_prompt(
             "수요/혼잡/연관 관광지 API는 보조 신호이며 예약/판매 가능성을 보장하지 않습니다.",
         ],
         "출력_규칙": [
-            "evidence_profile 전체나 entities 전체를 다시 출력하지 마세요.",
-            "productization_advice.candidate_evidence_cards를 반드시 작성하세요. base_evidence_summary.enriched_entities의 각 후보마다 card 1개를 만드세요.",
-            "각 candidate_evidence_card에는 content_id, title, evidence_strength, usable_facts, experience_hooks, recommended_product_angles, operational_unknowns, restricted_claims, evidence_document_ids를 포함하세요.",
-            "usable_facts는 후보별 최대 8개로 제한하되, overview/detail_intro/detail_info에서 상품화에 필요한 사실을 보존하세요. overview 전체를 그대로 복사하지 말고 의미 단위로 나누어 field/value/source 형식으로 쓰세요.",
-            "experience_hooks와 recommended_product_angles는 각각 최대 3개로 제한하세요. 정보가 부족한 후보는 insufficient_evidence로 표시하고 operational_unknowns를 명확히 쓰세요.",
+            "evidence_profile, entities, candidate_evidence_cards, usable_facts, visual_candidates, route_assets, signal_records, theme_candidates를 다시 출력하지 마세요.",
+            "각 후보의 원본 facts와 API 결과는 코드가 이미 보존합니다. 당신은 그 정보를 복사하지 말고 content_id/source_item_id로 참조하는 해석만 출력하세요.",
+            "productization_advice.candidate_interpretations에는 우선순위 판단이 필요한 후보만 최대 8개 작성하세요. 모든 후보를 반드시 다 쓰지 마세요.",
+            "각 candidate_interpretation에는 content_id, source_item_id, title, priority(high|medium|low), product_angle, rationale, experience_hooks, recommended_product_angles, use_with_caution만 넣으세요.",
+            "experience_hooks, recommended_product_angles, use_with_caution은 각각 최대 3개, 각 문장은 80자 이내로 제한하세요.",
+            "productization_advice.global_claim_policy에는 전체 run에 적용할 allowed, needs_review, forbidden_without_evidence를 짧게 작성하세요.",
             "candidate_recommendations는 전체 우선순위 판단용으로 최대 8개만 작성하세요.",
             "unresolved_gaps는 아직 남아 있는 핵심 gap만 요약하세요.",
             "ui_highlights는 사용자에게 보여줄 3~5개 요약만 작성하세요.",
@@ -838,16 +913,31 @@ def normalize_gap_profile_payload(
     *,
     source_items: list[Any],
     retrieved_documents: list[dict[str, Any]] | None = None,
+    normalized_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_item_ids = {str(_get(item, "id")) for item in source_items if _get(item, "id")}
+    source_item_id_by_content_id = {
+        str(_get(item, "content_id")): str(_get(item, "id"))
+        for item in source_items
+        if _get(item, "content_id") and _get(item, "id")
+    }
     gaps: list[dict[str, Any]] = []
     for raw_gap in payload.get("gaps") or []:
         if not isinstance(raw_gap, dict):
             continue
         gap_type = str(raw_gap.get("gap_type") or "")
+        gap_type = GAP_TYPE_ALIASES.get(gap_type, gap_type)
         if gap_type not in GAP_TYPES:
             continue
+        target_content_id = _string_or_none(raw_gap.get("target_content_id")) or _content_id_from_entity_id(
+            raw_gap.get("target_entity_id")
+        )
         target_item_id = str(raw_gap.get("target_item_id") or "")
+        mapped_item_id = source_item_id_by_content_id.get(target_content_id or "", "")
+        if not target_item_id and mapped_item_id:
+            target_item_id = mapped_item_id
+        if target_item_id and target_item_id not in source_item_ids and mapped_item_id:
+            target_item_id = mapped_item_id
         if target_item_id and target_item_id not in source_item_ids:
             continue
         gap_id = str(raw_gap.get("id") or f"gap:{gap_type}:{target_item_id or 'request'}")
@@ -858,7 +948,7 @@ def normalize_gap_profile_payload(
                 "severity": _normalize_severity(raw_gap.get("severity")),
                 "reason": str(raw_gap.get("reason") or "근거가 부족해 운영자 확인이 필요합니다."),
                 "target_entity_id": _string_or_none(raw_gap.get("target_entity_id")),
-                "target_content_id": _string_or_none(raw_gap.get("target_content_id")),
+                "target_content_id": target_content_id,
                 "target_item_id": target_item_id or None,
                 "source_item_title": _string_or_none(raw_gap.get("source_item_title")),
                 "suggested_source_family": str(raw_gap.get("suggested_source_family") or "kto_tourapi_kor"),
@@ -866,14 +956,19 @@ def normalize_gap_profile_payload(
                 "productization_impact": str(raw_gap.get("productization_impact") or ""),
             }
         )
-    gaps = _dedupe_gaps(gaps)
+    gaps = _merge_required_request_level_gaps(
+        gaps,
+        source_items=source_items,
+        normalized_request=normalized_request or {},
+    )
+    gaps = _prioritize_gaps(_dedupe_gaps(gaps))[:DATA_GAP_PROFILE_MAX_GAPS]
     coverage = _normalize_coverage(payload.get("coverage"), source_items, gaps)
     return {
         "gaps": gaps,
         "coverage": coverage,
         "retrieved_document_count": len(retrieved_documents or []),
         "reasoning_summary": str(payload.get("reasoning_summary") or ""),
-        "needs_review": _string_list(payload.get("needs_review")),
+        "needs_review": _string_list(payload.get("needs_review"))[:DATA_GAP_PROFILE_MAX_NEEDS_REVIEW],
         "summary": {
             "total_gaps": len(gaps),
             "high_severity_gaps": sum(1 for gap in gaps if gap["severity"] == "high"),
@@ -1065,6 +1160,102 @@ def plan_family_deterministic(
             "planner": planner_key,
             "planning_reasoning": "KorService2 상세/이미지 보강으로 실행 가능한 gap만 계획했습니다.",
         }
+    if planner_key == "visual_data":
+        remaining_budget = max(0, max_budget - existing_planned_count)
+        planned_calls: list[dict[str, Any]] = []
+        skipped_calls: list[dict[str, Any]] = []
+        for gap in assigned_gaps:
+            source_family = _visual_source_family_for_gap(gap, settings)
+            if not source_family:
+                skipped_calls.append(
+                    _skipped_call(
+                        gap,
+                        str(gap.get("suggested_source_family") or "kto_tourism_photo"),
+                        "feature_flag_disabled",
+                    )
+                )
+                continue
+            if len(planned_calls) >= remaining_budget:
+                skipped_calls.append(_skipped_call(gap, source_family, "max_call_budget_exceeded"))
+                continue
+            planned_calls.append(_planned_visual_call(gap, source_family, len(planned_calls) + 1))
+        return {
+            "planner": planner_key,
+            "max_call_budget": max_budget,
+            "planned_calls": planned_calls,
+            "skipped_calls": skipped_calls,
+            "budget_summary": {
+                "planned": len(planned_calls),
+                "skipped": len(skipped_calls),
+                "budget_remaining": max(0, max_budget - existing_planned_count - len(planned_calls)),
+            },
+            "planning_reasoning": "활성화된 Visual API source family만 이미지 후보 보강 대상으로 계획했습니다.",
+            "summary": {"planned": len(planned_calls), "skipped": len(skipped_calls)},
+        }
+    if planner_key == "route_signal":
+        remaining_budget = max(0, max_budget - existing_planned_count)
+        planned_calls = []
+        skipped_calls = []
+        for gap in assigned_gaps:
+            source_family = _route_signal_source_family_for_gap(gap, settings)
+            if not source_family:
+                skipped_calls.append(
+                    _skipped_call(
+                        gap,
+                        str(gap.get("suggested_source_family") or "kto_related_places"),
+                        "feature_flag_disabled",
+                    )
+                )
+                continue
+            if len(planned_calls) >= remaining_budget:
+                skipped_calls.append(_skipped_call(gap, source_family, "max_call_budget_exceeded"))
+                continue
+            planned_calls.append(_planned_route_signal_call(gap, source_family, len(planned_calls) + 1))
+        return {
+            "planner": planner_key,
+            "max_call_budget": max_budget,
+            "planned_calls": planned_calls,
+            "skipped_calls": skipped_calls,
+            "budget_summary": {
+                "planned": len(planned_calls),
+                "skipped": len(skipped_calls),
+                "budget_remaining": max(0, max_budget - existing_planned_count - len(planned_calls)),
+            },
+            "planning_reasoning": "활성화된 route/signal API source family만 동선·수요 보조 근거 대상으로 계획했습니다.",
+            "summary": {"planned": len(planned_calls), "skipped": len(skipped_calls)},
+        }
+    if planner_key == "theme_data":
+        remaining_budget = max(0, max_budget - existing_planned_count)
+        planned_calls = []
+        skipped_calls = []
+        for gap in assigned_gaps:
+            source_family = _theme_source_family_for_gap(gap, settings)
+            if not source_family:
+                skipped_calls.append(
+                    _skipped_call(
+                        gap,
+                        str(gap.get("suggested_source_family") or _source_family_for_future_gap(gap)),
+                        "feature_flag_disabled",
+                    )
+                )
+                continue
+            if len(planned_calls) >= remaining_budget:
+                skipped_calls.append(_skipped_call(gap, source_family, "max_call_budget_exceeded"))
+                continue
+            planned_calls.append(_planned_theme_call(gap, source_family, len(planned_calls) + 1))
+        return {
+            "planner": planner_key,
+            "max_call_budget": max_budget,
+            "planned_calls": planned_calls,
+            "skipped_calls": skipped_calls,
+            "budget_summary": {
+                "planned": len(planned_calls),
+                "skipped": len(skipped_calls),
+                "budget_remaining": max(0, max_budget - existing_planned_count - len(planned_calls)),
+            },
+            "planning_reasoning": "활성화된 Theme API source family만 테마 보조 근거 대상으로 계획했습니다.",
+            "summary": {"planned": len(planned_calls), "skipped": len(skipped_calls)},
+        }
     skipped = [
         _skipped_call(
             gap,
@@ -1121,7 +1312,9 @@ def normalize_family_planner_payload(
         representative_gap = gaps_by_id[gap_ids[0]]
         source_family = str(raw_call.get("source_family") or "")
         capability = capabilities.get(source_family) or {}
-        if planner_key != "tourapi_detail" or not _can_execute_workflow_call(raw_call, capability):
+        if not _can_execute_workflow_call(raw_call, capability):
+            if _executable_source_family_for_planner_gap(planner_key, representative_gap, settings):
+                continue
             skipped_calls.append(
                 _skipped_call(
                     representative_gap,
@@ -1143,6 +1336,8 @@ def normalize_family_planner_payload(
         for gap_id in gap_ids[:8]:
             gap = gaps_by_id[gap_id]
             source_family = str(raw_call.get("source_family") or gap.get("suggested_source_family") or _source_family_for_future_gap(gap))
+            if _executable_source_family_for_planner_gap(planner_key, gap, settings):
+                continue
             skipped = _skipped_call(
                 gap,
                 source_family,
@@ -1161,6 +1356,45 @@ def normalize_family_planner_payload(
             continue
         if planner_key == "tourapi_detail" and len(planned_calls) < remaining_budget and _is_detail_gap(gap):
             planned_calls.append(_planned_detail_call(gap, len(planned_calls) + 1))
+        elif planner_key == "visual_data":
+            source_family = _visual_source_family_for_gap(gap, settings)
+            if source_family and len(planned_calls) < remaining_budget:
+                planned_calls.append(_planned_visual_call(gap, source_family, len(planned_calls) + 1))
+            else:
+                reason = "max_call_budget_exceeded" if source_family else "feature_flag_disabled"
+                skipped_calls.append(
+                    _skipped_call(
+                        gap,
+                        source_family or str(gap.get("suggested_source_family") or "kto_tourism_photo"),
+                        reason,
+                    )
+                )
+        elif planner_key == "route_signal":
+            source_family = _route_signal_source_family_for_gap(gap, settings)
+            if source_family and len(planned_calls) < remaining_budget:
+                planned_calls.append(_planned_route_signal_call(gap, source_family, len(planned_calls) + 1))
+            else:
+                reason = "max_call_budget_exceeded" if source_family else "feature_flag_disabled"
+                skipped_calls.append(
+                    _skipped_call(
+                        gap,
+                        source_family or str(gap.get("suggested_source_family") or _source_family_for_future_gap(gap)),
+                        reason,
+                    )
+                )
+        elif planner_key == "theme_data":
+            source_family = _theme_source_family_for_gap(gap, settings)
+            if source_family and len(planned_calls) < remaining_budget:
+                planned_calls.append(_planned_theme_call(gap, source_family, len(planned_calls) + 1))
+            else:
+                reason = "max_call_budget_exceeded" if source_family else "feature_flag_disabled"
+                skipped_calls.append(
+                    _skipped_call(
+                        gap,
+                        source_family or str(gap.get("suggested_source_family") or _source_family_for_future_gap(gap)),
+                        reason,
+                    )
+                )
         else:
             reason = "max_call_budget_exceeded" if planner_key == "tourapi_detail" else _future_skip_reason_for_gap(gap, settings)
             skipped_calls.append(_skipped_call(gap, str(gap.get("suggested_source_family") or _source_family_for_future_gap(gap)), reason))
@@ -1489,6 +1723,9 @@ def execute_enrichment_plan(
     *,
     db: Session,
     provider: TourismDataProvider,
+    visual_provider: VisualDataProvider | None = None,
+    route_signal_provider: RouteSignalProvider | None = None,
+    theme_provider: ThemeDataProvider | None = None,
     enrichment_run: models.EnrichmentRun,
     source_items: list[dict[str, Any]],
     run_id: str,
@@ -1500,6 +1737,10 @@ def execute_enrichment_plan(
     failed: list[dict[str, Any]] = []
     enriched_item_ids: set[str] = set()
     indexed_documents = 0
+    visual_asset_count = 0
+    route_asset_count = 0
+    signal_record_count = 0
+    theme_candidate_count = 0
 
     for plan_call in enrichment_run.plan.get("planned_calls") or []:
         started = time.perf_counter()
@@ -1513,31 +1754,77 @@ def execute_enrichment_plan(
         try:
             item_id = str(plan_call.get("target_item_id") or "")
             source_item = item_by_id.get(item_id)
-            if not source_item:
-                model_item = db.get(models.TourismItem, item_id)
-            else:
-                model_item = db.get(models.TourismItem, item_id)
-            if not model_item:
-                raise ValueError(f"Tourism item not found for enrichment: {item_id}")
-
-            result = enrich_items_with_tourapi_details(
+            source_family = str(plan_call.get("source_family") or "")
+            model_item = _resolve_model_item_for_plan_call(
                 db=db,
-                provider=provider,
-                items=[model_item],
-                run_id=run_id,
-                step_id=step_id,
-                limit=1,
+                plan_call=plan_call,
+                source_item=source_item,
+                source_items=source_items,
+                allow_fallback=source_family in {*ROUTE_SIGNAL_SOURCE_FAMILIES, *THEME_SOURCE_FAMILIES},
             )
-            documents = upsert_source_documents_from_items(db, result["items"])
-            indexed_documents += index_source_documents(db, documents)
-            enriched_item_ids.update(item.id for item in result["items"])
-            summary = {
-                "enriched_items": result["summary"]["enriched_items"],
-                "visual_assets": result["summary"]["visual_assets"],
-                "source_documents": len(documents),
-                "reason": plan_call.get("reason"),
-                "expected_ui": plan_call.get("expected_ui"),
-            }
+            if not model_item:
+                lookup_value = item_id or _plan_call_content_id(plan_call)
+                raise ValueError(f"Tourism item not found for enrichment: {lookup_value}")
+            if source_family in VISUAL_SOURCE_FAMILIES:
+                summary = execute_visual_search(
+                    db=db,
+                    provider=visual_provider or get_visual_provider(),
+                    plan_call=plan_call,
+                    target_item=model_item,
+                    run_id=run_id,
+                    step_id=step_id,
+                )
+                indexed_documents += int(summary.get("indexed_documents") or 0)
+                visual_asset_count += int(summary.get("visual_assets") or 0)
+                enriched_item_ids.add(model_item.id)
+            elif source_family in ROUTE_SIGNAL_SOURCE_FAMILIES:
+                summary = execute_route_signal_search(
+                    db=db,
+                    provider=route_signal_provider or get_route_signal_provider(),
+                    plan_call=plan_call,
+                    target_item=model_item,
+                    fallback_source_item_id=str(plan_call.get("id") or "route_signal"),
+                    run_id=run_id,
+                    step_id=step_id,
+                )
+                indexed_documents += int(summary.get("indexed_documents") or 0)
+                route_asset_count += int(summary.get("route_assets") or 0)
+                signal_record_count += int(summary.get("signal_records") or 0)
+                enriched_item_ids.add(model_item.id)
+            elif source_family in THEME_SOURCE_FAMILIES:
+                summary = execute_theme_search(
+                    db=db,
+                    provider=theme_provider or get_theme_provider(),
+                    plan_call=plan_call,
+                    target_item=model_item,
+                    fallback_source_item_id=str(plan_call.get("id") or "theme_data"),
+                    run_id=run_id,
+                    step_id=step_id,
+                )
+                indexed_documents += int(summary.get("indexed_documents") or 0)
+                visual_asset_count += int(summary.get("visual_assets") or 0)
+                theme_candidate_count += int(summary.get("theme_entities") or summary.get("theme_candidates_found") or 0)
+                enriched_item_ids.add(model_item.id)
+            else:
+                result = enrich_items_with_tourapi_details(
+                    db=db,
+                    provider=provider,
+                    items=[model_item],
+                    run_id=run_id,
+                    step_id=step_id,
+                    limit=1,
+                )
+                documents = upsert_source_documents_from_items(db, result["items"])
+                indexed_documents += index_source_documents(db, documents)
+                enriched_item_ids.update(item.id for item in result["items"])
+                visual_asset_count += int(result["summary"]["visual_assets"] or 0)
+                summary = {
+                    "enriched_items": result["summary"]["enriched_items"],
+                    "visual_assets": result["summary"]["visual_assets"],
+                    "source_documents": len(documents),
+                    "reason": plan_call.get("reason"),
+                    "expected_ui": plan_call.get("expected_ui"),
+                }
             tool_record.status = "succeeded"
             tool_record.response_summary = summary
             tool_record.latency_ms = int((time.perf_counter() - started) * 1000)
@@ -1574,6 +1861,10 @@ def execute_enrichment_plan(
         "failed_calls": len(failed),
         "enriched_item_ids": sorted(enriched_item_ids),
         "indexed_documents": indexed_documents,
+        "visual_assets": visual_asset_count,
+        "route_assets": route_asset_count,
+        "signal_records": signal_record_count,
+        "theme_candidates": theme_candidate_count,
         "executed": executed,
         "skipped": skipped,
         "failed": failed,
@@ -1609,10 +1900,25 @@ def fuse_evidence(
         item = stored_items.get(item_id)
         item_payload = _model_item_to_payload(item) if item else raw_item
         item_gaps = [gap for gap in gap_report.get("gaps") or [] if gap.get("target_item_id") == item_id]
-        unresolved = [gap for gap in item_gaps if not _gap_resolved(gap, item_payload)]
-        unresolved_gaps.extend(unresolved)
         doc_ids = [doc.id for doc in documents_by_item.get(item_id, [])]
         detail_facts = _detail_facts_from_payload(item_payload)
+        visual_assets = _visual_assets_for_item(db, item_payload)
+        route_assets = _route_assets_for_item(db, item_payload)
+        signal_records = _signal_records_for_item(db, item_payload)
+        theme_candidates = _theme_candidates_for_item(db, item_payload)
+        unresolved = [
+            gap
+            for gap in item_gaps
+            if not _gap_resolved(
+                gap,
+                item_payload,
+                visual_asset_count=len(visual_assets),
+                route_asset_count=len(route_assets),
+                signal_records=signal_records,
+                theme_candidates=theme_candidates,
+            )
+        ]
+        unresolved_gaps.extend(unresolved)
         entities.append(
             {
                 "entity_id": f"entity:tourapi:content:{item_payload.get('content_id')}",
@@ -1623,7 +1929,14 @@ def fuse_evidence(
                 "address": item_payload.get("address"),
                 "evidence_document_ids": doc_ids,
                 "detail_available": _has_detail_info(item_payload),
-                "visual_asset_count": _visual_asset_count(db, item_payload),
+                "visual_asset_count": len(visual_assets),
+                "visual_candidates": _compact_visual_assets(visual_assets),
+                "route_asset_count": len(route_assets),
+                "route_assets": _compact_route_assets(route_assets),
+                "signal_record_count": len(signal_records),
+                "signal_records": _compact_signal_records(signal_records),
+                "theme_candidate_count": len(theme_candidates),
+                "theme_candidates": _compact_theme_candidates(theme_candidates),
                 "source_confidence": _source_confidence(item_payload, unresolved),
                 "unresolved_gap_types": sorted({gap["gap_type"] for gap in unresolved}),
                 "key_facts": {
@@ -1763,12 +2076,17 @@ def _theme_gap(source_items: list[Any], normalized_request: dict[str, Any]) -> d
         str(value or "")
         for value in [
             normalized_request.get("message"),
+            normalized_request.get("user_intent"),
             " ".join(normalized_request.get("preferred_themes") or []),
+            " ".join(normalized_request.get("evidence_requirements") or []),
         ]
     )
     for token, source_family in THEME_SOURCE_HINTS.items():
         if token not in text:
             continue
+        geo_scope = normalized_request.get("geo_scope") if isinstance(normalized_request.get("geo_scope"), dict) else {}
+        locations = geo_scope.get("locations") if isinstance(geo_scope.get("locations"), list) else []
+        first_location = locations[0] if locations and isinstance(locations[0], dict) else {}
         return {
             "id": f"gap:missing_theme_specific_data:{source_family}",
             "gap_type": "missing_theme_specific_data",
@@ -1779,9 +2097,52 @@ def _theme_gap(source_items: list[Any], normalized_request: dict[str, Any]) -> d
             "target_item_id": None,
             "source_item_title": None,
             "suggested_source_family": source_family,
+            "search_keyword": token,
+            "ldong_regn_cd": first_location.get("ldong_regn_cd"),
+            "ldong_signgu_cd": first_location.get("ldong_signgu_cd"),
             "needs_review": True,
         }
     return None
+
+
+def _merge_required_request_level_gaps(
+    gaps: list[dict[str, Any]],
+    *,
+    source_items: list[Any],
+    normalized_request: dict[str, Any],
+) -> list[dict[str, Any]]:
+    merged = list(gaps)
+    required = [
+        gap
+        for gap in [
+            _route_gap(source_items, normalized_request),
+            _theme_gap(source_items, normalized_request),
+        ]
+        if gap
+    ]
+    existing_ids = {str(gap.get("id") or "") for gap in merged}
+    existing_theme_families = {
+        str(gap.get("suggested_source_family") or "")
+        for gap in merged
+        if str(gap.get("gap_type") or "") in THEME_GAP_TYPES
+    }
+    existing_route_types = {
+        str(gap.get("gap_type") or "")
+        for gap in merged
+        if str(gap.get("gap_type") or "") in ROUTE_SIGNAL_GAP_TYPES
+    }
+    for gap in required:
+        gap_id = str(gap.get("id") or "")
+        gap_type = str(gap.get("gap_type") or "")
+        family = str(gap.get("suggested_source_family") or "")
+        if gap_id in existing_ids:
+            continue
+        if gap_type in THEME_GAP_TYPES and family in existing_theme_families:
+            continue
+        if gap_type in ROUTE_SIGNAL_GAP_TYPES and gap_type in existing_route_types:
+            continue
+        merged.append(gap)
+    return merged
 
 
 def _dedupe_gaps(gaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1793,6 +2154,27 @@ def _dedupe_gaps(gaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(gap["id"])
         deduped.append(gap)
     return deduped
+
+
+def _prioritize_gaps(gaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    indexed = list(enumerate(gaps))
+    indexed.sort(
+        key=lambda row: (
+            severity_rank.get(str(row[1].get("severity") or ""), 3),
+            0 if _is_request_strategy_gap(row[1]) else 1,
+            0 if row[1].get("target_item_id") or row[1].get("target_content_id") else 1,
+            row[0],
+        )
+    )
+    return [gap for _, gap in indexed]
+
+
+def _is_request_strategy_gap(gap: dict[str, Any]) -> bool:
+    gap_type = str(gap.get("gap_type") or "")
+    return not (gap.get("target_item_id") or gap.get("target_content_id")) and (
+        gap_type in THEME_GAP_TYPES or gap_type in ROUTE_SIGNAL_GAP_TYPES
+    )
 
 
 def _coverage_summary(source_items: list[Any], gaps: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1824,8 +2206,11 @@ def _source_family_for_future_gap(gap: dict[str, Any]) -> str:
 
 
 def _planner_for_gap(gap: dict[str, Any], settings: Settings | None = None) -> str:
+    settings = settings or get_settings()
     gap_type = str(gap.get("gap_type") or "")
     source_family = _source_family_for_future_gap(gap)
+    if gap_type in VISUAL_GAP_TYPES and _visual_enabled_families(settings):
+        return "visual_data"
     if source_family == "kto_tourapi_kor" and gap_type in DETAIL_GAP_TYPES:
         if gap.get("target_item_id") or gap.get("target_content_id"):
             return "tourapi_detail"
@@ -1890,7 +2275,31 @@ def _future_skip_reason_for_gap(gap: dict[str, Any], settings: Settings) -> str:
     source_family = _source_family_for_future_gap(gap)
     if source_family == "kto_medical" and not settings.allow_medical_api:
         return "feature_flag_disabled"
+    if source_family in ROUTE_SIGNAL_SOURCE_FAMILIES and source_family not in _route_signal_enabled_families(settings):
+        return "feature_flag_disabled"
+    if source_family in THEME_SOURCE_FAMILIES and source_family not in _theme_enabled_families(settings):
+        return "feature_flag_disabled"
+    if source_family == "kto_tourism_photo" and not settings.kto_tourism_photo_enabled:
+        return "feature_flag_disabled"
+    if source_family == "kto_photo_contest" and not settings.kto_photo_contest_enabled:
+        return "feature_flag_disabled"
+    if str(gap.get("gap_type") or "") in VISUAL_GAP_TYPES and not _visual_enabled_families(settings):
+        return "feature_flag_disabled"
+    if str(gap.get("gap_type") or "") in ROUTE_SIGNAL_GAP_TYPES and not _route_signal_enabled_families(settings):
+        return "feature_flag_disabled"
+    if str(gap.get("gap_type") or "") in THEME_GAP_TYPES and not _theme_enabled_families(settings):
+        return "feature_flag_disabled"
     return "future_provider_not_implemented"
+
+
+def _executable_source_family_for_planner_gap(planner_key: str, gap: dict[str, Any], settings: Settings) -> str | None:
+    if planner_key == "visual_data":
+        return _visual_source_family_for_gap(gap, settings)
+    if planner_key == "route_signal":
+        return _route_signal_source_family_for_gap(gap, settings)
+    if planner_key == "theme_data":
+        return _theme_source_family_for_gap(gap, settings)
+    return None
 
 
 def _skipped_call(
@@ -1942,6 +2351,95 @@ def _planned_detail_call(gap: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
+def _planned_visual_call(gap: dict[str, Any], source_family: str, index: int) -> dict[str, Any]:
+    gap_id = str(gap.get("id") or f"gap:visual:{index}")
+    query = str(gap.get("source_item_title") or gap.get("target_content_id") or gap.get("target_item_id") or "").strip()
+    tool_name = _visual_tool_name(source_family)
+    operation = _visual_operation(source_family)
+    return {
+        "id": f"plan:visual_data:{source_family}:{index}",
+        "status": "planned",
+        "source_family": source_family,
+        "tool_name": tool_name,
+        "operation": operation,
+        "gap_ids": [gap_id],
+        "gap_types": [str(gap.get("gap_type") or "missing_image_asset")],
+        "target_item_id": gap.get("target_item_id"),
+        "target_content_id": gap.get("target_content_id"),
+        "target_entity_id": gap.get("target_entity_id"),
+        "reason": "Visual API로 이미지 후보를 조회하고 사용권 확인 필요 상태로 저장합니다.",
+        "expected_ui": "Evidence와 Product card에 이미지 후보/사용권 확인 필요 상태로 표시합니다.",
+        "arguments": {
+            "item_id": gap.get("target_item_id"),
+            "content_id": gap.get("target_content_id"),
+            "query": query,
+            "limit": 5,
+        },
+    }
+
+
+def _planned_route_signal_call(gap: dict[str, Any], source_family: str, index: int) -> dict[str, Any]:
+    gap_id = str(gap.get("id") or f"gap:route_signal:{index}")
+    query = str(gap.get("source_item_title") or gap.get("target_content_id") or gap.get("target_item_id") or "").strip()
+    tool_name = _route_signal_tool_name(source_family, gap)
+    operation = _route_signal_operation(source_family, gap)
+    return {
+        "id": f"plan:route_signal:{source_family}:{index}",
+        "status": "planned",
+        "source_family": source_family,
+        "tool_name": tool_name,
+        "operation": operation,
+        "gap_ids": [gap_id],
+        "gap_types": [str(gap.get("gap_type") or "missing_route_context")],
+        "target_item_id": gap.get("target_item_id"),
+        "target_content_id": gap.get("target_content_id"),
+        "target_entity_id": gap.get("target_entity_id"),
+        "reason": "Route/Signal API로 동선·연관 장소·수요/혼잡 보조 근거를 조회합니다.",
+        "expected_ui": "Evidence와 Data Coverage에 보조 신호로 표시하고 판매량/예약/안전 보장 claim은 제한합니다.",
+        "arguments": {
+            "item_id": gap.get("target_item_id"),
+            "content_id": gap.get("target_content_id"),
+            "query": query,
+            "limit": 5,
+        },
+    }
+
+
+def _planned_theme_call(gap: dict[str, Any], source_family: str, index: int) -> dict[str, Any]:
+    gap_id = str(gap.get("id") or f"gap:theme:{index}")
+    query = str(
+        gap.get("search_keyword")
+        or gap.get("source_item_title")
+        or gap.get("target_content_id")
+        or gap.get("reason")
+        or ""
+    ).strip()
+    tool_name = _theme_tool_name(source_family)
+    operation = _theme_operation(source_family)
+    return {
+        "id": f"plan:theme_data:{source_family}:{index}",
+        "status": "planned",
+        "source_family": source_family,
+        "tool_name": tool_name,
+        "operation": operation,
+        "gap_ids": [gap_id],
+        "gap_types": [str(gap.get("gap_type") or "missing_theme_specific_data")],
+        "target_item_id": gap.get("target_item_id"),
+        "target_content_id": gap.get("target_content_id"),
+        "target_entity_id": gap.get("target_entity_id"),
+        "reason": "Theme API로 테마 후보와 운영자 확인 필요 항목을 조회합니다.",
+        "expected_ui": "Evidence와 Product card에 테마 후보/운영자 확인 필요 상태로 표시합니다.",
+        "arguments": {
+            "item_id": gap.get("target_item_id"),
+            "content_id": gap.get("target_content_id"),
+            "query": query,
+            "ldong_regn_cd": gap.get("ldong_regn_cd"),
+            "ldong_signgu_cd": gap.get("ldong_signgu_cd"),
+            "limit": 5,
+        },
+    }
+
+
 def _skipped_from_plan_call(call: dict[str, Any], planner: str, reason: str) -> dict[str, Any]:
     return {
         **call,
@@ -1955,13 +2453,18 @@ def _skipped_from_plan_call(call: dict[str, Any], planner: str, reason: str) -> 
 
 def _future_tool_name(source_family: str) -> str:
     return {
+        "kto_tourism_photo": "kto_tourism_photo_search",
+        "kto_photo_contest": "kto_photo_contest_award_list",
         "kto_related_places": "kto_related_places_area",
         "kto_durunubi": "kto_durunubi_course_list",
+        "kto_tourism_bigdata": "kto_tourism_bigdata_locgo_visitors",
+        "kto_crowding_forecast": "kto_attraction_crowding_forecast",
+        "kto_regional_tourism_demand": "kto_regional_tourism_demand_area",
         "kto_medical": "kto_medical_keyword_search",
-        "kto_pet": "kto_pet_area_search",
+        "kto_pet": "kto_pet_keyword_search",
         "kto_wellness": "kto_wellness_keyword_search",
-        "kto_audio": "kto_audio_keyword_search",
-        "kto_eco": "kto_eco_tourism_search",
+        "kto_audio": "kto_audio_story_search",
+        "kto_eco": "kto_eco_area_search",
     }.get(source_family, f"{source_family}_future")
 
 
@@ -1987,6 +2490,57 @@ def _create_enrichment_tool_call(
     db.commit()
     db.refresh(tool_record)
     return tool_record
+
+
+def _resolve_model_item_for_plan_call(
+    *,
+    db: Session,
+    plan_call: dict[str, Any],
+    source_item: dict[str, Any] | None,
+    source_items: list[dict[str, Any]],
+    allow_fallback: bool,
+) -> models.TourismItem | None:
+    item_id = str(plan_call.get("target_item_id") or _plan_call_arguments(plan_call).get("item_id") or "")
+    if item_id:
+        return db.get(models.TourismItem, item_id)
+    if source_item and source_item.get("id"):
+        return db.get(models.TourismItem, str(source_item["id"]))
+    content_id = _plan_call_content_id(plan_call)
+    if content_id:
+        for raw_item in source_items:
+            if str(raw_item.get("content_id") or "") != content_id:
+                continue
+            candidate_id = str(raw_item.get("id") or "")
+            if candidate_id:
+                model_item = db.get(models.TourismItem, candidate_id)
+                if model_item:
+                    return model_item
+        return (
+            db.query(models.TourismItem)
+            .filter(models.TourismItem.content_id == content_id)
+            .order_by(models.TourismItem.updated_at.desc())
+            .first()
+        )
+    if not allow_fallback:
+        return None
+    for raw_item in source_items:
+        candidate_id = str(raw_item.get("id") or "")
+        if not candidate_id:
+            continue
+        model_item = db.get(models.TourismItem, candidate_id)
+        if model_item:
+            return model_item
+    return None
+
+
+def _plan_call_arguments(plan_call: dict[str, Any]) -> dict[str, Any]:
+    arguments = plan_call.get("arguments")
+    return arguments if isinstance(arguments, dict) else {}
+
+
+def _plan_call_content_id(plan_call: dict[str, Any]) -> str:
+    content_id = str(plan_call.get("target_content_id") or _plan_call_arguments(plan_call).get("content_id") or "")
+    return content_id.strip()
 
 
 def _documents_by_item(
@@ -2043,31 +2597,184 @@ def _model_item_to_payload(item: models.TourismItem) -> dict[str, Any]:
     }
 
 
-def _gap_resolved(gap: dict[str, Any], item: Any) -> bool:
+def _gap_resolved(
+    gap: dict[str, Any],
+    item: Any,
+    *,
+    visual_asset_count: int = 0,
+    route_asset_count: int = 0,
+    signal_records: list[models.TourismSignalRecord] | None = None,
+    theme_candidates: list[models.SourceDocument] | None = None,
+) -> bool:
     gap_type = gap.get("gap_type")
+    signal_types = {record.signal_type for record in signal_records or []}
+    theme_source_families = {
+        str((candidate.document_metadata or {}).get("theme_source_family") or candidate.source)
+        for candidate in theme_candidates or []
+    }
     if gap_type == "missing_detail_info":
         return _has_detail_info(item)
     if gap_type == "missing_image_asset":
-        return _has_image_asset(item)
+        return _has_image_asset(item) or visual_asset_count > 0
     if gap_type == "missing_operating_hours":
         return _text_has_any(item, ("이용시간", "운영시간", "usetime", "opentime", "이용 시간"))
     if gap_type == "missing_price_or_fee":
         return _text_has_any(item, ("요금", "입장료", "가격", "이용료", "usefee", "fee"))
     if gap_type == "missing_booking_info":
         return _text_has_any(item, ("예약", "예매", "booking", "reservation"))
+    if gap_type == "missing_route_context":
+        return route_asset_count > 0 or "related_places" in signal_types
+    if gap_type == "missing_related_places":
+        return "related_places" in signal_types
+    if gap_type == "missing_demand_signal":
+        return bool({"visitor_demand", "regional_service_demand", "regional_culture_resource_demand"} & signal_types)
+    if gap_type == "missing_crowding_signal":
+        return "crowding_forecast" in signal_types
+    if gap_type == "missing_regional_demand_signal":
+        return bool({"regional_service_demand", "regional_culture_resource_demand"} & signal_types)
+    if gap_type == "missing_theme_specific_data":
+        return bool(theme_source_families)
+    if gap_type == "missing_pet_policy":
+        return "kto_pet" in theme_source_families
+    if gap_type == "missing_wellness_attributes":
+        return "kto_wellness" in theme_source_families
+    if gap_type == "missing_story_asset":
+        return "kto_audio" in theme_source_families
+    if gap_type == "missing_multilingual_story":
+        return "kto_audio" in theme_source_families
+    if gap_type == "missing_sustainability_context":
+        return "kto_eco" in theme_source_families
+    if gap_type == "missing_medical_context":
+        return "kto_medical" in theme_source_families
     return False
 
 
 def _visual_asset_count(db: Session, item: dict[str, Any]) -> int:
+    return len(_visual_assets_for_item(db, item))
+
+
+def _visual_assets_for_item(db: Session, item: dict[str, Any]) -> list[models.TourismVisualAsset]:
+    content_id = item.get("content_id")
+    item_id = item.get("id")
+    filters = []
+    if content_id:
+        filters.append(models.TourismVisualAsset.entity_id == f"entity:tourapi:content:{content_id}")
+    if item_id:
+        filters.append(models.TourismVisualAsset.source_item_id == str(item_id))
+    if not filters:
+        return []
+    assets = db.query(models.TourismVisualAsset).filter(or_(*filters)).all()
+    deduped: dict[str, models.TourismVisualAsset] = {}
+    for asset in assets:
+        deduped[asset.id] = asset
+    return list(deduped.values())
+
+
+def _compact_visual_assets(assets: list[models.TourismVisualAsset]) -> list[dict[str, Any]]:
+    return [
+        {
+            "visual_asset_id": asset.id,
+            "source_family": asset.source_family,
+            "title": asset.title,
+            "image_url": asset.image_url,
+            "thumbnail_url": asset.thumbnail_url,
+            "shooting_place": asset.shooting_place,
+            "shooting_date": asset.shooting_date,
+            "photographer": asset.photographer,
+            "keywords": asset.keywords or [],
+            "license_type": asset.license_type,
+            "license_note": asset.license_note,
+            "usage_status": asset.usage_status,
+        }
+        for asset in assets[:5]
+    ]
+
+
+def _route_assets_for_item(db: Session, item: dict[str, Any]) -> list[models.TourismRouteAsset]:
     content_id = item.get("content_id")
     if not content_id:
-        return 0
-    entity_id = f"entity:tourapi:content:{content_id}"
+        return []
     return (
-        db.query(models.TourismVisualAsset)
-        .filter(models.TourismVisualAsset.entity_id == entity_id)
-        .count()
+        db.query(models.TourismRouteAsset)
+        .filter(models.TourismRouteAsset.entity_id == f"entity:tourapi:content:{content_id}")
+        .all()
     )
+
+
+def _signal_records_for_item(db: Session, item: dict[str, Any]) -> list[models.TourismSignalRecord]:
+    content_id = item.get("content_id")
+    if not content_id:
+        return []
+    return (
+        db.query(models.TourismSignalRecord)
+        .filter(models.TourismSignalRecord.entity_id == f"entity:tourapi:content:{content_id}")
+        .all()
+    )
+
+
+def _theme_candidates_for_item(db: Session, item: dict[str, Any]) -> list[models.SourceDocument]:
+    item_id = item.get("id")
+    if not item_id:
+        return []
+    return (
+        db.query(models.SourceDocument)
+        .filter(
+            models.SourceDocument.source_item_id == str(item_id),
+            models.SourceDocument.source.in_(sorted(THEME_SOURCE_FAMILIES)),
+        )
+        .all()
+    )
+
+
+def _compact_route_assets(assets: list[models.TourismRouteAsset]) -> list[dict[str, Any]]:
+    return [
+        {
+            "route_asset_id": asset.id,
+            "source_family": asset.source_family,
+            "course_name": asset.course_name,
+            "path_name": asset.path_name,
+            "distance_km": float(asset.distance_km) if asset.distance_km is not None else None,
+            "estimated_duration": asset.estimated_duration,
+            "gpx_url": asset.gpx_url,
+            "safety_notes": asset.safety_notes or [],
+        }
+        for asset in assets[:5]
+    ]
+
+
+def _compact_signal_records(records: list[models.TourismSignalRecord]) -> list[dict[str, Any]]:
+    return [
+        {
+            "signal_record_id": record.id,
+            "source_family": record.source_family,
+            "signal_type": record.signal_type,
+            "period_start": record.period_start,
+            "period_end": record.period_end,
+            "value": record.value,
+            "interpretation_note": record.interpretation_note,
+        }
+        for record in records[:10]
+    ]
+
+
+def _compact_theme_candidates(documents: list[models.SourceDocument]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for document in documents[:10]:
+        metadata = document.document_metadata or {}
+        candidates.append(
+            {
+                "document_id": document.id,
+                "source_family": metadata.get("theme_source_family") or document.source,
+                "title": document.title,
+                "theme_content_id": metadata.get("theme_content_id"),
+                "theme_attributes": metadata.get("theme_attributes") or {},
+                "needs_review_notes": metadata.get("needs_review_notes") or [],
+                "image_url": metadata.get("image_url"),
+                "usage_status": metadata.get("usage_status"),
+                "trust_level": metadata.get("trust_level"),
+            }
+        )
+    return candidates
 
 
 def _source_confidence(item: dict[str, Any], unresolved: list[dict[str, Any]]) -> float:
@@ -2088,6 +2795,8 @@ def _productization_advice(
         "usable_claims": [
             "TourAPI에 있는 장소명, 주소, 개요, 행사 기간은 근거 문서와 함께 사용할 수 있습니다.",
             "상세 이미지 후보는 candidate 상태이며 게시 전 라이선스와 원 출처 확인이 필요합니다.",
+            "두루누비/연관관광지/수요/혼잡 신호는 동선과 우선순위 판단의 보조 근거로만 사용할 수 있습니다.",
+            "테마 API 근거는 웰니스/반려동물/오디오/생태/의료 후보를 보조하되 인증, 효능, 안전, 허용 조건을 단정하지 않습니다.",
         ],
         "candidate_evidence_cards": [_candidate_evidence_card(entity) for entity in entities],
         "needs_review_fields": unresolved_types,
@@ -2136,6 +2845,29 @@ def _candidate_evidence_card(entity: dict[str, Any]) -> dict[str, Any]:
     restricted_claims = _restricted_claims_from_unresolved(unresolved_gap_types)
     if entity.get("visual_asset_count"):
         restricted_claims.append("이미지는 후보 상태이므로 게시 전 공공데이터 이용 조건과 원 출처를 확인해야 합니다.")
+    if entity.get("route_asset_count"):
+        restricted_claims.append("동선 후보는 운영 확정 코스가 아니므로 안전, 날씨, 집결/해산 지점을 확인해야 합니다.")
+    if entity.get("signal_record_count"):
+        restricted_claims.append("수요/혼잡/연관 장소 신호를 판매량, 예약 가능성, 안전 보장으로 표현하지 마세요.")
+    if entity.get("theme_candidate_count"):
+        restricted_claims.append("테마 후보는 보조 근거이며 인증, 효능, 안전, 허용 조건을 단정하지 마세요.")
+        theme_sources = {
+            str(candidate.get("source_family") or "")
+            for candidate in entity.get("theme_candidates") or []
+            if isinstance(candidate, dict)
+        }
+        if "kto_medical" in theme_sources or "kto_wellness" in theme_sources:
+            restricted_claims.append("의료/웰니스 효과, 치료, 건강 개선을 확정 표현하지 마세요.")
+        if "kto_pet" in theme_sources:
+            restricted_claims.append("반려동물 동반 가능 여부와 제한 조건은 운영자 확인 없이 단정하지 마세요.")
+        if "kto_eco" in theme_sources:
+            restricted_claims.append("생태/친환경 효과를 정량 보장하거나 인증처럼 표현하지 마세요.")
+        if "kto_audio" in theme_sources:
+            restricted_claims.append("오디오/외국어 해설 제공 여부는 실제 운영 확인 없이 단정하지 마세요.")
+    visual_candidates = entity.get("visual_candidates") if isinstance(entity.get("visual_candidates"), list) else []
+    route_assets = entity.get("route_assets") if isinstance(entity.get("route_assets"), list) else []
+    signal_records = entity.get("signal_records") if isinstance(entity.get("signal_records"), list) else []
+    theme_candidates = entity.get("theme_candidates") if isinstance(entity.get("theme_candidates"), list) else []
     return {
         "content_id": _string_or_none(entity.get("content_id")) or "",
         "source_item_id": _string_or_none(entity.get("source_item_id")) or "",
@@ -2148,6 +2880,11 @@ def _candidate_evidence_card(entity: dict[str, Any]) -> dict[str, Any]:
         "recommended_product_angles": _product_angles_from_entity(entity),
         "operational_unknowns": unresolved_gap_types,
         "restricted_claims": restricted_claims,
+        "visual_candidates": visual_candidates[:5],
+        "visual_usage_status": "needs_license_review" if visual_candidates else None,
+        "route_assets": route_assets[:5],
+        "signal_records": signal_records[:10],
+        "theme_candidates": theme_candidates[:10],
         "evidence_document_ids": [str(value) for value in entity.get("evidence_document_ids") or []],
         "source_confidence": entity.get("source_confidence"),
     }
@@ -2180,8 +2917,66 @@ def _usable_facts_from_entity(entity: dict[str, Any]) -> list[dict[str, Any]]:
     for line in detail_facts.get("detail_info_lines") or []:
         facts.append({"field": "이용 정보", "value": _truncate_text(line, 360), "source": "detailInfo2"})
     if detail_facts.get("image_candidate_count") or entity.get("visual_asset_count"):
-        count = detail_facts.get("image_candidate_count") or entity.get("visual_asset_count")
-        facts.append({"field": "이미지 후보", "value": f"{count}개 후보", "source": "detailImage2/detailCommon2"})
+        count = int(detail_facts.get("image_candidate_count") or 0) + int(entity.get("visual_asset_count") or 0)
+        visual_sources = sorted(
+            {
+                str(candidate.get("source_family") or "")
+                for candidate in (entity.get("visual_candidates") or [])
+                if isinstance(candidate, dict) and candidate.get("source_family")
+            }
+        )
+        source = "detailImage2/detailCommon2"
+        if visual_sources:
+            source = f"{source}/{'/'.join(visual_sources)}"
+        facts.append({"field": "이미지 후보", "value": f"{count}개 후보", "source": source})
+    if entity.get("route_asset_count"):
+        route_names = [
+            str(route.get("course_name") or route.get("path_name") or "동선 후보")
+            for route in entity.get("route_assets") or []
+            if isinstance(route, dict)
+        ]
+        facts.append(
+            {
+                "field": "동선 후보",
+                "value": f"{int(entity.get('route_asset_count') or 0)}개 후보: {', '.join(route_names[:3])}",
+                "source": "kto_durunubi",
+            }
+        )
+    if entity.get("signal_record_count"):
+        signal_types = sorted(
+            {
+                str(record.get("signal_type") or "")
+                for record in entity.get("signal_records") or []
+                if isinstance(record, dict) and record.get("signal_type")
+            }
+        )
+        facts.append(
+            {
+                "field": "보조 신호",
+                "value": f"{int(entity.get('signal_record_count') or 0)}개 신호: {', '.join(signal_types[:5])}",
+                "source": "KTO route/signal APIs",
+            }
+        )
+    if entity.get("theme_candidate_count"):
+        theme_sources = sorted(
+            {
+                str(candidate.get("source_family") or "")
+                for candidate in entity.get("theme_candidates") or []
+                if isinstance(candidate, dict) and candidate.get("source_family")
+            }
+        )
+        theme_titles = [
+            str(candidate.get("title") or "테마 후보")
+            for candidate in entity.get("theme_candidates") or []
+            if isinstance(candidate, dict)
+        ]
+        facts.append(
+            {
+                "field": "테마 후보",
+                "value": f"{int(entity.get('theme_candidate_count') or 0)}개 후보: {', '.join(theme_titles[:3])}",
+                "source": "/".join(theme_sources) or "KTO theme APIs",
+            }
+        )
     return facts[:14]
 
 
@@ -2209,6 +3004,12 @@ def _product_angles_from_entity(entity: dict[str, Any]) -> list[str]:
         angles.append("미식 동선의 한 지점으로 활용하되 영업시간은 확인 필요")
     if entity.get("visual_asset_count"):
         angles.append("이미지 후보는 내부 검수 후 썸네일/상세페이지 소재로 활용")
+    if entity.get("route_asset_count"):
+        angles.append("두루누비 코스 후보는 동선 설계 참고로만 사용하고 운영 조건은 확인")
+    if entity.get("signal_record_count"):
+        angles.append("수요/혼잡/연관 장소 신호는 후보 우선순위와 리스크 검토에만 활용")
+    if entity.get("theme_candidate_count"):
+        angles.append("테마 API 후보는 상품 콘셉트 보조 근거로 쓰고 세부 조건은 확인 항목으로 분리")
     return angles[:3]
 
 
@@ -2217,7 +3018,13 @@ def _evidence_strength(entity: dict[str, Any], usable_facts: list[dict[str, Any]
         return "insufficient_evidence"
     if entity.get("detail_available") and not unresolved_gap_types:
         return "strong"
-    if entity.get("detail_available") or entity.get("visual_asset_count"):
+    if (
+        entity.get("detail_available")
+        or entity.get("visual_asset_count")
+        or entity.get("route_asset_count")
+        or entity.get("signal_record_count")
+        or entity.get("theme_candidate_count")
+    ):
         return "moderate"
     return "basic"
 
@@ -2229,7 +3036,16 @@ def _restricted_claims_from_unresolved(unresolved_gap_types: list[str]) -> list[
         "missing_booking_info": "예약 가능 여부를 단정하지 마세요.",
         "missing_related_places": "주변 장소 추천을 근거 없이 확장하지 마세요.",
         "missing_route_context": "이동 동선과 소요시간을 근거 없이 단정하지 마세요.",
+        "missing_demand_signal": "수요 신호를 판매량이나 예약 가능성으로 단정하지 마세요.",
+        "missing_crowding_signal": "혼잡 예측이 없으면 한산함이나 안전성을 단정하지 마세요.",
+        "missing_regional_demand_signal": "지역 수요를 시장성 보장으로 표현하지 마세요.",
         "missing_theme_specific_data": "테마 적합성을 공식 인증처럼 표현하지 마세요.",
+        "missing_pet_policy": "반려동물 동반 가능 여부와 제한 조건을 단정하지 마세요.",
+        "missing_wellness_attributes": "웰니스 효능이나 건강 개선을 단정하지 마세요.",
+        "missing_story_asset": "스토리/해설 소재를 근거 없이 새로 만들지 마세요.",
+        "missing_multilingual_story": "외국어 또는 오디오 해설 제공을 단정하지 마세요.",
+        "missing_sustainability_context": "생태/친환경 효과를 정량 보장하지 마세요.",
+        "missing_medical_context": "의료 효과, 치료, 안전성을 단정하지 마세요.",
     }
     return [mapping[gap_type] for gap_type in unresolved_gap_types if gap_type in mapping]
 
@@ -2238,11 +3054,63 @@ def _merge_productization_advice(base_advice: dict[str, Any], payload_advice: di
     merged = {**base_advice, **payload_advice}
     base_cards = [card for card in base_advice.get("candidate_evidence_cards") or [] if isinstance(card, dict)]
     payload_cards = [card for card in payload_advice.get("candidate_evidence_cards") or [] if isinstance(card, dict)]
+    interpretations = [
+        item
+        for item in payload_advice.get("candidate_interpretations") or []
+        if isinstance(item, dict)
+    ]
     if payload_cards:
-        merged["candidate_evidence_cards"] = _merge_candidate_evidence_cards(base_cards, payload_cards)
+        cards = _merge_candidate_evidence_cards(base_cards, payload_cards)
     elif base_cards:
-        merged["candidate_evidence_cards"] = base_cards
+        cards = base_cards
+    else:
+        cards = []
+    if cards:
+        merged["candidate_evidence_cards"] = _apply_candidate_interpretations(cards, interpretations)
+    if interpretations:
+        merged["candidate_interpretations"] = interpretations
     return merged
+
+
+def _apply_candidate_interpretations(
+    cards: list[dict[str, Any]],
+    interpretations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    interpretations_by_key: dict[str, dict[str, Any]] = {}
+    for interpretation in interpretations:
+        key = _candidate_card_key(interpretation)
+        if key:
+            interpretations_by_key[key] = interpretation
+
+    merged_cards: list[dict[str, Any]] = []
+    for card in cards:
+        interpretation = interpretations_by_key.get(_candidate_card_key(card))
+        if not interpretation:
+            merged_cards.append(card)
+            continue
+        enriched = {**card, "fusion_interpretation": _compact_candidate_interpretation(interpretation)}
+        angle_values = _string_list(interpretation.get("recommended_product_angles"))
+        if interpretation.get("product_angle"):
+            angle_values.insert(0, str(interpretation.get("product_angle")))
+        hook_values = _string_list(interpretation.get("experience_hooks"))
+        caution_values = _string_list(interpretation.get("use_with_caution"))
+        enriched["recommended_product_angles"] = _merge_list_values(
+            card.get("recommended_product_angles"),
+            angle_values[:3],
+        )
+        enriched["experience_hooks"] = _merge_list_values(card.get("experience_hooks"), hook_values[:3])
+        enriched["restricted_claims"] = _merge_list_values(card.get("restricted_claims"), caution_values[:3])
+        merged_cards.append(enriched)
+    return merged_cards
+
+
+def _compact_candidate_interpretation(interpretation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "priority": str(interpretation.get("priority") or "").strip(),
+        "product_angle": _truncate_text(interpretation.get("product_angle"), 160),
+        "rationale": _truncate_text(interpretation.get("rationale"), 240),
+        "use_with_caution": _string_list(interpretation.get("use_with_caution"))[:3],
+    }
 
 
 def _merge_candidate_evidence_cards(base_cards: list[dict[str, Any]], payload_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2268,7 +3136,17 @@ def _merge_candidate_evidence_cards(base_cards: list[dict[str, Any]], payload_ca
 
 def _merge_candidate_card(base_card: dict[str, Any], payload_card: dict[str, Any]) -> dict[str, Any]:
     merged = {**base_card, **payload_card}
-    for key in ("usable_facts", "experience_hooks", "recommended_product_angles", "operational_unknowns", "restricted_claims"):
+    for key in (
+        "usable_facts",
+        "experience_hooks",
+        "recommended_product_angles",
+        "operational_unknowns",
+        "restricted_claims",
+        "visual_candidates",
+        "route_assets",
+        "signal_records",
+        "theme_candidates",
+    ):
         merged[key] = _merge_list_values(base_card.get(key), payload_card.get(key))
     return merged
 
@@ -2439,7 +3317,14 @@ def _compact_base_fusion_for_prompt(base_fusion: dict[str, Any]) -> dict[str, An
     enriched_entities = [
         _compact_fusion_entity(entity)
         for entity in entities
-        if isinstance(entity, dict) and (entity.get("detail_available") or entity.get("visual_asset_count"))
+        if isinstance(entity, dict)
+        and (
+            entity.get("detail_available")
+            or entity.get("visual_asset_count")
+            or entity.get("route_asset_count")
+            or entity.get("signal_record_count")
+            or entity.get("theme_candidate_count")
+        )
     ]
     unresolved_entities = [
         _compact_fusion_entity(entity)
@@ -2451,15 +3336,19 @@ def _compact_base_fusion_for_prompt(base_fusion: dict[str, Any]) -> dict[str, An
         "source_document_count": profile.get("source_document_count"),
         "data_coverage": base_fusion.get("data_coverage") or {},
         "source_confidence": base_fusion.get("source_confidence"),
-        "enriched_entities": enriched_entities[:20],
-        "unresolved_entities": unresolved_entities[:20],
-        "truncated": len(enriched_entities) > 20 or len(unresolved_entities) > 20,
+        "enriched_entities": enriched_entities[:12],
+        "unresolved_entities": unresolved_entities[:12],
+        "truncated": len(enriched_entities) > 12 or len(unresolved_entities) > 12,
     }
 
 
 def _compact_fusion_entity(entity: dict[str, Any]) -> dict[str, Any]:
     key_facts = entity.get("key_facts") if isinstance(entity.get("key_facts"), dict) else {}
     detail_facts = entity.get("detail_facts") if isinstance(entity.get("detail_facts"), dict) else {}
+    visual_candidates = entity.get("visual_candidates") if isinstance(entity.get("visual_candidates"), list) else []
+    route_assets = entity.get("route_assets") if isinstance(entity.get("route_assets"), list) else []
+    signal_records = entity.get("signal_records") if isinstance(entity.get("signal_records"), list) else []
+    theme_candidates = entity.get("theme_candidates") if isinstance(entity.get("theme_candidates"), list) else []
     return {
         "content_id": entity.get("content_id"),
         "source_item_id": entity.get("source_item_id"),
@@ -2469,10 +3358,43 @@ def _compact_fusion_entity(entity: dict[str, Any]) -> dict[str, Any]:
         "evidence_document_ids": entity.get("evidence_document_ids") or [],
         "detail_available": bool(entity.get("detail_available")),
         "visual_asset_count": entity.get("visual_asset_count"),
+        "route_asset_count": entity.get("route_asset_count"),
+        "signal_record_count": entity.get("signal_record_count"),
+        "theme_candidate_count": entity.get("theme_candidate_count"),
         "source_confidence": entity.get("source_confidence"),
         "unresolved_gap_types": entity.get("unresolved_gap_types") or [],
+        "visual_summary": {
+            "candidate_count": len(visual_candidates),
+            "usage_statuses": sorted({str(candidate.get("usage_status") or "") for candidate in visual_candidates if isinstance(candidate, dict) and candidate.get("usage_status")}),
+            "sample_titles": [
+                _truncate_text(candidate.get("title"), 80)
+                for candidate in visual_candidates
+                if isinstance(candidate, dict) and candidate.get("title")
+            ][:2],
+        },
+        "route_summary": {
+            "candidate_count": len(route_assets),
+            "sample_names": [
+                _truncate_text(route.get("course_name") or route.get("path_name"), 80)
+                for route in route_assets
+                if isinstance(route, dict) and (route.get("course_name") or route.get("path_name"))
+            ][:2],
+        },
+        "signal_summary": {
+            "record_count": len(signal_records),
+            "signal_types": sorted({str(record.get("signal_type") or "") for record in signal_records if isinstance(record, dict) and record.get("signal_type")}),
+        },
+        "theme_summary": {
+            "candidate_count": len(theme_candidates),
+            "source_families": sorted({str(candidate.get("source_family") or "") for candidate in theme_candidates if isinstance(candidate, dict) and candidate.get("source_family")}),
+            "sample_titles": [
+                _truncate_text(candidate.get("title"), 80)
+                for candidate in theme_candidates
+                if isinstance(candidate, dict) and candidate.get("title")
+            ][:2],
+        },
         "key_facts": {
-            "overview": _truncate_text(key_facts.get("overview"), 900),
+            "overview": _truncate_text(key_facts.get("overview"), 360),
             "homepage": key_facts.get("homepage"),
             "tel": key_facts.get("tel"),
             "event_start_date": key_facts.get("event_start_date"),
@@ -2484,15 +3406,14 @@ def _compact_fusion_entity(entity: dict[str, Any]) -> dict[str, Any]:
             "detail_info_count": detail_facts.get("detail_info_count", 0),
             "detail_image_count": detail_facts.get("detail_image_count", 0),
             "detail_intro_lines": [
-                _truncate_text(line, 360)
+                _truncate_text(line, 180)
                 for line in detail_facts.get("detail_intro_lines") or []
-            ][:8],
+            ][:3],
             "detail_info_lines": [
-                _truncate_text(line, 360)
+                _truncate_text(line, 180)
                 for line in detail_facts.get("detail_info_lines") or []
-            ][:10],
+            ][:3],
             "image_candidate_count": detail_facts.get("image_candidate_count", 0),
-            "image_candidates": detail_facts.get("image_candidates") or [],
         },
     }
 
@@ -2513,6 +3434,10 @@ def _compact_enrichment_summary_for_fusion(enrichment_summary: dict[str, Any]) -
         "failed_calls": summary.get("failed_calls", 0),
         "enriched_item_ids": summary.get("enriched_item_ids") or [],
         "indexed_documents": summary.get("indexed_documents", 0),
+        "visual_assets": summary.get("visual_assets", 0),
+        "route_assets": summary.get("route_assets", 0),
+        "signal_records": summary.get("signal_records", 0),
+        "theme_candidates": summary.get("theme_candidates", 0),
         "skip_reason_counts": dict(sorted(skip_counts.items())),
     }
 
@@ -2531,6 +3456,12 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
             "detail_common_available": metadata.get("detail_common_available"),
             "detail_info_count": metadata.get("detail_info_count"),
             "visual_asset_count": metadata.get("visual_asset_count"),
+            "route_asset_count": metadata.get("route_asset_count"),
+            "signal_record_count": metadata.get("signal_record_count"),
+            "signal_type": metadata.get("signal_type"),
+            "theme_candidate_count": metadata.get("theme_candidate_count"),
+            "theme_source_family": metadata.get("theme_source_family"),
+            "theme_attributes": metadata.get("theme_attributes"),
             "data_quality_flags": metadata.get("data_quality_flags"),
             "trust_level": metadata.get("trust_level"),
             "retrieved_at": metadata.get("retrieved_at"),
@@ -2725,6 +3656,17 @@ def _string_or_none(value: Any) -> str | None:
     return text or None
 
 
+def _content_id_from_entity_id(value: Any) -> str | None:
+    text = _string_or_none(value)
+    if not text:
+        return None
+    for prefix in ("tourapi:content:", "entity:tourapi:content:"):
+        if text.startswith(prefix):
+            content_id = text.removeprefix(prefix).strip()
+            return content_id or None
+    return None
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -2769,16 +3711,74 @@ def _number_or_default(value: Any, default: Any) -> float:
 
 
 def _can_execute_workflow_call(call: dict[str, Any], capability: dict[str, Any]) -> bool:
-    if call.get("source_family") != "kto_tourapi_kor":
-        return False
-    if call.get("tool_name") != "kto_tour_detail_enrichment":
-        return False
-    if str(call.get("operation") or "") != "detailCommon2/detailIntro2/detailInfo2/detailImage2":
-        return False
-    return any(
-        operation.get("operation") == "detailCommon2" and operation.get("workflow_enabled")
-        for operation in capability.get("operations") or []
-    )
+    source_family = str(call.get("source_family") or "")
+    if source_family == "kto_tourapi_kor":
+        if call.get("tool_name") != "kto_tour_detail_enrichment":
+            return False
+        if str(call.get("operation") or "") != "detailCommon2/detailIntro2/detailInfo2/detailImage2":
+            return False
+        return any(
+            operation.get("operation") == "detailCommon2" and operation.get("workflow_enabled")
+            for operation in capability.get("operations") or []
+        )
+    if source_family == "kto_tourism_photo":
+        return (
+            call.get("tool_name") == "kto_tourism_photo_search"
+            and str(call.get("operation") or "") == "gallerySearchList1"
+            and any(
+                operation.get("operation") == "gallerySearchList1" and operation.get("workflow_enabled")
+                for operation in capability.get("operations") or []
+            )
+        )
+    if source_family == "kto_photo_contest":
+        return (
+            call.get("tool_name") == "kto_photo_contest_award_list"
+            and str(call.get("operation") or "") == "phokoAwrdList"
+            and any(
+                operation.get("operation") == "phokoAwrdList" and operation.get("workflow_enabled")
+                for operation in capability.get("operations") or []
+            )
+        )
+    if source_family in ROUTE_SIGNAL_SOURCE_FAMILIES:
+        operation = str(call.get("operation") or "")
+        tool_name = str(call.get("tool_name") or "")
+        allowed_tools = {
+            "kto_durunubi": {"kto_durunubi_course_list"},
+            "kto_related_places": {"kto_related_places_area", "kto_related_places_keyword"},
+            "kto_tourism_bigdata": {
+                "kto_tourism_bigdata_metco_visitors",
+                "kto_tourism_bigdata_locgo_visitors",
+            },
+            "kto_crowding_forecast": {"kto_attraction_crowding_forecast"},
+            "kto_regional_tourism_demand": {
+                "kto_regional_tourism_demand_area",
+                "kto_regional_tourism_service_demand",
+                "kto_regional_culture_resource_demand",
+            },
+        }
+        if tool_name not in allowed_tools.get(source_family, set()):
+            return False
+        return any(
+            op.get("operation") == operation and op.get("workflow_enabled")
+            for op in capability.get("operations") or []
+        )
+    if source_family in THEME_SOURCE_FAMILIES:
+        operation = str(call.get("operation") or "")
+        tool_name = str(call.get("tool_name") or "")
+        allowed_tools = {
+            "kto_wellness": {"kto_wellness_keyword_search", "kto_wellness_area_search"},
+            "kto_pet": {"kto_pet_keyword_search", "kto_pet_area_search"},
+            "kto_audio": {"kto_audio_story_search", "kto_audio_theme_search", "kto_audio_keyword_search"},
+            "kto_eco": {"kto_eco_area_search"},
+            "kto_medical": {"kto_medical_keyword_search", "kto_medical_area_search"},
+        }
+        if tool_name not in allowed_tools.get(source_family, set()):
+            return False
+        return any(
+            op.get("operation") == operation and op.get("workflow_enabled")
+            for op in capability.get("operations") or []
+        )
+    return False
 
 
 def _is_detail_gap(gap: dict[str, Any]) -> bool:
@@ -2798,6 +3798,76 @@ def _normalize_planned_call(
             if gap_type
         }
     ) or [str(representative_gap.get("gap_type"))]
+    source_family = str(call.get("source_family") or representative_gap.get("suggested_source_family") or "kto_tourapi_kor")
+    if source_family in VISUAL_SOURCE_FAMILIES:
+        normalized = _planned_visual_call(representative_gap, source_family, index)
+        normalized.update(
+            {
+                "id": str(call.get("id") or normalized["id"]),
+                "tool_name": str(call.get("tool_name") or normalized["tool_name"]),
+                "operation": str(call.get("operation") or normalized["operation"]),
+                "gap_ids": gap_ids,
+                "gap_types": gap_types,
+                "target_item_id": call.get("target_item_id") or representative_gap.get("target_item_id"),
+                "target_content_id": call.get("target_content_id") or representative_gap.get("target_content_id"),
+                "target_entity_id": call.get("target_entity_id") or representative_gap.get("target_entity_id"),
+                "reason": str(call.get("reason") or normalized["reason"]),
+                "expected_ui": str(call.get("expected_ui") or normalized["expected_ui"]),
+                "arguments": {
+                    **normalized["arguments"],
+                    **(call.get("arguments") if isinstance(call.get("arguments"), dict) else {}),
+                    "item_id": call.get("target_item_id") or representative_gap.get("target_item_id"),
+                    "content_id": call.get("target_content_id") or representative_gap.get("target_content_id"),
+                },
+            }
+        )
+        return normalized
+    if source_family in ROUTE_SIGNAL_SOURCE_FAMILIES:
+        normalized = _planned_route_signal_call(representative_gap, source_family, index)
+        normalized.update(
+            {
+                "id": str(call.get("id") or normalized["id"]),
+                "tool_name": str(call.get("tool_name") or normalized["tool_name"]),
+                "operation": str(call.get("operation") or normalized["operation"]),
+                "gap_ids": gap_ids,
+                "gap_types": gap_types,
+                "target_item_id": call.get("target_item_id") or representative_gap.get("target_item_id"),
+                "target_content_id": call.get("target_content_id") or representative_gap.get("target_content_id"),
+                "target_entity_id": call.get("target_entity_id") or representative_gap.get("target_entity_id"),
+                "reason": str(call.get("reason") or normalized["reason"]),
+                "expected_ui": str(call.get("expected_ui") or normalized["expected_ui"]),
+                "arguments": {
+                    **normalized["arguments"],
+                    **(call.get("arguments") if isinstance(call.get("arguments"), dict) else {}),
+                    "item_id": call.get("target_item_id") or representative_gap.get("target_item_id"),
+                    "content_id": call.get("target_content_id") or representative_gap.get("target_content_id"),
+                },
+            }
+        )
+        return normalized
+    if source_family in THEME_SOURCE_FAMILIES:
+        normalized = _planned_theme_call(representative_gap, source_family, index)
+        normalized.update(
+            {
+                "id": str(call.get("id") or normalized["id"]),
+                "tool_name": str(call.get("tool_name") or normalized["tool_name"]),
+                "operation": str(call.get("operation") or normalized["operation"]),
+                "gap_ids": gap_ids,
+                "gap_types": gap_types,
+                "target_item_id": call.get("target_item_id") or representative_gap.get("target_item_id"),
+                "target_content_id": call.get("target_content_id") or representative_gap.get("target_content_id"),
+                "target_entity_id": call.get("target_entity_id") or representative_gap.get("target_entity_id"),
+                "reason": str(call.get("reason") or normalized["reason"]),
+                "expected_ui": str(call.get("expected_ui") or normalized["expected_ui"]),
+                "arguments": {
+                    **normalized["arguments"],
+                    **(call.get("arguments") if isinstance(call.get("arguments"), dict) else {}),
+                    "item_id": call.get("target_item_id") or representative_gap.get("target_item_id"),
+                    "content_id": call.get("target_content_id") or representative_gap.get("target_content_id"),
+                },
+            }
+        )
+        return normalized
     return {
         "id": str(call.get("id") or f"plan:{index}"),
         "status": "planned",
@@ -2817,6 +3887,178 @@ def _normalize_planned_call(
             "content_id": call.get("target_content_id") or representative_gap.get("target_content_id"),
         },
     }
+
+
+def _visual_source_family_for_gap(gap: dict[str, Any], settings: Settings) -> str | None:
+    explicit = str(gap.get("suggested_source_family") or "")
+    enabled = _visual_enabled_families(settings)
+    if explicit in enabled:
+        return explicit
+    if explicit in VISUAL_SOURCE_FAMILIES and explicit not in enabled:
+        return None
+    if str(gap.get("gap_type") or "") not in VISUAL_GAP_TYPES:
+        return None
+    if "kto_tourism_photo" in enabled:
+        return "kto_tourism_photo"
+    if "kto_photo_contest" in enabled:
+        return "kto_photo_contest"
+    return None
+
+
+def _visual_enabled_families(settings: Settings) -> set[str]:
+    families: set[str] = set()
+    if settings.kto_tourism_photo_enabled and settings.tourapi_service_key:
+        families.add("kto_tourism_photo")
+    if settings.kto_photo_contest_enabled and settings.tourapi_service_key:
+        families.add("kto_photo_contest")
+    return families
+
+
+def _visual_tool_name(source_family: str) -> str:
+    return {
+        "kto_tourism_photo": "kto_tourism_photo_search",
+        "kto_photo_contest": "kto_photo_contest_award_list",
+    }.get(source_family, f"{source_family}_search")
+
+
+def _visual_operation(source_family: str) -> str:
+    return {
+        "kto_tourism_photo": "gallerySearchList1",
+        "kto_photo_contest": "phokoAwrdList",
+    }.get(source_family, "future")
+
+
+def _route_signal_source_family_for_gap(gap: dict[str, Any], settings: Settings) -> str | None:
+    explicit = str(gap.get("suggested_source_family") or "")
+    enabled = _route_signal_enabled_families(settings)
+    if explicit in enabled:
+        return explicit
+    if explicit in ROUTE_SIGNAL_SOURCE_FAMILIES and explicit not in enabled:
+        return None
+    gap_type = str(gap.get("gap_type") or "")
+    preferred = {
+        "missing_route_context": ["kto_durunubi", "kto_related_places"],
+        "missing_related_places": ["kto_related_places"],
+        "missing_demand_signal": ["kto_tourism_bigdata", "kto_regional_tourism_demand"],
+        "missing_crowding_signal": ["kto_crowding_forecast"],
+        "missing_regional_demand_signal": ["kto_regional_tourism_demand"],
+    }.get(gap_type, [])
+    for family in preferred:
+        if family in enabled:
+            return family
+    return None
+
+
+def _route_signal_enabled_families(settings: Settings) -> set[str]:
+    if not settings.tourapi_service_key:
+        return set()
+    families: set[str] = set()
+    if settings.kto_durunubi_enabled:
+        families.add("kto_durunubi")
+    if settings.kto_related_places_enabled:
+        families.add("kto_related_places")
+    if settings.kto_bigdata_enabled:
+        families.add("kto_tourism_bigdata")
+    if settings.kto_crowding_enabled:
+        families.add("kto_crowding_forecast")
+    if settings.kto_regional_tourism_demand_enabled:
+        families.add("kto_regional_tourism_demand")
+    return families
+
+
+def _route_signal_tool_name(source_family: str, gap: dict[str, Any]) -> str:
+    if source_family == "kto_related_places":
+        return "kto_related_places_keyword" if gap.get("source_item_title") else "kto_related_places_area"
+    if source_family == "kto_tourism_bigdata":
+        return "kto_tourism_bigdata_locgo_visitors" if gap.get("target_item_id") else "kto_tourism_bigdata_metco_visitors"
+    return {
+        "kto_durunubi": "kto_durunubi_course_list",
+        "kto_crowding_forecast": "kto_attraction_crowding_forecast",
+        "kto_regional_tourism_demand": "kto_regional_tourism_demand_area",
+    }.get(source_family, f"{source_family}_search")
+
+
+def _route_signal_operation(source_family: str, gap: dict[str, Any]) -> str:
+    if source_family == "kto_related_places":
+        return "searchKeyword1" if gap.get("source_item_title") else "areaBasedList1"
+    if source_family == "kto_tourism_bigdata":
+        return "locgoRegnVisitrDDList" if gap.get("target_item_id") else "metcoRegnVisitrDDList"
+    return {
+        "kto_durunubi": "courseList",
+        "kto_crowding_forecast": "tatsCnctrRatedList",
+        "kto_regional_tourism_demand": "areaTarSvcDemList",
+    }.get(source_family, "future")
+
+
+def _theme_source_family_for_gap(gap: dict[str, Any], settings: Settings) -> str | None:
+    explicit = str(gap.get("suggested_source_family") or "")
+    enabled = _theme_enabled_families(settings)
+    if explicit in enabled:
+        return explicit
+    if explicit in THEME_SOURCE_FAMILIES and explicit not in enabled:
+        return None
+    gap_type = str(gap.get("gap_type") or "")
+    preferred = {
+        "missing_pet_policy": ["kto_pet"],
+        "missing_wellness_attributes": ["kto_wellness"],
+        "missing_story_asset": ["kto_audio"],
+        "missing_multilingual_story": ["kto_audio"],
+        "missing_sustainability_context": ["kto_eco"],
+        "missing_medical_context": ["kto_medical"],
+        "missing_theme_specific_data": ["kto_pet", "kto_wellness", "kto_audio", "kto_eco"],
+    }.get(gap_type, [])
+    text = " ".join(
+        str(value or "")
+        for value in [
+            gap.get("reason"),
+            gap.get("source_item_title"),
+            gap.get("productization_impact"),
+        ]
+    )
+    for token, family in THEME_SOURCE_HINTS.items():
+        if token in text and family in enabled:
+            return family
+    for family in preferred:
+        if family in enabled:
+            return family
+    return None
+
+
+def _theme_enabled_families(settings: Settings) -> set[str]:
+    if not settings.tourapi_service_key:
+        return set()
+    families: set[str] = set()
+    if settings.kto_wellness_enabled:
+        families.add("kto_wellness")
+    if settings.kto_pet_enabled:
+        families.add("kto_pet")
+    if settings.kto_audio_enabled:
+        families.add("kto_audio")
+    if settings.kto_eco_enabled:
+        families.add("kto_eco")
+    if settings.allow_medical_api:
+        families.add("kto_medical")
+    return families
+
+
+def _theme_tool_name(source_family: str) -> str:
+    return {
+        "kto_wellness": "kto_wellness_keyword_search",
+        "kto_pet": "kto_pet_keyword_search",
+        "kto_audio": "kto_audio_story_search",
+        "kto_eco": "kto_eco_area_search",
+        "kto_medical": "kto_medical_keyword_search",
+    }.get(source_family, f"{source_family}_search")
+
+
+def _theme_operation(source_family: str) -> str:
+    return {
+        "kto_wellness": "searchKeyword",
+        "kto_pet": "searchKeyword2",
+        "kto_audio": "storySearchList",
+        "kto_eco": "areaBasedList1",
+        "kto_medical": "searchKeyword",
+    }.get(source_family, "future")
 
 
 def _dedupe_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:

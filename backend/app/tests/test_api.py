@@ -5,11 +5,22 @@ import pytest
 import httpx
 from sqlalchemy import inspect
 
-from app.agents.workflow import validate_qa_report
+from app.agents.workflow import (
+    _filter_items_by_geo_scope,
+    _filter_retrieved_documents_by_geo_scope,
+    validate_qa_report,
+)
 from app.core.config import Settings, get_settings
 from app.db import models
 from app.db.session import SessionLocal, engine, init_db
-from app.llm.gemini_gateway import call_gemini_json, _is_retryable_response, _parse_json, _retry_delay_seconds
+from app.llm.gemini_gateway import (
+    GeminiGatewayError,
+    call_gemini_json,
+    _is_retryable_response,
+    _parse_json,
+    _retry_delay_seconds,
+    _validate_json_schema,
+)
 from app.main import app
 from app.rag.source_documents import build_source_document
 from app.tests.geo_catalog_helpers import seed_test_ldong_catalog
@@ -26,6 +37,92 @@ def unwrap(response):
 def require_tourapi_key():
     if not get_settings().tourapi_service_key:
         pytest.skip("TOURAPI_SERVICE_KEY is required for workflow tests")
+
+
+def test_gemini_schema_validation_allows_null_for_optional_fields():
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+            "name": {"type": "string"},
+            "optional_id": {"type": "string"},
+        },
+    }
+
+    _validate_json_schema({"name": "ok", "optional_id": None}, schema)
+    with pytest.raises(GeminiGatewayError, match=r"\$\.name must be a string"):
+        _validate_json_schema({"name": None, "optional_id": "x"}, schema)
+
+
+def test_geo_scope_keyword_filters_locality_inside_resolved_signgu():
+    geo_scope = {
+        "locations": [
+            {
+                "name": "인천광역시 옹진군",
+                "ldong_regn_cd": "28",
+                "ldong_signgu_cd": "720",
+                "keyword": "대청도",
+                "sub_area_terms": [],
+            }
+        ],
+        "allow_nationwide": False,
+    }
+    daecheong = TourismItem(
+        id="tourapi:test:daecheong",
+        source="tourapi",
+        content_id="DCH",
+        content_type="attraction",
+        title="대청도 해변 산책",
+        region_code="2",
+        ldong_regn_cd="28",
+        ldong_signgu_cd="720",
+        address="인천광역시 옹진군 대청면",
+    )
+    baengnyeong = TourismItem(
+        id="tourapi:test:baengnyeong",
+        source="tourapi",
+        content_id="BNY",
+        content_type="attraction",
+        title="백령도 전망대",
+        region_code="2",
+        ldong_regn_cd="28",
+        ldong_signgu_cd="720",
+        address="인천광역시 옹진군 백령면",
+    )
+    filtered_items = _filter_items_by_geo_scope(
+        [daecheong, baengnyeong],
+        geo_scope=geo_scope,
+        run_id="test-run",
+    )
+    filtered_docs = _filter_retrieved_documents_by_geo_scope(
+        [
+            {
+                "doc_id": "doc:daecheong",
+                "title": "대청도 해변 산책",
+                "content": "주소: 인천광역시 옹진군 대청면",
+                "metadata": {
+                    "ldong_regn_cd": "28",
+                    "ldong_signgu_cd": "720",
+                    "title": "대청도 해변 산책",
+                },
+            },
+            {
+                "doc_id": "doc:baengnyeong",
+                "title": "백령도 전망대",
+                "content": "주소: 인천광역시 옹진군 백령면",
+                "metadata": {
+                    "ldong_regn_cd": "28",
+                    "ldong_signgu_cd": "720",
+                    "title": "백령도 전망대",
+                },
+            },
+        ],
+        geo_scope=geo_scope,
+        run_id="test-run",
+    )
+
+    assert [item.id for item in filtered_items] == ["tourapi:test:daecheong"]
+    assert [doc["doc_id"] for doc in filtered_docs] == ["doc:daecheong"]
 
 
 def test_gemini_prompt_debug_log_writes_full_prompt_and_output(monkeypatch, tmp_path):
@@ -124,10 +221,10 @@ def test_preflight_rejects_natural_language_product_count_above_limit():
             json={
                 "template_id": "default_product_planning",
                 "input": {
-                    "message": "이번 달 서울에서 외국인 대상 관광 상품을 10개 기획해줘",
+                    "message": "이번 달 서울에서 외국인 대상 관광 상품을 스물한 개 기획해줘",
                     "period": "2026-05",
                     "target_customer": "외국인",
-                    "product_count": 5,
+                    "product_count": 20,
                     "preferences": ["야간 관광"],
                     "avoid": [],
                     "output_language": "ko",
@@ -141,7 +238,7 @@ def test_preflight_rejects_natural_language_product_count_above_limit():
     assert response.status_code == 422
     assert body["error"]["code"] == "PREFLIGHT_VALIDATION_FAILED"
     assert body["error"]["details"]["preflight"]["reason_code"] == "product_count_exceeds_limit"
-    assert body["error"]["details"]["preflight"]["requested_product_count"] == 10
+    assert body["error"]["details"]["preflight"]["requested_product_count"] == 21
     assert after_count == before_count
 
 
@@ -652,6 +749,20 @@ class DaejeonTourApiProvider(TestTourApiProvider):
         )
 
 
+class EmptyTourApiProvider(TestTourApiProvider):
+    def area_based_list(self, **kwargs):
+        return []
+
+    def search_keyword(self, **kwargs):
+        return []
+
+    def search_festival(self, **kwargs):
+        return []
+
+    def search_stay(self, **kwargs):
+        return []
+
+
 def use_test_tourapi_provider(monkeypatch):
     init_db()
     with SessionLocal() as db:
@@ -677,6 +788,20 @@ def use_daejeon_tourapi_provider(monkeypatch):
     monkeypatch.setattr(
         "app.api.routes_data.get_tourism_provider",
         lambda: DaejeonTourApiProvider(),
+    )
+
+
+def use_empty_tourapi_provider(monkeypatch):
+    init_db()
+    with SessionLocal() as db:
+        seed_test_ldong_catalog(db)
+    monkeypatch.setattr(
+        "app.agents.workflow.get_tourism_provider",
+        lambda: EmptyTourApiProvider(),
+    )
+    monkeypatch.setattr(
+        "app.api.routes_data.get_tourism_provider",
+        lambda: EmptyTourApiProvider(),
     )
 
 
@@ -830,7 +955,12 @@ def test_create_and_read_workflow_run(monkeypatch):
     assert fetched["status"] == "awaiting_approval"
     assert fetched["final_output"]["status"] == "awaiting_approval"
     assert fetched["id"] == created["id"]
-    assert len(result["products"]) == 5
+    assert 1 <= len(result["products"]) <= 5
+    if len(result["products"]) < 5:
+        assert any(
+            "사용 가능한 근거 데이터가" in note
+            for note in result["products"][0].get("coverage_notes", [])
+        )
     assert {step["agent_name"] for step in steps} >= {
         "PlannerAgent",
         "GeoResolverAgent",
@@ -895,6 +1025,108 @@ def test_workflow_resolves_non_busan_ldong_scope_from_prompt(monkeypatch):
     } == {"30"}
 
 
+def test_workflow_returns_insufficient_source_data_when_tourapi_has_no_items(monkeypatch):
+    use_empty_tourapi_provider(monkeypatch)
+    payload = {
+        "template_id": "default_product_planning",
+        "input": {
+            "message": "부산 부산진구에서 외국인 대상 야간 관광 상품 3개 기획해줘",
+            "period": "2026-05",
+            "target_customer": "외국인",
+            "product_count": 3,
+            "preferences": ["야간 관광"],
+        },
+    }
+
+    with TestClient(app) as client:
+        created = unwrap(client.post("/api/workflow-runs", json=payload))
+        fetched = unwrap(client.get(f"/api/workflow-runs/{created['id']}"))
+        result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
+        tool_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/tool-calls"))
+
+    assert fetched["status"] == "failed"
+    assert fetched["error"] is None
+    assert result["status"] == "insufficient_source_data"
+    assert result["reason"] == "insufficient_source_data"
+    assert result["retrieval_diagnostics"]["tourapi_raw_collected_count"] == 0
+    assert result["retrieval_diagnostics"]["geo_filtered_item_count"] == 0
+    assert result["retrieval_diagnostics"]["reason"] == "tourapi_empty_for_resolved_geo_scope"
+    assert result["suggested_next_requests"]
+    assert result["products"] == []
+    assert result["qa_report"]["overall_status"] == "not_run"
+    assert all(
+        call["arguments"].get("ldong_regn_cd") == "26"
+        for call in tool_calls
+        if call["tool_name"].startswith("tourapi_")
+    )
+
+
+def test_workflow_returns_insufficient_source_data_when_vector_search_is_empty(monkeypatch):
+    use_test_tourapi_provider(monkeypatch)
+    monkeypatch.setattr("app.agents.workflow.search_source_documents", lambda **kwargs: [])
+    payload = {
+        "template_id": "default_product_planning",
+        "input": {
+            "message": "부산 부산진구에서 외국인 대상 야간 관광 상품 3개 기획해줘",
+            "period": "2026-05",
+            "target_customer": "외국인",
+            "product_count": 3,
+            "preferences": ["야간 관광"],
+        },
+    }
+
+    with TestClient(app) as client:
+        created = unwrap(client.post("/api/workflow-runs", json=payload))
+        fetched = unwrap(client.get(f"/api/workflow-runs/{created['id']}"))
+        result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
+        steps = unwrap(client.get(f"/api/workflow-runs/{created['id']}/steps"))
+
+    assert fetched["status"] == "failed"
+    assert fetched["error"] is None
+    assert result["status"] == "insufficient_source_data"
+    assert result["retrieval_diagnostics"]["geo_filtered_item_count"] > 0
+    assert result["retrieval_diagnostics"]["source_document_upsert_count"] > 0
+    assert result["retrieval_diagnostics"]["indexed_document_count"] > 0
+    assert result["retrieval_diagnostics"]["vector_search_result_count"] == 0
+    assert result["retrieval_diagnostics"]["post_geo_filter_result_count"] == 0
+    assert result["retrieval_diagnostics"]["reason"] == "vector_search_empty_for_resolved_geo_scope"
+    assert not any(step["step_type"] == "product_generation" for step in steps)
+
+
+def test_workflow_keeps_chroma_exception_as_system_error(monkeypatch):
+    use_test_tourapi_provider(monkeypatch)
+
+    def fail_search(**kwargs):
+        raise RuntimeError("chroma down")
+
+    monkeypatch.setattr("app.agents.workflow.search_source_documents", fail_search)
+    payload = {
+        "template_id": "default_product_planning",
+        "input": {
+            "message": "부산 부산진구에서 외국인 대상 야간 관광 상품 3개 기획해줘",
+            "period": "2026-05",
+            "target_customer": "외국인",
+            "product_count": 3,
+            "preferences": ["야간 관광"],
+        },
+    }
+
+    with TestClient(app) as client:
+        created = unwrap(client.post("/api/workflow-runs", json=payload))
+        fetched = unwrap(client.get(f"/api/workflow-runs/{created['id']}"))
+        result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
+        tool_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/tool-calls"))
+
+    assert fetched["status"] == "failed"
+    assert fetched["error"]["type"] == "RuntimeError"
+    assert "chroma down" in fetched["error"]["message"]
+    assert result["status"] == "failed"
+    assert result["error"]["type"] == "RuntimeError"
+    vector_call = next(call for call in tool_calls if call["tool_name"] == "vector_search")
+    assert vector_call["status"] == "failed"
+    assert vector_call["error"]["type"] == "RuntimeError"
+
+
 def test_workflow_blocks_unresolved_region_without_nationwide_fallback(monkeypatch):
     use_test_tourapi_provider(monkeypatch)
     payload = {
@@ -948,6 +1180,37 @@ def test_workflow_shows_candidates_for_ambiguous_region_with_failed_status(monke
     assert result["user_message"]["title"] == "지역을 하나로 좁혀 주세요"
     assert result["geo_scope"]["needs_clarification"] is True
     assert len(result["geo_scope"]["candidates"]) >= 2
+    assert all(not call["tool_name"].startswith("tourapi_search") for call in tool_calls)
+
+
+def test_workflow_blocks_route_or_multi_region_request_before_tourapi_search(monkeypatch):
+    use_test_tourapi_provider(monkeypatch)
+    payload = {
+        "template_id": "default_product_planning",
+        "input": {
+            "message": "부산에서 시작해서 양산에서 끝나는 외국인 대상 관광 상품을 만들어줘",
+            "period": "2026-05",
+            "target_customer": "외국인",
+            "product_count": 1,
+            "preferences": ["야간 관광"],
+        },
+    }
+
+    with TestClient(app) as client:
+        created = unwrap(client.post("/api/workflow-runs", json=payload))
+        fetched = unwrap(client.get(f"/api/workflow-runs/{created['id']}"))
+        result = unwrap(client.get(f"/api/workflow-runs/{created['id']}/result"))
+        steps = unwrap(client.get(f"/api/workflow-runs/{created['id']}/steps"))
+        tool_calls = unwrap(client.get(f"/api/workflow-runs/{created['id']}/tool-calls"))
+
+    assert fetched["status"] == "failed"
+    assert fetched["error"] is None
+    assert result["status"] == "failed"
+    assert result["user_message"]["title"] == "단일 지역만 지원합니다"
+    assert result["geo_scope"]["mode"] == "unsupported_multi_region"
+    assert result["geo_scope"]["needs_clarification"] is True
+    assert len(result["geo_scope"]["candidates"]) >= 2
+    assert any(step["step_type"] == "geo_scope_exit" for step in steps)
     assert all(not call["tool_name"].startswith("tourapi_search") for call in tool_calls)
 
 

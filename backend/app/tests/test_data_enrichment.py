@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.agents.data_enrichment import (
+    DATA_GAP_PROFILE_MAX_GAPS,
     build_api_capability_router_prompt,
     build_data_gap_profile_prompt,
     build_evidence_fusion_prompt,
@@ -10,6 +11,8 @@ from app.agents.data_enrichment import (
     create_enrichment_run,
     execute_enrichment_plan,
     fuse_evidence,
+    normalize_gap_profile_payload,
+    normalize_family_planner_payload,
     normalize_tourapi_detail_planner_payload,
     profile_data_gaps,
     route_gap_plan,
@@ -28,6 +31,10 @@ from app.db import models
 from app.db.session import SessionLocal
 from app.llm.gemini_gateway import GeminiJsonResult
 from app.main import app
+from app.tools.kto_capabilities import list_kto_capabilities
+from app.tools.route_signals import RouteAssetCandidate, SignalRecordCandidate
+from app.tools.themes import ThemeDataCandidate
+from app.tools.visuals import VisualAssetCandidate
 
 
 class DetailProvider:
@@ -80,6 +87,235 @@ class DetailProvider:
 class FailingDetailProvider(DetailProvider):
     def detail_common(self, *, content_id):
         raise RuntimeError("detailCommon2 unavailable")
+
+
+class VisualProvider:
+    def search_tourism_photos(self, *, keyword, limit=5):
+        return [
+            VisualAssetCandidate(
+                id="visual-candidate-1",
+                source_family="kto_tourism_photo",
+                operation="gallerySearchList1",
+                source_item_id="GAL-1",
+                title=f"{keyword} 관광사진",
+                image_url="https://example.com/visual.jpg",
+                thumbnail_url="https://example.com/visual-thumb.jpg",
+                shooting_place="대전광역시 중구",
+                photographer="한국관광공사",
+                keywords=[keyword, "야간"],
+                license_type="관광사진 정보_GW 이용 조건 확인 필요",
+                license_note="게시 전 사용권 확인 필요",
+                usage_status="needs_license_review",
+                raw={"galContentId": "GAL-1"},
+            )
+        ][:limit]
+
+    def search_photo_contest_awards(self, *, keyword, ldong_regn_cd=None, limit=5):
+        return [
+            VisualAssetCandidate(
+                id="visual-candidate-2",
+                source_family="kto_photo_contest",
+                operation="phokoAwrdList",
+                source_item_id="PHOTO-1",
+                title=f"{keyword} 공모전 사진",
+                image_url="https://example.com/photo-contest.jpg",
+                thumbnail_url="https://example.com/photo-contest-thumb.jpg",
+                shooting_place="대전광역시 중구",
+                photographer="작가",
+                keywords=[keyword],
+                license_type="Type1",
+                license_note="저작권 유형 확인 필요",
+                usage_status="needs_license_review",
+                raw={"contentId": "PHOTO-1", "cpyrhtDivCd": "Type1"},
+            )
+        ][:limit]
+
+
+class FailingVisualProvider(VisualProvider):
+    def search_tourism_photos(self, *, keyword, limit=5):
+        raise RuntimeError("gallerySearchList1 unavailable")
+
+
+class RouteSignalProvider:
+    def search_durunubi_courses(self, *, keyword, limit=5):
+        return [
+            RouteAssetCandidate(
+                id="route-candidate-1",
+                source_family="kto_durunubi",
+                operation="courseList",
+                course_name=f"{keyword} 걷기 코스",
+                path_name="야간 산책길",
+                gpx_url="https://example.com/course.gpx",
+                distance_km=2.4,
+                estimated_duration="1시간",
+                safety_notes=["운영 전 야간 안전 확인 필요"],
+                raw={"routeIdx": "ROUTE-1", "crsKorNm": f"{keyword} 걷기 코스"},
+            )
+        ][:limit]
+
+    def search_related_places(self, *, keyword=None, area_cd=None, signgu_cd=None, base_ym=None, limit=5):
+        return [
+            SignalRecordCandidate(
+                id="signal-related-1",
+                source_family="kto_related_places",
+                operation="searchKeyword1",
+                signal_type="related_places",
+                region_code=area_cd,
+                sigungu_code=signgu_cd,
+                period_start="202605",
+                period_end="202605",
+                value={"target_place": keyword, "related_place": "대전 원도심", "related_rank": "1"},
+                interpretation_note="연관 관광지 신호는 동선 확장 참고용입니다.",
+                raw={"tAtsNm": keyword, "rlteTatsNm": "대전 원도심"},
+            )
+        ][:limit]
+
+    def search_tourism_bigdata_visitors(self, *, area_cd=None, signgu_cd=None, base_ymd=None, limit=5):
+        return [
+            SignalRecordCandidate(
+                id="signal-bigdata-1",
+                source_family="kto_tourism_bigdata",
+                operation="locgoRegnVisitrDDList",
+                signal_type="visitor_demand",
+                region_code=area_cd,
+                sigungu_code=signgu_cd,
+                period_start=base_ymd or "20260501",
+                period_end=base_ymd or "20260501",
+                value={"visitor_count": "1200", "visitor_type": "전체"},
+                interpretation_note="방문자 수는 수요 보조 신호입니다.",
+                raw={"touNum": "1200"},
+            )
+        ][:limit]
+
+    def search_crowding_forecast(self, *, keyword=None, area_cd=None, signgu_cd=None, limit=5):
+        return [
+            SignalRecordCandidate(
+                id="signal-crowding-1",
+                source_family="kto_crowding_forecast",
+                operation="tatsCnctrRatedList",
+                signal_type="crowding_forecast",
+                region_code=area_cd,
+                sigungu_code=signgu_cd,
+                period_start="20260510",
+                period_end="20260510",
+                value={"attraction_name": keyword, "crowding_rate": "0.42"},
+                interpretation_note="혼잡 예측은 보조 지표입니다.",
+                raw={"cnctrRate": "0.42"},
+            )
+        ][:limit]
+
+    def search_regional_tourism_demand(self, *, area_cd=None, signgu_cd=None, base_ym=None, limit=5):
+        return [
+            SignalRecordCandidate(
+                id="signal-regional-1",
+                source_family="kto_regional_tourism_demand",
+                operation="areaTarSvcDemList",
+                signal_type="regional_service_demand",
+                region_code=area_cd,
+                sigungu_code=signgu_cd,
+                period_start=base_ym or "202605",
+                period_end=base_ym or "202605",
+                value={"index_name": "관광서비스", "index_value": "70"},
+                interpretation_note="지역 수요 지수는 보조 신호입니다.",
+                raw={"tarSvcDemIxVal": "70"},
+            )
+        ][:limit]
+
+
+class FailingRouteSignalProvider(RouteSignalProvider):
+    def search_durunubi_courses(self, *, keyword, limit=5):
+        raise RuntimeError("courseList unavailable")
+
+
+class ThemeProvider:
+    def search_wellness(self, *, keyword, ldong_regn_cd=None, ldong_signgu_cd=None, limit=5):
+        return [
+            ThemeDataCandidate(
+                id="theme-wellness-1",
+                source_family="kto_wellness",
+                operation="searchKeyword",
+                title=f"{keyword} 웰니스 후보",
+                content_id="WELLNESS-1",
+                address="대전광역시 중구",
+                image_url="https://example.com/wellness.jpg",
+                thumbnail_url="https://example.com/wellness-thumb.jpg",
+                theme_attributes={"wellness_theme_code": "EX050400"},
+                needs_review=["웰니스 효과를 단정하지 마세요."],
+                raw={"contentId": "WELLNESS-1"},
+            )
+        ][:limit]
+
+    def search_pet(self, *, keyword, ldong_regn_cd=None, ldong_signgu_cd=None, limit=5):
+        return [
+            ThemeDataCandidate(
+                id="theme-pet-1",
+                source_family="kto_pet",
+                operation="searchKeyword2",
+                title=f"{keyword} 반려동물 후보",
+                content_id="PET-1",
+                address="대전광역시 중구",
+                image_url="https://example.com/pet.jpg",
+                thumbnail_url="https://example.com/pet-thumb.jpg",
+                theme_attributes={
+                    "pet_tour_candidate": True,
+                    "allowed_animals": "소형견",
+                    "companion_requirements": "목줄 착용",
+                },
+                needs_review=["반려동물 동반 조건은 방문 전 확인하세요."],
+                raw={"contentid": "PET-1"},
+            )
+        ][:limit]
+
+    def search_audio(self, *, keyword, limit=5):
+        return [
+            ThemeDataCandidate(
+                id="theme-audio-1",
+                source_family="kto_audio",
+                operation="storySearchList",
+                title=f"{keyword} 오디오 스토리",
+                content_id="AUDIO-1",
+                overview="지역 이야기를 들을 수 있는 오디오 해설 후보입니다.",
+                theme_attributes={"language": "ko", "audio_url_available": True},
+                needs_review=["오디오 제공 언어와 사용 조건은 확인 필요입니다."],
+                raw={"stid": "AUDIO-1"},
+            )
+        ][:limit]
+
+    def search_eco(self, *, area_code=None, sigungu_code=None, limit=5):
+        return [
+            ThemeDataCandidate(
+                id="theme-eco-1",
+                source_family="kto_eco",
+                operation="areaBasedList1",
+                title="대전 생태관광 후보",
+                content_id="ECO-1",
+                address="대전광역시 중구",
+                overview="생태 해설 맥락 후보입니다.",
+                theme_attributes={"subtitle": "생태 탐방"},
+                needs_review=["생태 효과를 정량 보장하지 마세요."],
+                raw={"contentid": "ECO-1"},
+            )
+        ][:limit]
+
+    def search_medical(self, *, keyword, ldong_regn_cd=None, ldong_signgu_cd=None, limit=5):
+        return [
+            ThemeDataCandidate(
+                id="theme-medical-1",
+                source_family="kto_medical",
+                operation="searchKeyword",
+                title=f"{keyword} 의료관광 후보",
+                content_id="MEDICAL-1",
+                address="대전광역시 중구",
+                theme_attributes={"medical_context": True},
+                needs_review=["의료 효과와 안전성을 단정하지 마세요."],
+                raw={"contentId": "MEDICAL-1"},
+            )
+        ][:limit]
+
+
+class FailingThemeProvider(ThemeProvider):
+    def search_pet(self, *, keyword, ldong_regn_cd=None, ldong_signgu_cd=None, limit=5):
+        raise RuntimeError("searchKeyword2 unavailable")
 
 
 def test_gap_profiler_detects_missing_image_and_operating_fields():
@@ -174,6 +410,99 @@ def test_capability_router_excludes_medical_when_feature_flag_is_off():
     assert plan["skipped_calls"][0]["skip_reason"] == "feature_flag_disabled"
 
 
+def test_visual_capabilities_are_workflow_enabled_only_when_flags_are_on():
+    disabled = {
+        item["source_family"]: item
+        for item in list_kto_capabilities(
+            Settings(
+                tourapi_service_key="test-key",
+                kto_tourism_photo_enabled=False,
+                kto_photo_contest_enabled=False,
+            )
+        )
+        if item["source_family"] in {"kto_tourism_photo", "kto_photo_contest"}
+    }
+    assert not any(
+        operation["workflow_enabled"]
+        for operation in disabled["kto_tourism_photo"]["operations"]
+        if operation["operation"] == "gallerySearchList1"
+    )
+    assert not any(
+        operation["workflow_enabled"]
+        for operation in disabled["kto_photo_contest"]["operations"]
+        if operation["operation"] == "phokoAwrdList"
+    )
+
+    enabled = {
+        item["source_family"]: item
+        for item in list_kto_capabilities(
+            Settings(
+                tourapi_service_key="test-key",
+                kto_tourism_photo_enabled=True,
+                kto_photo_contest_enabled=True,
+            )
+        )
+        if item["source_family"] in {"kto_tourism_photo", "kto_photo_contest"}
+    }
+
+    assert any(
+        operation["workflow_enabled"]
+        for operation in enabled["kto_tourism_photo"]["operations"]
+        if operation["operation"] == "gallerySearchList1"
+    )
+    assert any(
+        operation["workflow_enabled"]
+        for operation in enabled["kto_photo_contest"]["operations"]
+        if operation["operation"] == "phokoAwrdList"
+    )
+
+
+def test_visual_planner_normalization_creates_calls_only_when_enabled():
+    gap = {
+        "id": "gap:missing_image_asset:item-visual",
+        "gap_type": "missing_image_asset",
+        "severity": "medium",
+        "reason": "이미지 후보가 부족합니다.",
+        "target_item_id": "item-visual",
+        "target_content_id": "CID-VISUAL",
+        "source_item_title": "대전 야간 산책",
+        "suggested_source_family": "kto_tourism_photo",
+        "needs_review": True,
+    }
+    routing = {
+        "family_routes": [
+            {
+                "planner": "visual_data",
+                "gap_ids": [gap["id"]],
+                "source_families": ["kto_tourism_photo"],
+            }
+        ]
+    }
+
+    disabled = normalize_family_planner_payload(
+        {"planned_calls": [], "skipped_calls": [], "budget_summary": {}, "planning_reasoning": ""},
+        planner_key="visual_data",
+        capability_routing=routing,
+        gap_report={"gaps": [gap]},
+        settings=Settings(tourapi_service_key="test-key", kto_tourism_photo_enabled=False),
+        max_call_budget=1,
+    )
+    assert disabled["planned_calls"] == []
+    assert disabled["skipped_calls"][0]["skip_reason"] == "feature_flag_disabled"
+
+    enabled = normalize_family_planner_payload(
+        {"planned_calls": [], "skipped_calls": [], "budget_summary": {}, "planning_reasoning": ""},
+        planner_key="visual_data",
+        capability_routing=routing,
+        gap_report={"gaps": [gap]},
+        settings=Settings(tourapi_service_key="test-key", kto_tourism_photo_enabled=True),
+        max_call_budget=1,
+    )
+    assert enabled["planned_calls"][0]["source_family"] == "kto_tourism_photo"
+    assert enabled["planned_calls"][0]["tool_name"] == "kto_tourism_photo_search"
+    assert enabled["planned_calls"][0]["operation"] == "gallerySearchList1"
+
+
 def test_api_capability_router_prompt_is_compact_for_many_gaps():
     gaps = [
         {
@@ -223,6 +552,109 @@ def test_data_gap_prompt_uses_natural_language_capability_brief_not_matrix():
     assert "request_fields" not in prompt
     assert "response_fields" not in prompt
     assert "KorService2 상세 API는 contentId/contentTypeId" in prompt
+
+
+def test_data_gap_prompt_caps_output_and_blocks_missing_overview():
+    source_items = [
+        _source_item(item_id=f"item-{index}", content_id=f"CID-{index}")
+        for index in range(30)
+    ]
+    prompt = build_data_gap_profile_prompt(
+        source_items=source_items,
+        retrieved_documents=[],
+        normalized_request={"message": "대청도 액티비티 상품 3개", "preferred_themes": ["액티비티"]},
+        capability_brief=capability_brief_for_prompt(Settings(tourapi_service_key="test-key")),
+        candidate_pool_summary={"raw_total": 80, "selected_total": 30},
+    )
+
+    assert f"gaps는 반드시 {DATA_GAP_PROFILE_MAX_GAPS}개 이하" in prompt
+    assert "missing_overview는 허용 gap_type이 아닙니다" in prompt
+    assert "하나의 target_item_id에는 item-level gap을 최대 1개" in prompt
+
+
+def test_gap_profile_normalization_recovers_item_id_from_content_id():
+    source_item = _source_item(item_id="tourapi:content:CID-RECOVER", content_id="CID-RECOVER")
+    payload = {
+        "gaps": [
+            {
+                "id": "gap:missing_detail_info:tourapi:content:CID-RECOVER",
+                "gap_type": "missing_detail_info",
+                "severity": "low",
+                "reason": "상세 정보가 부족합니다.",
+                "target_entity_id": "tourapi:content:CID-RECOVER",
+                "target_content_id": "CID-RECOVER",
+                "target_item_id": None,
+                "source_item_title": "대전 중앙시장 야간 미식 투어",
+                "suggested_source_family": "kto_tourapi_kor",
+                "needs_review": False,
+            }
+        ],
+        "coverage": {},
+    }
+
+    normalized = normalize_gap_profile_payload(payload, source_items=[source_item])
+
+    assert normalized["gaps"][0]["target_content_id"] == "CID-RECOVER"
+    assert normalized["gaps"][0]["target_item_id"] == "tourapi:content:CID-RECOVER"
+
+
+def test_gap_profile_normalization_adds_wellness_request_gap_when_gemini_omits_it():
+    source_items = [
+        _source_item(item_id=f"tourapi:content:{index}", content_id=str(index))
+        for index in range(20)
+    ]
+    payload = {
+        "gaps": [
+            {
+                "id": f"gap:missing_detail_info:tourapi:content:{index}",
+                "gap_type": "missing_detail_info",
+                "severity": "medium",
+                "reason": "상세 정보가 부족합니다.",
+                "target_item_id": f"tourapi:content:{index}",
+                "target_content_id": str(index),
+                "suggested_source_family": "kto_tourapi_kor",
+            }
+            for index in range(20)
+        ]
+        + [
+            {
+                "id": f"gap:missing_image_asset:tourapi:content:{index}",
+                "gap_type": "missing_image_asset",
+                "severity": "medium",
+                "reason": "이미지 후보가 부족합니다.",
+                "target_item_id": f"tourapi:content:{index}",
+                "target_content_id": str(index),
+                "suggested_source_family": "kto_tourapi_kor",
+            }
+            for index in range(4)
+        ],
+        "coverage": {},
+    }
+
+    normalized = normalize_gap_profile_payload(
+        payload,
+        source_items=source_items,
+        normalized_request={
+            "message": "부산에서 외국인 대상 웰니스 관광 상품 3개 기획해줘.",
+            "preferred_themes": ["웰니스"],
+            "geo_scope": {
+                "locations": [
+                    {
+                        "ldong_regn_cd": "26",
+                        "ldong_signgu_cd": None,
+                    }
+                ]
+            },
+        },
+    )
+
+    wellness_gap = next(
+        gap for gap in normalized["gaps"] if gap["suggested_source_family"] == "kto_wellness"
+    )
+    assert wellness_gap["gap_type"] == "missing_theme_specific_data"
+    assert wellness_gap["search_keyword"] == "웰니스"
+    assert wellness_gap["ldong_regn_cd"] == "26"
+    assert len(normalized["gaps"]) <= DATA_GAP_PROFILE_MAX_GAPS
 
 
 def test_tourapi_detail_planner_uses_compact_target_selection():
@@ -393,9 +825,11 @@ def test_evidence_fusion_prompt_does_not_copy_full_profile_or_capability_matrix(
     )
 
     assert "kto_api_capability_matrix" not in prompt
-    assert "evidence_profile 전체나 entities 전체를 다시 출력하지 마세요" in prompt
-    assert "candidate_evidence_cards를 반드시 작성하세요" in prompt
-    assert "짧게 작성하세요" not in prompt
+    assert "evidence_profile" in prompt
+    assert "entities" in prompt
+    assert "candidate_evidence_cards" in prompt
+    assert "다시 출력하지 마세요" in prompt
+    assert "candidate_interpretations" in prompt
     assert "후보 29" not in prompt
     assert len(prompt) < 20000
 
@@ -444,6 +878,63 @@ def test_evidence_fusion_preserves_candidate_level_detail_facts():
     assert "성인 5,000원" in prompt
 
 
+def test_evidence_fusion_interpretation_delta_preserves_base_cards():
+    from app.agents.data_enrichment import normalize_evidence_fusion_payload
+
+    base_fusion = {
+        "evidence_profile": {"entities": []},
+        "productization_advice": {
+            "candidate_evidence_cards": [
+                {
+                    "content_id": "CID-1",
+                    "source_item_id": "item-1",
+                    "title": "부산 요트투어",
+                    "usable_facts": [{"field": "주소", "value": "부산광역시", "source": "TourAPI"}],
+                    "visual_candidates": [{"image_url": "https://example.com/a.jpg", "usage_status": "candidate"}],
+                    "recommended_product_angles": ["해양 체험"],
+                    "experience_hooks": [],
+                    "restricted_claims": ["요금 단정 금지"],
+                    "evidence_document_ids": ["doc-1"],
+                }
+            ],
+            "usable_claims": ["장소명과 주소 사용 가능"],
+        },
+        "data_coverage": {"total_items": 1},
+        "unresolved_gaps": [],
+        "source_confidence": 0.8,
+    }
+    payload = {
+        "productization_advice": {
+            "summary": "요트 체험 후보가 강합니다.",
+            "candidate_interpretations": [
+                {
+                    "content_id": "CID-1",
+                    "title": "부산 요트투어",
+                    "priority": "high",
+                    "product_angle": "외국인 대상 해양 감성 체험",
+                    "rationale": "이미지와 장소 근거가 있어 체험 상품화에 적합합니다.",
+                    "experience_hooks": ["해운대 바다 경험"],
+                    "recommended_product_angles": ["사진 촬영 중심"],
+                    "use_with_caution": ["이미지 사용권 확인 필요"],
+                }
+            ],
+        },
+        "unresolved_gaps": [],
+        "source_confidence": 0.81,
+        "ui_highlights": [],
+    }
+
+    fusion = normalize_evidence_fusion_payload(payload, base_fusion=base_fusion)
+    card = fusion["productization_advice"]["candidate_evidence_cards"][0]
+
+    assert card["usable_facts"] == base_fusion["productization_advice"]["candidate_evidence_cards"][0]["usable_facts"]
+    assert card["visual_candidates"] == base_fusion["productization_advice"]["candidate_evidence_cards"][0]["visual_candidates"]
+    assert "외국인 대상 해양 감성 체험" in card["recommended_product_angles"]
+    assert "해운대 바다 경험" in card["experience_hooks"]
+    assert "이미지 사용권 확인 필요" in card["restricted_claims"]
+    assert card["fusion_interpretation"]["priority"] == "high"
+
+
 def test_enrichment_execution_records_success_and_fusion_merges_profile():
     with TestClient(app):
         pass
@@ -488,6 +979,809 @@ def test_enrichment_execution_records_success_and_fusion_merges_profile():
         assert fusion["evidence_profile"]["entities"][0]["visual_asset_count"] == 1
         assert "missing_image_asset" not in fusion["evidence_profile"]["entities"][0]["unresolved_gap_types"]
         assert fusion["data_coverage"]["image_coverage"] == 1.0
+
+
+def test_enrichment_execution_falls_back_to_content_id_when_item_id_missing():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:test:phase10:content-id-fallback"
+    content_id = "TEST-PHASE10-CONTENT-ID-FALLBACK"
+    source_item = _source_item(item_id=item_id, content_id=content_id)
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        gap_report = {
+            "gaps": [
+                {
+                    "id": "gap:missing_detail_info:content-id-fallback",
+                    "gap_type": "missing_detail_info",
+                    "severity": "medium",
+                    "reason": "상세 정보가 부족합니다.",
+                    "target_entity_id": f"tourapi:content:{content_id}",
+                    "target_item_id": None,
+                    "target_content_id": content_id,
+                    "source_item_title": "대전 중앙시장 야간 미식 투어",
+                    "suggested_source_family": "kto_tourapi_kor",
+                    "needs_review": True,
+                }
+            ]
+        }
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:tourapi-detail:content-id-fallback",
+                    "source_family": "kto_tourapi_kor",
+                    "tool_name": "kto_tour_detail_enrichment",
+                    "operation": "detailCommon2/detailIntro2/detailInfo2/detailImage2",
+                    "gap_ids": ["gap:missing_detail_info:content-id-fallback"],
+                    "gap_types": ["missing_detail_info"],
+                    "target_entity_id": f"tourapi:content:{content_id}",
+                    "target_item_id": None,
+                    "target_content_id": content_id,
+                    "reason": "content_id만 있는 상세 보강 계획입니다.",
+                    "arguments": {"item_id": None, "content_id": content_id},
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report=gap_report,
+            plan=plan,
+        )
+
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="",
+            step_id=None,
+        )
+
+        assert summary["executed_calls"] == 1
+        assert summary["failed_calls"] == 0
+        assert enrichment_run.tool_calls[0].status == "succeeded"
+
+
+def test_visual_enrichment_execution_saves_candidate_assets_and_source_documents():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:test:phase12:visual"
+    source_item = _source_item(item_id=item_id, content_id="TEST-PHASE12-VISUAL")
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        gap_report = {
+            "gaps": [
+                {
+                    "id": "gap:missing_image_asset:phase12",
+                    "gap_type": "missing_image_asset",
+                    "severity": "medium",
+                    "reason": "이미지 후보가 부족합니다.",
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-VISUAL",
+                    "source_item_title": "대전 중앙시장 야간 미식 투어",
+                    "suggested_source_family": "kto_tourism_photo",
+                    "needs_review": True,
+                }
+            ]
+        }
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:visual:test",
+                    "source_family": "kto_tourism_photo",
+                    "tool_name": "kto_tourism_photo_search",
+                    "operation": "gallerySearchList1",
+                    "gap_ids": ["gap:missing_image_asset:phase12"],
+                    "gap_types": ["missing_image_asset"],
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-VISUAL",
+                    "reason": "이미지 후보를 확인합니다.",
+                    "arguments": {"item_id": item_id, "content_id": "TEST-PHASE12-VISUAL", "query": "대전 중앙시장", "limit": 2},
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report=gap_report,
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            visual_provider=VisualProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="",
+            step_id=None,
+        )
+        fusion = fuse_evidence(
+            db=db,
+            source_items=[source_item],
+            retrieved_documents=[],
+            gap_report=gap_report,
+            enrichment_summary={"summary": summary},
+        )
+
+        asset = db.query(models.TourismVisualAsset).filter_by(source_item_id=item_id).one()
+        document = db.query(models.SourceDocument).filter_by(source_item_id=item_id, source="kto_tourism_photo").one()
+
+        assert summary["executed_calls"] == 1
+        assert summary["visual_assets"] == 1
+        assert summary["indexed_documents"] >= 1
+        assert asset.usage_status == "needs_license_review"
+        assert asset.license_note == "게시 전 사용권 확인 필요"
+        assert document.document_metadata["source_family"] == "kto_tourism_photo"
+        assert document.document_metadata["image_candidates"][0]["usage_status"] == "needs_license_review"
+        entity = fusion["evidence_profile"]["entities"][0]
+        assert entity["visual_asset_count"] == 1
+        assert entity["visual_candidates"][0]["source_family"] == "kto_tourism_photo"
+        assert fusion["unresolved_gaps"] == []
+        card = fusion["productization_advice"]["candidate_evidence_cards"][0]
+        assert card["visual_candidates"][0]["usage_status"] == "needs_license_review"
+        assert any("이미지는 후보 상태" in claim for claim in card["restricted_claims"])
+
+
+def test_visual_api_failure_records_failed_call_without_breaking_other_execution():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:test:phase12:visual-failed"
+    source_item = _source_item(item_id=item_id, content_id="TEST-PHASE12-VISUAL-FAILED")
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:visual:failed",
+                    "source_family": "kto_tourism_photo",
+                    "tool_name": "kto_tourism_photo_search",
+                    "operation": "gallerySearchList1",
+                    "gap_ids": ["gap:missing_image_asset:failed"],
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-VISUAL-FAILED",
+                    "reason": "이미지 후보를 확인합니다.",
+                    "arguments": {"item_id": item_id, "content_id": "TEST-PHASE12-VISUAL-FAILED", "query": "대전", "limit": 2},
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report={"gaps": []},
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            visual_provider=FailingVisualProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="",
+            step_id=None,
+        )
+
+        assert summary["failed_calls"] == 1
+        assert enrichment_run.status == "completed_with_errors"
+        assert enrichment_run.tool_calls[0].status == "failed"
+        assert enrichment_run.tool_calls[0].error["message"] == "gallerySearchList1 unavailable"
+
+
+def test_route_signal_capabilities_are_workflow_enabled_only_when_flags_are_on():
+    disabled = list_kto_capabilities(
+        Settings(
+            tourapi_service_key="test-key",
+            kto_durunubi_enabled=False,
+            kto_related_places_enabled=False,
+            kto_bigdata_enabled=False,
+            kto_crowding_enabled=False,
+            kto_regional_tourism_demand_enabled=False,
+        )
+    )
+    disabled_by_family = {item["source_family"]: item for item in disabled}
+
+    enabled = list_kto_capabilities(
+        Settings(
+            tourapi_service_key="test-key",
+            kto_durunubi_enabled=True,
+            kto_related_places_enabled=True,
+            kto_bigdata_enabled=True,
+            kto_crowding_enabled=True,
+            kto_regional_tourism_demand_enabled=True,
+        )
+    )
+    enabled_by_family = {item["source_family"]: item for item in enabled}
+
+    for family in [
+        "kto_durunubi",
+        "kto_related_places",
+        "kto_tourism_bigdata",
+        "kto_crowding_forecast",
+        "kto_regional_tourism_demand",
+    ]:
+        assert not disabled_by_family[family]["enabled"]
+        assert not any(op["workflow_enabled"] for op in disabled_by_family[family]["operations"])
+        assert enabled_by_family[family]["enabled"]
+        assert any(op["workflow_enabled"] for op in enabled_by_family[family]["operations"])
+
+
+def test_route_signal_planner_executes_enabled_source_family_and_respects_budget():
+    gap_report = {
+        "gaps": [
+            {
+                "id": "gap:missing_route_context:request",
+                "gap_type": "missing_route_context",
+                "severity": "medium",
+                "reason": "코스형 요청이라 동선 근거가 필요합니다.",
+                "target_item_id": "item-1",
+                "target_content_id": "CID-1",
+                "source_item_title": "대전 중앙시장 야간 미식 투어",
+                "suggested_source_family": "kto_durunubi",
+                "needs_review": True,
+            },
+            {
+                "id": "gap:missing_demand_signal:request",
+                "gap_type": "missing_demand_signal",
+                "severity": "low",
+                "reason": "수요 보조 신호가 필요합니다.",
+                "target_item_id": "item-1",
+                "target_content_id": "CID-1",
+                "source_item_title": "대전 중앙시장 야간 미식 투어",
+                "suggested_source_family": "kto_tourism_bigdata",
+                "needs_review": True,
+            },
+        ]
+    }
+    capability_routing = {
+        "family_routes": [
+            {
+                "planner": "route_signal",
+                "gap_ids": [
+                    "gap:missing_route_context:request",
+                    "gap:missing_demand_signal:request",
+                ],
+                "source_families": ["kto_durunubi", "kto_tourism_bigdata"],
+                "reason": "route/signal planner로 보냅니다.",
+            }
+        ]
+    }
+
+    fragment = normalize_family_planner_payload(
+        {"planned_calls": [], "skipped_calls": []},
+        planner_key="route_signal",
+        capability_routing=capability_routing,
+        gap_report=gap_report,
+        settings=Settings(
+            tourapi_service_key="test-key",
+            kto_durunubi_enabled=True,
+            kto_bigdata_enabled=True,
+        ),
+        max_call_budget=1,
+    )
+
+    assert len(fragment["planned_calls"]) == 1
+    assert len(fragment["skipped_calls"]) == 1
+    assert fragment["planned_calls"][0]["source_family"] == "kto_durunubi"
+    assert fragment["planned_calls"][0]["tool_name"] == "kto_durunubi_course_list"
+    assert fragment["skipped_calls"][0]["skip_reason"] == "max_call_budget_exceeded"
+
+
+def test_route_signal_planner_recovers_executable_gap_from_bad_future_skip():
+    gap_report = {
+        "gaps": [
+            {
+                "id": "gap:missing_crowding_signal:request",
+                "gap_type": "missing_crowding_signal",
+                "severity": "medium",
+                "reason": "혼잡 회피 요청이라 혼잡 예측 신호가 필요합니다.",
+                "target_item_id": "",
+                "target_content_id": "",
+                "source_item_title": "",
+                "suggested_source_family": "kto_crowding_forecast",
+                "needs_review": True,
+            }
+        ]
+    }
+    capability_routing = {
+        "family_routes": [
+            {
+                "planner": "route_signal",
+                "gap_ids": ["gap:missing_crowding_signal:request"],
+                "source_families": ["kto_crowding_forecast"],
+                "reason": "route/signal planner로 보냅니다.",
+            }
+        ]
+    }
+
+    fragment = normalize_family_planner_payload(
+        {
+            "planned_calls": [],
+            "skipped_calls": [
+                {
+                    "gap_ids": ["gap:missing_crowding_signal:request"],
+                    "source_family": "kto_crowding_forecast",
+                    "skip_reason": "future_provider_not_implemented",
+                }
+            ],
+        },
+        planner_key="route_signal",
+        capability_routing=capability_routing,
+        gap_report=gap_report,
+        settings=Settings(
+            tourapi_service_key="test-key",
+            kto_crowding_enabled=True,
+        ),
+        max_call_budget=1,
+    )
+
+    assert len(fragment["planned_calls"]) == 1
+    assert fragment["planned_calls"][0]["source_family"] == "kto_crowding_forecast"
+    assert fragment["planned_calls"][0]["tool_name"] == "kto_attraction_crowding_forecast"
+    assert fragment["skipped_calls"] == []
+
+
+def test_route_signal_enrichment_saves_route_assets_signals_and_source_documents():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:test:phase12:route-signal"
+    source_item = _source_item(item_id=item_id, content_id="TEST-PHASE12-ROUTE-SIGNAL")
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        gap_report = {
+            "gaps": [
+                {
+                    "id": "gap:missing_route_context:phase12",
+                    "gap_type": "missing_route_context",
+                    "severity": "medium",
+                    "reason": "동선 근거가 부족합니다.",
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-ROUTE-SIGNAL",
+                    "source_item_title": "대전 중앙시장 야간 미식 투어",
+                    "suggested_source_family": "kto_durunubi",
+                    "needs_review": True,
+                },
+                {
+                    "id": "gap:missing_demand_signal:phase12",
+                    "gap_type": "missing_demand_signal",
+                    "severity": "low",
+                    "reason": "수요 보조 신호가 필요합니다.",
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-ROUTE-SIGNAL",
+                    "source_item_title": "대전 중앙시장 야간 미식 투어",
+                    "suggested_source_family": "kto_tourism_bigdata",
+                    "needs_review": True,
+                },
+            ]
+        }
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:route:test",
+                    "source_family": "kto_durunubi",
+                    "tool_name": "kto_durunubi_course_list",
+                    "operation": "courseList",
+                    "gap_ids": ["gap:missing_route_context:phase12"],
+                    "gap_types": ["missing_route_context"],
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-ROUTE-SIGNAL",
+                    "reason": "동선 후보를 확인합니다.",
+                    "arguments": {"item_id": item_id, "content_id": "TEST-PHASE12-ROUTE-SIGNAL", "query": "대전 원도심", "limit": 2},
+                },
+                {
+                    "id": "plan:signal:test",
+                    "source_family": "kto_tourism_bigdata",
+                    "tool_name": "kto_tourism_bigdata_locgo_visitors",
+                    "operation": "locgoRegnVisitrDDList",
+                    "gap_ids": ["gap:missing_demand_signal:phase12"],
+                    "gap_types": ["missing_demand_signal"],
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-ROUTE-SIGNAL",
+                    "reason": "수요 신호를 확인합니다.",
+                    "arguments": {"item_id": item_id, "content_id": "TEST-PHASE12-ROUTE-SIGNAL", "limit": 2},
+                },
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report=gap_report,
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            route_signal_provider=RouteSignalProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="",
+            step_id=None,
+        )
+        fusion = fuse_evidence(
+            db=db,
+            source_items=[source_item],
+            retrieved_documents=[],
+            gap_report=gap_report,
+            enrichment_summary={"summary": summary},
+        )
+
+        entity_id = "entity:tourapi:content:TEST-PHASE12-ROUTE-SIGNAL"
+        route_asset = db.query(models.TourismRouteAsset).filter_by(entity_id=entity_id).one()
+        signal_record = db.query(models.TourismSignalRecord).filter_by(entity_id=entity_id).one()
+        route_doc = db.query(models.SourceDocument).filter_by(source_item_id=item_id, source="kto_durunubi").one()
+        signal_doc = db.query(models.SourceDocument).filter_by(source_item_id=item_id, source="kto_tourism_bigdata").one()
+
+        assert summary["executed_calls"] == 2
+        assert summary["route_assets"] == 1
+        assert summary["signal_records"] == 1
+        assert route_asset.source_family == "kto_durunubi"
+        assert signal_record.signal_type == "visitor_demand"
+        assert route_doc.document_metadata["content_type"] == "route"
+        assert signal_doc.document_metadata["content_type"] == "signal"
+        entity = fusion["evidence_profile"]["entities"][0]
+        assert entity["route_asset_count"] == 1
+        assert entity["signal_record_count"] == 1
+        assert fusion["unresolved_gaps"] == []
+        card = fusion["productization_advice"]["candidate_evidence_cards"][0]
+        assert card["route_assets"][0]["source_family"] == "kto_durunubi"
+        assert card["signal_records"][0]["signal_type"] == "visitor_demand"
+        assert any("판매량" in claim for claim in card["restricted_claims"])
+
+
+def test_route_signal_api_failure_records_failed_call_without_breaking_workflow():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:test:phase12:route-failed"
+    source_item = _source_item(item_id=item_id, content_id="TEST-PHASE12-ROUTE-FAILED")
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:route:failed",
+                    "source_family": "kto_durunubi",
+                    "tool_name": "kto_durunubi_course_list",
+                    "operation": "courseList",
+                    "gap_ids": ["gap:missing_route_context:failed"],
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-ROUTE-FAILED",
+                    "reason": "동선 후보를 확인합니다.",
+                    "arguments": {"item_id": item_id, "content_id": "TEST-PHASE12-ROUTE-FAILED", "query": "대전", "limit": 2},
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report={"gaps": []},
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            route_signal_provider=FailingRouteSignalProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="",
+            step_id=None,
+        )
+
+        assert summary["failed_calls"] == 1
+        assert enrichment_run.status == "completed_with_errors"
+        assert enrichment_run.tool_calls[0].status == "failed"
+        assert enrichment_run.tool_calls[0].error["message"] == "courseList unavailable"
+
+
+def test_theme_capabilities_are_workflow_enabled_only_when_flags_are_on():
+    disabled = list_kto_capabilities(
+        Settings(
+            tourapi_service_key="test-key",
+            kto_wellness_enabled=False,
+            kto_pet_enabled=False,
+            kto_audio_enabled=False,
+            kto_eco_enabled=False,
+            allow_medical_api=False,
+        )
+    )
+    disabled_by_family = {item["source_family"]: item for item in disabled}
+
+    enabled = list_kto_capabilities(
+        Settings(
+            tourapi_service_key="test-key",
+            kto_wellness_enabled=True,
+            kto_pet_enabled=True,
+            kto_audio_enabled=True,
+            kto_eco_enabled=True,
+            allow_medical_api=False,
+        )
+    )
+    enabled_by_family = {item["source_family"]: item for item in enabled}
+
+    for family in ["kto_wellness", "kto_pet", "kto_audio", "kto_eco"]:
+        assert not disabled_by_family[family]["enabled"]
+        assert not any(op["workflow_enabled"] for op in disabled_by_family[family]["operations"])
+        assert enabled_by_family[family]["enabled"]
+        assert any(op["workflow_enabled"] for op in enabled_by_family[family]["operations"])
+
+    assert not enabled_by_family["kto_medical"]["enabled"]
+    assert not any(op["workflow_enabled"] for op in enabled_by_family["kto_medical"]["operations"])
+
+    medical_enabled = list_kto_capabilities(
+        Settings(tourapi_service_key="test-key", allow_medical_api=True)
+    )
+    medical = {item["source_family"]: item for item in medical_enabled}["kto_medical"]
+    assert medical["enabled"]
+    assert any(
+        op["tool_name"] == "kto_medical_keyword_search" and op["workflow_enabled"]
+        for op in medical["operations"]
+    )
+
+
+def test_theme_planner_executes_enabled_source_family_and_respects_budget():
+    gap_report = {
+        "gaps": [
+            {
+                "id": "gap:missing_pet_policy:request",
+                "gap_type": "missing_pet_policy",
+                "severity": "medium",
+                "reason": "반려동물 동반 조건 근거가 필요합니다.",
+                "target_item_id": "item-1",
+                "target_content_id": "CID-1",
+                "source_item_title": "대전 중앙시장 야간 미식 투어",
+                "suggested_source_family": "kto_pet",
+                "needs_review": True,
+            },
+            {
+                "id": "gap:missing_wellness_attributes:request",
+                "gap_type": "missing_wellness_attributes",
+                "severity": "low",
+                "reason": "웰니스 속성 근거가 필요합니다.",
+                "target_item_id": "item-1",
+                "target_content_id": "CID-1",
+                "source_item_title": "대전 중앙시장 야간 미식 투어",
+                "suggested_source_family": "kto_wellness",
+                "needs_review": True,
+            },
+        ]
+    }
+    capability_routing = {
+        "family_routes": [
+            {
+                "planner": "theme_data",
+                "gap_ids": [
+                    "gap:missing_pet_policy:request",
+                    "gap:missing_wellness_attributes:request",
+                ],
+                "source_families": ["kto_pet", "kto_wellness"],
+                "reason": "theme planner로 보냅니다.",
+            }
+        ]
+    }
+
+    fragment = normalize_family_planner_payload(
+        {"planned_calls": [], "skipped_calls": []},
+        planner_key="theme_data",
+        capability_routing=capability_routing,
+        gap_report=gap_report,
+        settings=Settings(
+            tourapi_service_key="test-key",
+            kto_pet_enabled=True,
+            kto_wellness_enabled=True,
+        ),
+        max_call_budget=1,
+    )
+
+    assert len(fragment["planned_calls"]) == 1
+    assert len(fragment["skipped_calls"]) == 1
+    assert fragment["planned_calls"][0]["source_family"] == "kto_pet"
+    assert fragment["planned_calls"][0]["tool_name"] == "kto_pet_keyword_search"
+    assert fragment["skipped_calls"][0]["skip_reason"] == "max_call_budget_exceeded"
+
+
+def test_theme_planner_recovers_executable_gap_from_bad_future_skip():
+    gap_report = {
+        "gaps": [
+            {
+                "id": "gap:missing_multilingual_story:request",
+                "gap_type": "missing_multilingual_story",
+                "severity": "low",
+                "reason": "외국인 대상 요청이라 오디오/스토리 후보가 필요합니다.",
+                "target_item_id": "",
+                "target_content_id": "",
+                "source_item_title": "해운대 야간 관광",
+                "suggested_source_family": "kto_audio",
+                "needs_review": True,
+            }
+        ]
+    }
+    capability_routing = {
+        "family_routes": [
+            {
+                "planner": "theme_data",
+                "gap_ids": ["gap:missing_multilingual_story:request"],
+                "source_families": ["kto_audio"],
+                "reason": "theme planner로 보냅니다.",
+            }
+        ]
+    }
+
+    fragment = normalize_family_planner_payload(
+        {
+            "planned_calls": [],
+            "skipped_calls": [
+                {
+                    "gap_ids": ["gap:missing_multilingual_story:request"],
+                    "source_family": "kto_audio",
+                    "skip_reason": "future_provider_not_implemented",
+                }
+            ],
+        },
+        planner_key="theme_data",
+        capability_routing=capability_routing,
+        gap_report=gap_report,
+        settings=Settings(
+            tourapi_service_key="test-key",
+            kto_audio_enabled=True,
+        ),
+        max_call_budget=1,
+    )
+
+    assert len(fragment["planned_calls"]) == 1
+    assert fragment["planned_calls"][0]["source_family"] == "kto_audio"
+    assert fragment["planned_calls"][0]["tool_name"] == "kto_audio_story_search"
+    assert fragment["skipped_calls"] == []
+
+
+def test_theme_enrichment_saves_candidates_entities_visuals_source_documents_and_fusion():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:test:phase12:theme"
+    source_item = _source_item(item_id=item_id, content_id="TEST-PHASE12-THEME")
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        gap_report = {
+            "gaps": [
+                {
+                    "id": "gap:missing_pet_policy:phase12",
+                    "gap_type": "missing_pet_policy",
+                    "severity": "medium",
+                    "reason": "반려동물 동반 조건 근거가 필요합니다.",
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-THEME",
+                    "source_item_title": "대전 중앙시장 야간 미식 투어",
+                    "suggested_source_family": "kto_pet",
+                    "needs_review": True,
+                },
+            ]
+        }
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:theme:test",
+                    "source_family": "kto_pet",
+                    "tool_name": "kto_pet_keyword_search",
+                    "operation": "searchKeyword2",
+                    "gap_ids": ["gap:missing_pet_policy:phase12"],
+                    "gap_types": ["missing_pet_policy"],
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-THEME",
+                    "reason": "반려동물 테마 후보를 확인합니다.",
+                    "arguments": {"item_id": item_id, "content_id": "TEST-PHASE12-THEME", "query": "대전 중앙시장", "limit": 2},
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report=gap_report,
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            theme_provider=ThemeProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="",
+            step_id=None,
+        )
+        fusion = fuse_evidence(
+            db=db,
+            source_items=[source_item],
+            retrieved_documents=[],
+            gap_report=gap_report,
+            enrichment_summary={"summary": summary},
+        )
+
+        document = db.query(models.SourceDocument).filter_by(source_item_id=item_id, source="kto_pet").one()
+        entity = db.query(models.TourismEntity).filter_by(primary_source_item_id=item_id).one()
+        visual = db.query(models.TourismVisualAsset).filter_by(source_item_id=item_id, source_family="kto_pet").one()
+
+        assert summary["executed_calls"] == 1
+        assert summary["theme_candidates"] == 1
+        assert summary["visual_assets"] == 1
+        assert document.document_metadata["content_type"] == "theme"
+        assert document.document_metadata["theme_source_family"] == "kto_pet"
+        assert entity.entity_metadata["source_family"] == "kto_pet"
+        assert visual.usage_status == "needs_license_review"
+
+        fused_entity = fusion["evidence_profile"]["entities"][0]
+        assert fused_entity["theme_candidate_count"] == 1
+        assert fusion["unresolved_gaps"] == []
+        card = fusion["productization_advice"]["candidate_evidence_cards"][0]
+        assert card["theme_candidates"][0]["source_family"] == "kto_pet"
+        assert any("반려동물" in claim for claim in card["restricted_claims"])
+
+
+def test_theme_api_failure_records_failed_call_without_breaking_workflow():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:test:phase12:theme-failed"
+    source_item = _source_item(item_id=item_id, content_id="TEST-PHASE12-THEME-FAILED")
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:theme:failed",
+                    "source_family": "kto_pet",
+                    "tool_name": "kto_pet_keyword_search",
+                    "operation": "searchKeyword2",
+                    "gap_ids": ["gap:missing_pet_policy:failed"],
+                    "target_item_id": item_id,
+                    "target_content_id": "TEST-PHASE12-THEME-FAILED",
+                    "reason": "반려동물 테마 후보를 확인합니다.",
+                    "arguments": {"item_id": item_id, "content_id": "TEST-PHASE12-THEME-FAILED", "query": "대전", "limit": 2},
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report={"gaps": []},
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            theme_provider=FailingThemeProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="",
+            step_id=None,
+        )
+
+        assert summary["failed_calls"] == 1
+        assert enrichment_run.status == "completed_with_errors"
+        assert enrichment_run.tool_calls[0].status == "failed"
+        assert enrichment_run.tool_calls[0].error["message"] == "searchKeyword2 unavailable"
 
 
 def test_enrichment_execution_records_failed_call_without_raising():

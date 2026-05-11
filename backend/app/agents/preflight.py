@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-MAX_PRODUCT_COUNT = 5
+MAX_PRODUCT_COUNT = 20
 
 
 KOREAN_NUMBER_WORDS = {
@@ -23,6 +23,35 @@ KOREAN_NUMBER_WORDS = {
     "여덟": 8,
     "아홉": 9,
     "열": 10,
+    "열하나": 11,
+    "열한": 11,
+    "열둘": 12,
+    "열두": 12,
+    "열셋": 13,
+    "열세": 13,
+    "열넷": 14,
+    "열네": 14,
+    "열다섯": 15,
+    "열여섯": 16,
+    "열일곱": 17,
+    "열여덟": 18,
+    "열아홉": 19,
+    "스무": 20,
+    "스물": 20,
+    "스물하나": 21,
+    "스물한": 21,
+    "스물둘": 22,
+    "스물두": 22,
+    "스물셋": 23,
+    "스물세": 23,
+    "스물넷": 24,
+    "스물네": 24,
+    "스물다섯": 25,
+    "스물여섯": 26,
+    "스물일곱": 27,
+    "스물여덟": 28,
+    "스물아홉": 29,
+    "서른": 30,
 }
 
 TRAVEL_SCOPE_TERMS = {
@@ -176,7 +205,7 @@ def _count_from_message(message: str) -> int | None:
     ]
     if digit_matches:
         return max(digit_matches)
-    for word, value in KOREAN_NUMBER_WORDS.items():
+    for word, value in sorted(KOREAN_NUMBER_WORDS.items(), key=lambda item: len(item[0]), reverse=True):
         if re.search(rf"{word}(?:개|가지|종|개정도|개쯤|개의)", normalized):
             return value
     return None

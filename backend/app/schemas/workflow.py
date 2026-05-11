@@ -15,7 +15,7 @@ class WorkflowRunInput(BaseModel):
     region: str | None = None
     period: str | None = None
     target_customer: str | None = None
-    product_count: int = Field(default=3, ge=1, le=5)
+    product_count: int = Field(default=3, ge=1, le=20)
     preferences: list[str] = Field(default_factory=list)
     avoid: list[str] = Field(default_factory=list)
     output_language: Literal["ko", "en"] = "ko"

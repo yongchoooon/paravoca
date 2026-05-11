@@ -62,6 +62,12 @@ def call_gemini_json(
     started = time.perf_counter()
     original_prompt = _original_prompt or prompt
     full_prompt = _build_json_prompt(prompt=prompt, response_schema=response_schema)
+    timeout_seconds = max(1.0, float(settings.gemini_timeout_seconds))
+    debug_request_config = {
+        "maxOutputTokens": max_output_tokens,
+        "temperature": temperature,
+        "timeoutSeconds": timeout_seconds,
+    }
 
     if not settings.gemini_api_key:
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -93,7 +99,7 @@ def call_gemini_json(
             full_prompt=full_prompt,
             original_prompt=original_prompt,
             response_schema=response_schema,
-            request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+            request_config=debug_request_config,
             usage={},
             finish_reason=None,
             raw_text=None,
@@ -126,7 +132,7 @@ def call_gemini_json(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 params={"key": settings.gemini_api_key},
                 json=request_payload,
-                timeout=45,
+                timeout=timeout_seconds,
             )
             if response.is_error and _is_retryable_response(response) and attempt < max_retries:
                 delay = _retry_delay_seconds(attempt=attempt, response=response, settings=settings)
@@ -196,7 +202,7 @@ def call_gemini_json(
             full_prompt=full_prompt,
             original_prompt=original_prompt,
             response_schema=response_schema,
-            request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+            request_config=debug_request_config,
             usage={},
             finish_reason=None,
             raw_text=None,
@@ -241,7 +247,7 @@ def call_gemini_json(
             full_prompt=full_prompt,
             original_prompt=original_prompt,
             response_schema=response_schema,
-            request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+            request_config=debug_request_config,
             usage={},
             finish_reason=None,
             raw_text=_response_debug_body(response),
@@ -328,7 +334,7 @@ def call_gemini_json(
             full_prompt=full_prompt,
             original_prompt=original_prompt,
             response_schema=response_schema,
-            request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+            request_config=debug_request_config,
             usage=usage,
             finish_reason=finish_reason,
             raw_text=raw_text if "raw_text" in locals() else None,
@@ -399,7 +405,7 @@ def call_gemini_json(
         full_prompt=full_prompt,
         original_prompt=original_prompt,
         response_schema=response_schema,
-        request_config={"maxOutputTokens": max_output_tokens, "temperature": temperature},
+        request_config=debug_request_config,
         usage=usage,
         finish_reason=finish_reason,
         raw_text=raw_text,
@@ -502,8 +508,11 @@ def _validate_json_schema(payload: dict[str, Any], schema: dict[str, Any], path:
             raise GeminiGatewayError(f"{path}.{key} is required")
 
     properties = schema.get("properties") or {}
+    required_set = set(required)
     for key, child_schema in properties.items():
         if key not in payload:
+            continue
+        if payload[key] is None and key not in required_set:
             continue
         _validate_json_value(payload[key], child_schema, f"{path}.{key}")
 

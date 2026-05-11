@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     openai_check_model: str = "gpt-4.1-nano"
     gemini_check_model: str = "gemini-2.5-flash-lite"
     gemini_generation_model: str = "gemini-2.5-flash-lite"
+    gemini_timeout_seconds: float = 60.0
     gemini_max_retries: int = 3
     gemini_json_max_retries: int = 2
     gemini_retry_base_seconds: float = 1.5

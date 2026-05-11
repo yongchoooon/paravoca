@@ -11,7 +11,7 @@ from typing import Any
 from langgraph.graph import END, StateGraph
 from sqlalchemy.orm import Session
 
-from app.agents.geo_resolver import resolve_geo_scope, save_geo_resolution
+from app.agents.geo_resolver import load_ldong_catalog, resolve_geo_scope, save_geo_resolution
 from app.agents.state import GraphState
 from app.agents.data_enrichment import (
     API_CAPABILITY_ROUTING_RESPONSE_SCHEMA,
@@ -44,7 +44,7 @@ from app.agents.data_enrichment import (
 )
 from app.core.config import get_settings
 from app.db import models
-from app.llm.gemini_gateway import GeminiJsonResult, call_gemini_json
+from app.llm.gemini_gateway import GeminiGatewayError, GeminiJsonResult, call_gemini_json
 from app.llm.usage_log import safe_write_llm_usage_log
 from app.rag.chroma_store import index_source_documents, search_source_documents
 from app.rag.source_documents import upsert_source_documents_from_items
@@ -52,6 +52,8 @@ from app.tools.tourism import get_tourism_provider, log_tool_call, upsert_touris
 
 
 logger = logging.getLogger("uvicorn.error")
+
+MAX_PRODUCT_COUNT = 20
 
 
 def run_product_planning_workflow(db: Session, run_id: str) -> dict[str, Any]:
@@ -323,7 +325,14 @@ def _build_graph(db: Session):
         },
     )
     graph.add_edge("geo_exit", END)
-    graph.add_edge("baseline_data", "data_gap_profiler")
+    graph.add_conditional_edges(
+        "baseline_data",
+        _route_after_baseline_data,
+        {
+            "end": END,
+            "continue": "data_gap_profiler",
+        },
+    )
     graph.add_conditional_edges(
         "data_gap_profiler",
         _route_after_gap_profile,
@@ -356,6 +365,10 @@ def _route_after_geo_resolution(state: GraphState) -> str:
     ):
         return "geo_exit"
     return "data"
+
+
+def _route_after_baseline_data(state: GraphState) -> str:
+    return "end" if state.get("final_report") else "continue"
 
 
 def _route_after_gap_profile(state: GraphState) -> str:
@@ -399,7 +412,7 @@ def _default_normalized_request(request: dict[str, Any]) -> dict[str, Any]:
         "avoid": _string_list(request.get("avoid")),
         "output_language": request.get("output_language") or "ko",
         "product_generation_constraints": [
-            "상품 개수는 최대 5개입니다.",
+            f"상품 개수는 최대 {MAX_PRODUCT_COUNT}개입니다.",
             "지역 코드는 GeoResolverAgent가 확정합니다.",
             "근거 없는 운영시간, 가격, 예약 가능 여부는 단정하지 않습니다.",
         ],
@@ -415,7 +428,7 @@ def _coerce_product_count(value: Any, fallback: int) -> int:
         count = int(value or fallback)
     except (TypeError, ValueError):
         count = fallback
-    return max(1, min(5, count))
+    return max(1, min(MAX_PRODUCT_COUNT, count))
 
 
 def planner_agent(db: Session, state: GraphState) -> GraphState:
@@ -463,12 +476,13 @@ def geo_resolver_agent(db: Session, state: GraphState) -> GraphState:
         settings = get_settings()
         llm_hints: dict[str, Any] | None = None
         if settings.llm_enabled:
+            catalog = load_ldong_catalog(db)
             gemini_result = call_gemini_json(
                 db=db,
                 run_id=state["run_id"],
                 step_id=step.id,
                 purpose="geo_resolution",
-                prompt=_geo_resolution_prompt(resolver_input),
+                prompt=_geo_resolution_prompt(resolver_input, catalog_options=_geo_catalog_options_for_prompt(catalog)),
                 response_schema=GEO_RESOLUTION_RESPONSE_SCHEMA,
                 max_output_tokens=2048,
                 temperature=0.05,
@@ -517,13 +531,26 @@ def geo_exit_node(db: Session, state: GraphState) -> GraphState:
     status = "failed" if is_clarification else "unsupported"
     run_status = status
     if is_clarification:
-        message = str(
-            geo_scope.get("clarification_question")
-            or "지역을 하나로 확정할 수 없습니다. 후보 중 원하는 지역을 선택해 주세요."
+        is_multi_region = (
+            geo_scope.get("mode") == "unsupported_multi_region"
+            or geo_scope.get("resolution_strategy") == "unsupported_multi_region"
         )
-        title = "지역을 하나로 좁혀 주세요"
-        detail = "아래 후보 중 원하는 지역명을 포함해서 다시 요청하면 검색과 상품 기획을 진행합니다."
-        qa_summary = "지역 확인이 필요해 QA 검수를 실행하지 않았습니다."
+        if is_multi_region:
+            message = str(
+                geo_scope.get("clarification_question")
+                or "현재 PARAVOCA는 한 번에 하나의 지역만 지원합니다. 후보 중 하나만 포함해 다시 요청해 주세요."
+            )
+            title = "단일 지역만 지원합니다"
+            detail = "지역 이동형 코스나 복수 지역을 한 번에 연결하는 요청은 아직 지원하지 않습니다."
+            qa_summary = "복수 지역 요청이라 QA 검수를 실행하지 않았습니다."
+        else:
+            message = str(
+                geo_scope.get("clarification_question")
+                or "지역을 하나로 확정할 수 없습니다. 후보 중 원하는 지역을 선택해 주세요."
+            )
+            title = "지역을 하나로 좁혀 주세요"
+            detail = "아래 후보 중 원하는 지역명을 포함해서 다시 요청하면 검색과 상품 기획을 진행합니다."
+            qa_summary = "지역 확인이 필요해 QA 검수를 실행하지 않았습니다."
     else:
         message = str(
             geo_scope.get("unsupported_reason")
@@ -596,6 +623,17 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
             raise RuntimeError("Geo scope was not resolved. Nationwide fallback is disabled.")
 
         all_items: list[Any] = []
+        diagnostics: dict[str, Any] = {
+            "reason": None,
+            "tourapi_raw_collected_count": 0,
+            "tourapi_deduped_item_count": 0,
+            "geo_filtered_item_count": 0,
+            "source_document_upsert_count": 0,
+            "indexed_document_count": 0,
+            "vector_search_filter": {},
+            "vector_search_result_count": 0,
+            "post_geo_filter_result_count": 0,
+        }
         primary_keyword = _keyword_for_geo_scope(normalized, geo_scope)
         for location in locations:
             geo_kwargs = _tourapi_geo_kwargs(location)
@@ -674,16 +712,35 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
             )
             all_items.extend([*attractions, *area_attractions, *area_leisure, *events, *stays])
 
+        diagnostics["tourapi_raw_collected_count"] = len(all_items)
         items = _dedupe_items(all_items)
+        diagnostics["tourapi_deduped_item_count"] = len(items)
         items = _filter_items_by_geo_scope(items, geo_scope=geo_scope, run_id=run_id)
+        diagnostics["geo_filtered_item_count"] = len(items)
         if not items:
-            raise RuntimeError(
-                f"TourAPI returned no tourism items for resolved geo_scope={geo_scope!r}"
+            diagnostics["reason"] = "tourapi_empty_for_resolved_geo_scope"
+            report = _insufficient_source_data_report(
+                db=db,
+                state=state,
+                geo_scope=geo_scope,
+                diagnostics=diagnostics,
+                detail=(
+                    "해석된 지역 범위로 TourAPI를 조회했지만 상품 기획에 사용할 관광 후보를 찾지 못했습니다."
+                ),
             )
+            step.output = report
+            return {
+                "run_status": "failed",
+                "final_report": report,
+                "approval": report["approval"],
+            }
         upsert_tourism_items(db, items)
         source_documents = upsert_source_documents_from_items(db, items)
+        diagnostics["source_document_upsert_count"] = len(source_documents)
         indexed_count = index_source_documents(db, source_documents)
+        diagnostics["indexed_document_count"] = indexed_count
         vector_filters = _vector_filters_for_geo_scope(geo_scope, source=provider_source)
+        diagnostics["vector_search_filter"] = vector_filters
         retrieved = log_tool_call(
             db=db,
             run_id=run_id,
@@ -701,15 +758,30 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
                 filters=vector_filters,
             ),
         )
+        diagnostics["vector_search_result_count"] = len(retrieved)
         retrieved = _filter_retrieved_documents_by_geo_scope(
             retrieved,
             geo_scope=geo_scope,
             run_id=run_id,
         )
+        diagnostics["post_geo_filter_result_count"] = len(retrieved)
         if not retrieved:
-            raise RuntimeError(
-                f"No TourAPI source documents were retrieved from vector search for geo_scope={geo_scope!r}"
+            diagnostics["reason"] = "vector_search_empty_for_resolved_geo_scope"
+            report = _insufficient_source_data_report(
+                db=db,
+                state=state,
+                geo_scope=geo_scope,
+                diagnostics=diagnostics,
+                detail=(
+                    "TourAPI 후보는 수집했지만 현재 검색 조건으로 상품 기획에 사용할 근거 문서를 찾지 못했습니다."
+                ),
             )
+            step.output = report
+            return {
+                "run_status": "failed",
+                "final_report": report,
+                "approval": report["approval"],
+            }
         raw_source_items = [_tourism_item_to_dict(item) for item in items]
         source_items = select_enrichment_candidate_items(
             source_items=raw_source_items,
@@ -727,6 +799,7 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
             "candidate_pool_summary": candidate_pool_summary,
             "retrieved_documents": retrieved,
             "indexed_documents": indexed_count,
+            "retrieval_diagnostics": diagnostics,
             "detail_enrichment": {
                 "status": "deferred_to_enrichment_executor",
                 "message": "Phase 10부터 상세/이미지 보강은 gap profiling 이후 선택적으로 실행합니다.",
@@ -738,7 +811,146 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
             "source_items": output["source_items"],
             "candidate_pool_summary": candidate_pool_summary,
             "retrieved_documents": retrieved,
+            "retrieval_diagnostics": diagnostics,
         }
+
+
+def _insufficient_source_data_report(
+    *,
+    db: Session,
+    state: GraphState,
+    geo_scope: dict[str, Any],
+    diagnostics: dict[str, Any],
+    detail: str,
+) -> dict[str, Any]:
+    normalized = state.get("normalized_request") or {}
+    region_label = _resolved_geo_scope_label(geo_scope)
+    message = (
+        f"{region_label} 기준으로 TourAPI 데이터를 확인했지만, "
+        "상품 기획에 사용할 수 있는 관광 근거를 충분히 찾지 못했습니다."
+    )
+    suggested_next_requests = _insufficient_source_data_suggestions(
+        normalized=normalized,
+        geo_scope=geo_scope,
+        region_label=region_label,
+    )
+    return {
+        "status": "insufficient_source_data",
+        "run_status": "failed",
+        "reason": "insufficient_source_data",
+        "normalized_request": normalized,
+        "geo_scope": geo_scope,
+        "user_message": {
+            "title": "관광 근거 데이터가 부족합니다",
+            "message": message,
+            "detail": detail,
+            "suggestions": suggested_next_requests,
+        },
+        "source_items": [],
+        "candidate_pool_summary": {
+            "status": "insufficient_source_data",
+            "raw_collected_count": diagnostics.get("tourapi_raw_collected_count", 0),
+            "geo_filtered_item_count": diagnostics.get("geo_filtered_item_count", 0),
+            "selected_count": 0,
+        },
+        "retrieved_documents": [],
+        "retrieval_diagnostics": diagnostics,
+        "suggested_next_requests": suggested_next_requests,
+        "data_gap_report": {
+            "gaps": [],
+            "coverage": {
+                "status": "insufficient_source_data",
+                "summary": "상품 생성에 필요한 최소 근거가 부족해 gap profiling을 실행하지 않았습니다.",
+            },
+            "reasoning_summary": "Baseline TourAPI/RAG retrieval 단계에서 충분한 근거 문서를 찾지 못했습니다.",
+            "needs_review": [],
+        },
+        "enrichment_plan": {"planned_calls": [], "skipped_calls": [], "reason": "insufficient_source_data"},
+        "enrichment_summary": {},
+        "evidence_profile": {"entities": [], "reason": "insufficient_source_data"},
+        "productization_advice": {
+            "usable_claims": [],
+            "restricted_claims": ["충분한 지역 근거 없이 상품 본문을 생성하지 않습니다."],
+            "needs_review": ["지역 범위, 테마, 기간을 조정해 다시 요청해야 합니다."],
+        },
+        "data_coverage": {
+            "status": "insufficient",
+            "summary": "상품 초안을 만들 만큼의 근거 문서가 부족합니다.",
+            "retrieval_diagnostics": diagnostics,
+        },
+        "unresolved_gaps": [
+            {
+                "gap_type": "insufficient_source_data",
+                "severity": "high",
+                "reason": message,
+            }
+        ],
+        "source_confidence": 0.0,
+        "ui_highlights": [
+            {
+                "type": "insufficient_source_data",
+                "title": "데이터 부족",
+                "message": message,
+            }
+        ],
+        "research_summary": {},
+        "products": [],
+        "marketing_assets": [],
+        "qa_report": {
+            "overall_status": "not_run",
+            "summary": "관광 근거 데이터가 부족해 상품 생성과 QA 검수를 실행하지 않았습니다.",
+            "issues": [],
+            "pass_count": 0,
+            "needs_review_count": 0,
+            "fail_count": 0,
+        },
+        "agent_execution": state.get("agent_execution", []),
+        "cost_summary": _cost_summary(db, state["run_id"]),
+        "revision": _run_revision_metadata(db, state["run_id"], state),
+        "approval": {
+            "required": False,
+            "status": "not_required",
+            "message": message,
+        },
+    }
+
+
+def _resolved_geo_scope_label(geo_scope: dict[str, Any]) -> str:
+    if geo_scope.get("allow_nationwide"):
+        return "전국"
+    locations = geo_scope.get("locations") if isinstance(geo_scope.get("locations"), list) else []
+    names = [str(location.get("name") or "").strip() for location in locations if isinstance(location, dict)]
+    return " → ".join(name for name in names if name) or "요청 지역"
+
+
+def _insufficient_source_data_suggestions(
+    *,
+    normalized: dict[str, Any],
+    geo_scope: dict[str, Any],
+    region_label: str,
+) -> list[str]:
+    target = str(normalized.get("target_customer") or "외국인").strip() or "외국인"
+    product_count = _desired_product_count(normalized, fallback=3)
+    themes = [str(theme).strip() for theme in _string_list(normalized.get("preferred_themes")) if str(theme).strip()]
+    theme_text = f" {themes[0]}" if themes else ""
+    suggestions = [
+        f"{region_label}에서 {target} 대상{theme_text} 관광 상품 {product_count}개를 다른 테마로 기획해줘.",
+        f"{region_label}에서 {target} 대상 관광 상품 {product_count}개를 다른 기간 기준으로 기획해줘.",
+    ]
+    locations = geo_scope.get("locations") if isinstance(geo_scope.get("locations"), list) else []
+    if len(locations) == 1 and isinstance(locations[0], dict):
+        broader = str(locations[0].get("ldong_regn_nm") or "").strip()
+        if broader and broader not in region_label:
+            suggestions.insert(
+                0,
+                f"{broader} 전체에서 {target} 대상{theme_text} 관광 상품 {product_count}개를 기획해줘.",
+            )
+        elif broader:
+            suggestions.insert(
+                0,
+                f"{broader} 전체 범위로 넓혀서 {target} 대상{theme_text} 관광 상품 {product_count}개를 기획해줘.",
+            )
+    return _dedupe_texts(suggestions)[:3]
 
 
 def data_agent(db: Session, state: GraphState) -> GraphState:
@@ -777,6 +989,7 @@ def data_gap_profiler_agent(db: Session, state: GraphState) -> GraphState:
                 gemini_result.data,
                 source_items=state.get("source_items", []),
                 retrieved_documents=state.get("retrieved_documents", []),
+                normalized_request=state.get("normalized_request", {}),
             )
             meta = _gemini_generation_meta("DataGapProfilerAgent", "data_gap_profile", gemini_result)
             step.model = gemini_result.model
@@ -870,6 +1083,10 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
     settings = get_settings()
     existing_fragments = state.get("enrichment_plan_fragments") or []
     existing_planned_count = sum(len(fragment.get("planned_calls") or []) for fragment in existing_fragments)
+    # Each enrichment lane owns its own call budget. The final merged plan can
+    # contain calls from several lanes; earlier detail calls must not starve
+    # route/signal or theme calls explicitly requested by the user.
+    lane_existing_planned_count = existing_planned_count if planner_key == "tourapi_detail" else 0
     capability_routing = state.get("capability_routing") or {"family_routes": []}
     gap_report = state.get("data_gap_report") or {"gaps": []}
     max_call_budget = int(settings.enrichment_max_call_budget)
@@ -897,6 +1114,7 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
         "planner": planner_key,
         "assigned_gap_count": assigned_gap_count,
         "existing_planned_count": existing_planned_count,
+        "lane_existing_planned_count": lane_existing_planned_count,
     }
     with step_log(db, state["run_id"], definition["agent_name"], definition["purpose"], input_payload) as step:
         if settings.llm_enabled:
@@ -905,7 +1123,7 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
                     capability_routing=capability_routing,
                     gap_report=gap_report,
                     max_call_budget=max_call_budget,
-                    existing_planned_count=existing_planned_count,
+                    existing_planned_count=lane_existing_planned_count,
                 )
                 planner_schema = TOURAPI_DETAIL_PLANNER_RESPONSE_SCHEMA
                 planner_max_output_tokens = 8192
@@ -917,7 +1135,7 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
                     capabilities=capability_matrix_for_prompt(settings),
                     settings=settings,
                     max_call_budget=max_call_budget,
-                    existing_planned_count=existing_planned_count,
+                    existing_planned_count=lane_existing_planned_count,
                 )
                 planner_schema = API_FAMILY_PLANNER_RESPONSE_SCHEMA
                 planner_max_output_tokens = 2048
@@ -939,7 +1157,7 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
                     gap_report=gap_report,
                     settings=settings,
                     max_call_budget=max_call_budget,
-                    existing_planned_count=existing_planned_count,
+                    existing_planned_count=lane_existing_planned_count,
                 )
             else:
                 fragment = normalize_family_planner_payload(
@@ -949,7 +1167,7 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
                     gap_report=gap_report,
                     settings=settings,
                     max_call_budget=max_call_budget,
-                    existing_planned_count=existing_planned_count,
+                    existing_planned_count=lane_existing_planned_count,
                 )
             meta = _gemini_generation_meta(definition["agent_name"], definition["purpose"], gemini_result)
             step.model = gemini_result.model
@@ -960,7 +1178,7 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
                 gap_report=gap_report,
                 settings=settings,
                 max_call_budget=max_call_budget,
-                existing_planned_count=existing_planned_count,
+                existing_planned_count=lane_existing_planned_count,
             )
             meta = _offline_generation_meta(definition["agent_name"], definition["purpose"])
             step.model = meta["model"]
@@ -1087,7 +1305,24 @@ def _refreshed_documents_after_enrichment(
     normalized = state.get("normalized_request") or {}
     geo_scope = state.get("geo_scope") or normalized.get("geo_scope") or {}
     query = _keyword_for_geo_scope(normalized, geo_scope)
-    filters = _vector_filters_for_geo_scope(geo_scope, source="tourapi")
+    filters = _vector_filters_for_geo_scope(
+        geo_scope,
+        source=[
+            "tourapi",
+            "kto_tourism_photo",
+            "kto_photo_contest",
+            "kto_durunubi",
+            "kto_related_places",
+            "kto_tourism_bigdata",
+            "kto_crowding_forecast",
+            "kto_regional_tourism_demand",
+            "kto_wellness",
+            "kto_pet",
+            "kto_audio",
+            "kto_eco",
+            "kto_medical",
+        ],
+    )
     documents = log_tool_call(
         db=db,
         run_id=state["run_id"],
@@ -1180,7 +1415,7 @@ def _keyword_for_geo_scope(
     return " ".join(part for part in parts if part).strip()
 
 
-def _vector_filters_for_geo_scope(geo_scope: dict[str, Any], *, source: str) -> dict[str, Any]:
+def _vector_filters_for_geo_scope(geo_scope: dict[str, Any], *, source: str | list[str]) -> dict[str, Any]:
     filters: dict[str, Any] = {"source": source}
     if geo_scope.get("allow_nationwide"):
         return filters
@@ -1221,6 +1456,35 @@ def _filter_items_by_geo_scope(
     return filtered
 
 
+def _item_matches_geo_scope(item: Any, locations: list[dict[str, Any]]) -> bool:
+    item_regn = _item_ldong_regn_cd(item)
+    item_signgu = _item_ldong_signgu_cd(item)
+    for location in locations:
+        expected_regn = str(location.get("ldong_regn_cd") or "")
+        expected_signgu = str(location.get("ldong_signgu_cd") or "")
+        if not expected_regn:
+            continue
+        if item_regn != expected_regn:
+            continue
+        if expected_signgu and item_signgu and item_signgu != expected_signgu:
+            continue
+        locality_terms = _locality_terms_for_location(location)
+        if locality_terms:
+            item_text = " ".join(
+                str(value or "")
+                for value in [
+                    getattr(item, "title", None),
+                    getattr(item, "address", None),
+                    getattr(item, "overview", None),
+                    getattr(item, "raw", None),
+                ]
+            )
+            if not any(term in item_text for term in locality_terms):
+                continue
+        return True
+    return False
+
+
 def _filter_retrieved_documents_by_geo_scope(
     documents: list[dict[str, Any]],
     *,
@@ -1235,7 +1499,7 @@ def _filter_retrieved_documents_by_geo_scope(
     filtered = [
         document
         for document in documents
-        if _metadata_matches_geo_scope(document.get("metadata") or {}, locations)
+        if _document_matches_geo_scope(document, locations)
     ]
     dropped = len(documents) - len(filtered)
     if dropped:
@@ -1248,32 +1512,27 @@ def _filter_retrieved_documents_by_geo_scope(
     return filtered
 
 
-def _item_matches_geo_scope(item: Any, locations: list[dict[str, Any]]) -> bool:
-    item_regn = _item_ldong_regn_cd(item)
-    item_signgu = _item_ldong_signgu_cd(item)
+def _document_matches_geo_scope(document: dict[str, Any], locations: list[dict[str, Any]]) -> bool:
+    metadata = document.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if not _metadata_matches_geo_scope(metadata, locations):
+        return False
     for location in locations:
-        expected_regn = str(location.get("ldong_regn_cd") or "")
-        expected_signgu = str(location.get("ldong_signgu_cd") or "")
-        if not expected_regn:
-            continue
-        if item_regn != expected_regn:
-            continue
-        if expected_signgu and item_signgu and item_signgu != expected_signgu:
-            continue
-        sub_area_terms = location.get("sub_area_terms")
-        if isinstance(sub_area_terms, list) and sub_area_terms:
-            item_text = " ".join(
-                str(value or "")
-                for value in [
-                    getattr(item, "title", None),
-                    getattr(item, "address", None),
-                    getattr(item, "overview", None),
-                    getattr(item, "raw", None),
-                ]
-            )
-            if not any(str(term) in item_text for term in sub_area_terms):
-                continue
-        return True
+        locality_terms = _locality_terms_for_location(location)
+        if not locality_terms:
+            return True
+        document_text = " ".join(
+            str(value or "")
+            for value in [
+                document.get("title"),
+                document.get("snippet"),
+                document.get("content"),
+                *(metadata.values()),
+            ]
+        )
+        if any(term in document_text for term in locality_terms):
+            return True
     return False
 
 
@@ -1289,13 +1548,19 @@ def _metadata_matches_geo_scope(metadata: dict[str, Any], locations: list[dict[s
             continue
         if expected_signgu and metadata_signgu and metadata_signgu != expected_signgu:
             continue
-        sub_area_terms = location.get("sub_area_terms")
-        if isinstance(sub_area_terms, list) and sub_area_terms:
-            metadata_text = " ".join(str(value or "") for value in metadata.values())
-            if not any(str(term) in metadata_text for term in sub_area_terms):
-                continue
         return True
     return False
+
+
+def _locality_terms_for_location(location: dict[str, Any]) -> list[str]:
+    terms: list[str] = []
+    sub_area_terms = location.get("sub_area_terms")
+    if isinstance(sub_area_terms, list):
+        terms.extend(str(term).strip() for term in sub_area_terms if str(term or "").strip())
+    keyword = str(location.get("keyword") or "").strip()
+    if keyword:
+        terms.append(keyword)
+    return _dedupe_texts(terms)
 
 
 def _item_ldong_regn_cd(item: Any) -> str:
@@ -1337,23 +1602,45 @@ def research_agent(db: Session, state: GraphState) -> GraphState:
         evidence_context = _evidence_context_from_state(state)
         settings = get_settings()
         if settings.llm_enabled:
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose="research_synthesis",
-                prompt=_research_synthesis_prompt(
-                    normalized=state.get("normalized_request", {}),
-                    docs=docs,
-                    evidence_context=evidence_context,
-                    data_gap_report=state.get("data_gap_report") or {},
-                    enrichment_summary=state.get("enrichment_summary") or {},
-                ),
-                response_schema=RESEARCH_SYNTHESIS_RESPONSE_SCHEMA,
-                max_output_tokens=16384,
-                temperature=0.15,
-                settings=settings,
-            )
+            prompt_kwargs = {
+                "normalized": state.get("normalized_request", {}),
+                "docs": docs,
+                "evidence_context": evidence_context,
+                "data_gap_report": state.get("data_gap_report") or {},
+                "enrichment_summary": state.get("enrichment_summary") or {},
+            }
+            try:
+                gemini_result = call_gemini_json(
+                    db=db,
+                    run_id=state["run_id"],
+                    step_id=step.id,
+                    purpose="research_synthesis",
+                    prompt=_research_synthesis_prompt(**prompt_kwargs),
+                    response_schema=RESEARCH_SYNTHESIS_RESPONSE_SCHEMA,
+                    max_output_tokens=8192,
+                    temperature=0.15,
+                    settings=settings,
+                )
+            except GeminiGatewayError as exc:
+                if not _is_timeout_like_gemini_error(exc):
+                    raise
+                logger.warning(
+                    "Retrying research synthesis with compact prompt after Gemini timeout. run_id=%s step_id=%s error=%s",
+                    state["run_id"],
+                    step.id,
+                    exc,
+                )
+                gemini_result = call_gemini_json(
+                    db=db,
+                    run_id=state["run_id"],
+                    step_id=step.id,
+                    purpose="research_synthesis_compact_retry",
+                    prompt=_research_synthesis_prompt(**prompt_kwargs, compact_retry_error=str(exc)),
+                    response_schema=RESEARCH_SYNTHESIS_RESPONSE_SCHEMA,
+                    max_output_tokens=4096,
+                    temperature=0.1,
+                    settings=settings,
+                )
             summary = validate_research_synthesis(gemini_result.data, state)
             meta = _gemini_generation_meta("ResearchSynthesisAgent", "research_synthesis", gemini_result)
             step.model = gemini_result.model
@@ -1393,31 +1680,61 @@ def product_agent(db: Session, state: GraphState) -> GraphState:
             step.model = "rule-based-v1"
             record_rule_based_llm_call(db, state["run_id"], step.id, "product_generation", normalized, products)
         else:
+            product_prompt = _product_prompt(
+                normalized,
+                state.get("research_summary", {}),
+                docs,
+                evidence_context=evidence_context,
+                source_items=state.get("source_items", []),
+                qa_settings=qa_settings,
+            )
             gemini_result = call_gemini_json(
                 db=db,
                 run_id=state["run_id"],
                 step_id=step.id,
                 purpose="product_generation",
-                prompt=_product_prompt(
-                    normalized,
-                    state.get("research_summary", {}),
-                    docs,
-                    evidence_context=evidence_context,
-                    source_items=state.get("source_items", []),
-                    qa_settings=qa_settings,
-                ),
+                prompt=product_prompt,
                 response_schema=PRODUCT_RESPONSE_SCHEMA,
-                max_output_tokens=8192,
+                max_output_tokens=16384,
                 temperature=0.35,
                 settings=settings,
             )
-            products = validate_products(
-                gemini_result.data,
-                normalized,
-                docs,
-                evidence_context=evidence_context,
-                qa_settings=qa_settings,
-            )
+            try:
+                products = validate_products(
+                    gemini_result.data,
+                    normalized,
+                    docs,
+                    evidence_context=evidence_context,
+                    qa_settings=qa_settings,
+                )
+            except ValueError as exc:
+                repair_result = call_gemini_json(
+                    db=db,
+                    run_id=state["run_id"],
+                    step_id=step.id,
+                    purpose="product_generation_repair",
+                    prompt=_product_prompt(
+                        normalized,
+                        state.get("research_summary", {}),
+                        docs,
+                        evidence_context=evidence_context,
+                        source_items=state.get("source_items", []),
+                        qa_settings=qa_settings,
+                        validation_error=str(exc),
+                    ),
+                    response_schema=PRODUCT_RESPONSE_SCHEMA,
+                    max_output_tokens=16384,
+                    temperature=0.2,
+                    settings=settings,
+                )
+                products = validate_products(
+                    repair_result.data,
+                    normalized,
+                    docs,
+                    evidence_context=evidence_context,
+                    qa_settings=qa_settings,
+                )
+                gemini_result = repair_result
             meta = _gemini_generation_meta("ProductAgent", "product_generation", gemini_result)
             step.model = gemini_result.model
         step.output = {"products": products, "generation": meta}
@@ -1432,6 +1749,9 @@ def marketing_agent(db: Session, state: GraphState) -> GraphState:
         settings = get_settings()
         products = state.get("product_ideas", [])
         evidence_context = _evidence_context_from_state(state)
+        docs = state.get("retrieved_documents", [])
+        revision_context = state.get("revision_context")
+        qa_settings = _qa_settings_from_state(state)
         if not settings.llm_enabled:
             assets = build_rule_based_marketing(products)
             meta = _rule_based_generation_meta("MarketingAgent", "marketing_generation")
@@ -1445,17 +1765,41 @@ def marketing_agent(db: Session, state: GraphState) -> GraphState:
                 purpose="marketing_generation",
                 prompt=_marketing_prompt(
                     products,
-                    state.get("retrieved_documents", []),
-                    state.get("revision_context"),
+                    docs,
+                    revision_context,
                     evidence_context,
-                    _qa_settings_from_state(state),
+                    qa_settings,
                 ),
                 response_schema=MARKETING_RESPONSE_SCHEMA,
-                max_output_tokens=8192,
+                max_output_tokens=16384,
                 temperature=0.35,
                 settings=settings,
             )
-            assets = validate_marketing_assets(gemini_result.data, products, evidence_context=evidence_context)
+            try:
+                assets = validate_marketing_assets(gemini_result.data, products, evidence_context=evidence_context)
+            except ValueError as exc:
+                if not _should_retry_marketing_validation(exc):
+                    raise
+                repair_result = call_gemini_json(
+                    db=db,
+                    run_id=state["run_id"],
+                    step_id=step.id,
+                    purpose="marketing_generation_repair",
+                    prompt=_marketing_prompt(
+                        products,
+                        docs,
+                        revision_context,
+                        evidence_context,
+                        qa_settings,
+                        validation_error=str(exc),
+                    ),
+                    response_schema=MARKETING_RESPONSE_SCHEMA,
+                    max_output_tokens=16384,
+                    temperature=0.2,
+                    settings=settings,
+                )
+                assets = validate_marketing_assets(repair_result.data, products, evidence_context=evidence_context)
+                gemini_result = repair_result
             meta = _gemini_generation_meta("MarketingAgent", "marketing_generation", gemini_result)
             step.model = gemini_result.model
         step.output = {"marketing_assets": assets, "generation": meta}
@@ -1498,7 +1842,7 @@ def qa_agent(db: Session, state: GraphState) -> GraphState:
                     evidence_context,
                 ),
                 response_schema=QA_RESPONSE_SCHEMA,
-                max_output_tokens=8192,
+                max_output_tokens=16384,
                 temperature=0.1,
                 settings=settings,
             )
@@ -1562,7 +1906,7 @@ def revision_patch_agent(db: Session, state: GraphState) -> GraphState:
                     state.get("revision_context", {}),
                 ),
                 response_schema=REVISION_PATCH_RESPONSE_SCHEMA,
-                max_output_tokens=8192,
+                max_output_tokens=16384,
                 temperature=0.15,
                 settings=settings,
             )
@@ -1637,6 +1981,33 @@ GEO_RESOLUTION_RESPONSE_SCHEMA = {
                 "required": ["text", "role", "normalized_text", "is_foreign"],
             },
         },
+        "resolved_locations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "text",
+                    "role",
+                    "name",
+                    "ldong_regn_cd",
+                    "ldong_signgu_cd",
+                    "confidence",
+                    "reason",
+                ],
+                "properties": {
+                    "text": {"type": "string"},
+                    "role": {"type": "string"},
+                    "name": {"type": "string"},
+                    "ldong_regn_cd": {"type": "string"},
+                    "ldong_signgu_cd": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "reason": {"type": "string"},
+                    "sub_area_terms": {"type": "array"},
+                    "keywords": {"type": "array"},
+                },
+            },
+        },
+        "clarification_candidates": {"type": "array", "items": {"type": "object"}},
         "excluded_locations": {"type": "array"},
         "allow_nationwide": {"type": "boolean"},
         "unsupported_locations": {"type": "array"},
@@ -1795,7 +2166,8 @@ def build_rule_based_products(
     *,
     evidence_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    count = _desired_product_count(normalized, fallback=3)
+    requested_count = _desired_product_count(normalized, fallback=3)
+    count = _effective_product_count(normalized, docs, fallback=3)
     region_label = _region_label_from_normalized(normalized)
     templates = [
         (f"{region_label} 야간 로컬 미식 투어", ["야경", "로컬 음식", "짧은 동선"]),
@@ -1804,10 +2176,13 @@ def build_rule_based_products(
         (f"{region_label} 로컬 산책 + 카페 투어", ["로컬 산책", "카페", "가벼운 도보"]),
         (f"{region_label} 문화 체험 입문 클래스", ["문화 체험", "푸드투어", "현장 확인"]),
     ]
-    source_ids = [str(doc["doc_id"]) for doc in docs[:5] if doc.get("doc_id")]
+    source_ids = [str(doc["doc_id"]) for doc in docs if doc.get("doc_id")]
     if not source_ids:
         raise ValueError("TourAPI source documents are required for product generation")
     coverage_notes = _coverage_notes_from_context(evidence_context or {})
+    shortage_note = _product_count_shortage_note(requested_count, count, len(source_ids))
+    if shortage_note:
+        coverage_notes = _dedupe_texts([shortage_note, *coverage_notes])
     context_claim_limits = _claim_limits_from_context(evidence_context or {})
     products = []
     for index in range(count):
@@ -1956,7 +2331,7 @@ def validate_geo_resolution_hints(payload: dict[str, Any]) -> dict[str, Any]:
         if not text and not normalized_text:
             continue
         role = str(item.get("role") or "primary").strip()
-        if role not in {"primary", "origin", "destination", "stopover", "nearby_anchor", "comparison", "excluded"}:
+        if role not in {"primary", "nearby_anchor", "comparison", "excluded"}:
             role = "primary"
         locations.append(
             {
@@ -1966,8 +2341,39 @@ def validate_geo_resolution_hints(payload: dict[str, Any]) -> dict[str, Any]:
                 "is_foreign": item.get("is_foreign") is True,
             }
         )
+    resolved_locations: list[dict[str, Any]] = []
+    for item in payload.get("resolved_locations") or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or item.get("matched_text") or "").strip()
+        role = str(item.get("role") or "primary").strip()
+        if role not in {"primary", "nearby_anchor", "comparison", "excluded"}:
+            role = "primary"
+        regn_cd = str(item.get("ldong_regn_cd") or "").strip()
+        signgu_cd = str(item.get("ldong_signgu_cd") or "").strip()
+        if not regn_cd:
+            continue
+        try:
+            confidence = float(item.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        resolved_locations.append(
+            {
+                "text": text,
+                "role": role,
+                "name": str(item.get("name") or "").strip(),
+                "ldong_regn_cd": regn_cd,
+                "ldong_signgu_cd": signgu_cd,
+                "confidence": max(0.0, min(1.0, confidence)),
+                "reason": str(item.get("reason") or "").strip(),
+                "sub_area_terms": _string_list(item.get("sub_area_terms"))[:8],
+                "keywords": _string_list(item.get("keywords"))[:8],
+            }
+        )
     return {
         "locations": locations[:12],
+        "resolved_locations": resolved_locations[:12],
+        "clarification_candidates": payload.get("clarification_candidates") if isinstance(payload.get("clarification_candidates"), list) else [],
         "excluded_locations": _string_list(payload.get("excluded_locations"))[:12],
         "allow_nationwide": payload.get("allow_nationwide") is True,
         "unsupported_locations": _string_list(payload.get("unsupported_locations"))[:12],
@@ -1978,6 +2384,12 @@ def validate_geo_resolution_hints(payload: dict[str, Any]) -> dict[str, Any]:
 def validate_planner_output(payload: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     default = _default_normalized_request(request)
     preferred_themes = _safe_korean_string_list(payload.get("preferred_themes"), "planner.preferred_themes")
+    preferred_themes = _merge_explicit_request_themes(
+        preferred_themes=preferred_themes,
+        request=request,
+        planner_intent=payload.get("user_intent"),
+        fallback=default["preferred_themes"],
+    )
     avoid = _safe_korean_string_list(payload.get("avoid"), "planner.avoid")
     constraints = _safe_korean_string_list(
         payload.get("product_generation_constraints"),
@@ -2016,10 +2428,62 @@ def validate_planner_output(payload: dict[str, Any], request: dict[str, Any]) ->
         "product_generation_constraints": constraints or default["product_generation_constraints"],
         "evidence_requirements": evidence_requirements or default["evidence_requirements"],
         "planner_notes": notes,
+        "message": request.get("message"),
     }
     # Planner must not resolve TourAPI/ldong codes. Region text stays as a user hint for GeoResolver.
     normalized["region_name"] = request.get("region")
     return normalized
+
+
+def _merge_explicit_request_themes(
+    *,
+    preferred_themes: list[str],
+    request: dict[str, Any],
+    planner_intent: Any,
+    fallback: list[str],
+) -> list[str]:
+    message = str(request.get("message") or "")
+    intent_text = str(planner_intent or "")
+    explicit_themes = _explicit_theme_terms_from_text(f"{message}\n{intent_text}")
+    if not explicit_themes:
+        return preferred_themes or fallback
+
+    request_preferences = _string_list(request.get("preferences"))
+    default_ui_preferences = {"야간 관광", "축제"}
+    merged: list[str] = []
+    for theme in [*explicit_themes, *preferred_themes, *request_preferences]:
+        if not theme:
+            continue
+        if theme in default_ui_preferences and theme not in explicit_themes and not _theme_mentioned_in_text(theme, message):
+            continue
+        if theme not in merged:
+            merged.append(theme)
+    return merged or explicit_themes or preferred_themes or fallback
+
+
+def _theme_mentioned_in_text(theme: str, text: str) -> bool:
+    if theme in text:
+        return True
+    if theme == "야간 관광":
+        return "야간" in text or "밤" in text
+    if theme == "축제":
+        return "축제" in text or "페스티벌" in text
+    return False
+
+
+def _explicit_theme_terms_from_text(text: str) -> list[str]:
+    checks = [
+        (("웰니스", "힐링"), "웰니스"),
+        (("반려동물", "반려", "펫", "강아지"), "반려동물"),
+        (("오디오", "해설"), "오디오 해설"),
+        (("생태", "친환경"), "생태"),
+        (("의료", "메디컬"), "의료관광"),
+    ]
+    themes: list[str] = []
+    for tokens, label in checks:
+        if any(token in text for token in tokens) and label not in themes:
+            themes.append(label)
+    return themes
 
 
 def validate_products(
@@ -2031,9 +2495,15 @@ def validate_products(
     qa_settings: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     products = payload.get("products")
-    product_count = _desired_product_count(normalized, fallback=1)
-    if not isinstance(products, list) or len(products) < product_count:
+    requested_count = _desired_product_count(normalized, fallback=1)
+    effective_count = _effective_product_count(normalized, docs)
+    if not isinstance(products, list) or not products:
         raise ValueError("Gemini product response has invalid products")
+    if len(products) < effective_count:
+        raise ValueError(
+            f"Gemini product response returned {len(products)} products but {effective_count} products are required"
+        )
+    product_count = effective_count
     available_source_ids = [str(doc["doc_id"]) for doc in docs if doc.get("doc_id")]
     allowed_source_ids = set(available_source_ids)
     if not allowed_source_ids:
@@ -2045,6 +2515,7 @@ def validate_products(
     context_coverage_notes = _coverage_notes_from_context(evidence_context)
     avoid_limits = [f"요청 avoid 기준: {item}" for item in _string_list(qa_settings.get("avoid"))]
     validated = []
+    shortage_note = _product_count_shortage_note(requested_count, product_count, len(available_source_ids))
     for index, product in enumerate(products[:product_count]):
         if not isinstance(product, dict):
             raise ValueError("Product item must be an object")
@@ -2057,6 +2528,8 @@ def validate_products(
         if not source_ids:
             source_ids = available_source_ids[: min(3, len(available_source_ids))]
             review_notes.append("상품에 연결할 근거 id가 부족해 서버가 사용 가능한 근거를 보정했습니다.")
+        if shortage_note:
+            review_notes.append(shortage_note)
         assumptions = (
             _safe_korean_string_list(product.get("assumptions"), "products[].assumptions")
             or ["세부 가격과 예약 가능 여부는 운영자가 확정해야 합니다."]
@@ -2077,6 +2550,7 @@ def validate_products(
         coverage_notes = _dedupe_texts(
             [
                 *_safe_korean_string_list(product.get("coverage_notes"), "products[].coverage_notes"),
+                *([shortage_note] if shortage_note else []),
                 *context_coverage_notes,
             ]
         )[:8]
@@ -2167,7 +2641,24 @@ def _desired_product_count(normalized: dict[str, Any], fallback: int) -> int:
         count = int(normalized.get("product_count") or fallback)
     except (TypeError, ValueError):
         count = fallback
-    return max(1, min(5, count))
+    return max(1, min(MAX_PRODUCT_COUNT, count))
+
+
+def _effective_product_count(normalized: dict[str, Any], docs: list[dict[str, Any]], fallback: int = 1) -> int:
+    requested = _desired_product_count(normalized, fallback=fallback)
+    evidence_count = len({str(doc.get("doc_id")) for doc in docs if doc.get("doc_id")})
+    if evidence_count <= 0:
+        return requested
+    return max(1, min(requested, evidence_count))
+
+
+def _product_count_shortage_note(requested_count: int, generated_count: int, evidence_count: int) -> str:
+    if requested_count <= generated_count:
+        return ""
+    return (
+        f"요청한 상품은 {requested_count}개지만 사용 가능한 근거 데이터가 {evidence_count}개라 "
+        f"{generated_count}개까지만 생성했습니다."
+    )
 
 
 def _safe_korean_text(value: Any, field_path: str, *, fallback: str) -> str:
@@ -2185,6 +2676,20 @@ def _safe_korean_string_list(value: Any, field_path: str) -> list[str]:
         else:
             values.append(f"{_field_path_label(field_path)} 확인 필요: {item}")
     return values
+
+
+def _should_retry_marketing_validation(exc: ValueError) -> bool:
+    message = str(exc)
+    return (
+        "must be written in Korean" in message
+        and (
+            "marketing_assets" in message
+            or "sales_copy" in message
+            or "faq" in message
+            or "sns_posts" in message
+            or "search_keywords" in message
+        )
+    )
 
 
 def _dedupe_texts(values: list[str]) -> list[str]:
@@ -2726,6 +3231,11 @@ def validate_research_synthesis(payload: dict[str, Any], state: GraphState) -> d
     return _complete_research_synthesis(payload, state)
 
 
+def _is_timeout_like_gemini_error(exc: GeminiGatewayError) -> bool:
+    message = str(exc).lower()
+    return "timeout" in message or "timed out" in message
+
+
 def _complete_research_synthesis(payload: dict[str, Any], state: GraphState) -> dict[str, Any]:
     evidence_context = _evidence_context_from_state(state)
     advice = (
@@ -2832,7 +3342,7 @@ def _merge_research_candidate_cards(
         compact = _compact_candidate_card_for_product(raw_card)
         if compact.get("usable_facts") or compact.get("evidence_document_ids"):
             merged.append(compact)
-    return merged[:12]
+    return merged[:MAX_PRODUCT_COUNT]
 
 
 def _research_card_key(card: dict[str, Any]) -> str:
@@ -2886,8 +3396,9 @@ def _planner_prompt(request: dict[str, Any]) -> str:
             "Baseline TourAPI 검색 전략은 현재 deterministic 수집 코드가 담당합니다. Planner는 API query plan을 만들지 않습니다.",
         ],
         "출력_규칙": [
-            "product_count는 1~5 사이 정수로 반환하세요. 사용자가 6개 이상을 말해도 5로 제한하세요.",
+            f"product_count는 1~{MAX_PRODUCT_COUNT} 사이 정수로 반환하세요. 사용자가 {MAX_PRODUCT_COUNT}개 이상을 말하면 {MAX_PRODUCT_COUNT}로 제한하세요.",
             "preferred_themes와 avoid는 사용자가 준 값과 자연어 요청에서 명확한 값만 포함하세요.",
+            "자연어 요청에 웰니스, 반려동물, 오디오 해설, 생태, 의료 같은 테마가 명시되면 preferences 값과 달라도 preferred_themes에 반드시 포함하세요.",
             "product_generation_constraints에는 상품 생성 단계가 지켜야 할 제약을 한국어 문장으로 넣으세요.",
             "evidence_requirements에는 근거 연결, 단정 금지, 운영자 확인 항목 분리 기준을 한국어 문장으로 넣으세요.",
             "TourAPI code, areaCode, ldong code, sigungu code, geo_scope 필드는 출력하지 마세요.",
@@ -2902,7 +3413,7 @@ def _planner_prompt(request: dict[str, Any]) -> str:
             "period": "2026-05",
             "output_language": "ko",
             "request_type": "tourism_product_generation",
-            "product_generation_constraints": ["상품 개수는 최대 5개입니다."],
+            "product_generation_constraints": [f"상품 개수는 최대 {MAX_PRODUCT_COUNT}개입니다."],
             "evidence_requirements": ["각 상품은 실제 근거 문서와 연결되어야 합니다."],
         },
     }
@@ -2916,6 +3427,7 @@ def _research_synthesis_prompt(
     evidence_context: dict[str, Any],
     data_gap_report: dict[str, Any],
     enrichment_summary: dict[str, Any],
+    compact_retry_error: str | None = None,
 ) -> str:
     product_evidence_context = _product_evidence_context_for_prompt(evidence_context)
     context = {
@@ -2931,6 +3443,7 @@ def _research_synthesis_prompt(
             "preferred_themes": normalized.get("preferred_themes"),
             "avoid": normalized.get("avoid"),
         },
+        "재시도_사유": compact_retry_error,
         "retrieved_documents": _summarize_evidence(docs, limit=10),
         "evidence_context": product_evidence_context,
         "data_gap_summary": {
@@ -2949,36 +3462,100 @@ def _research_synthesis_prompt(
         "출력_규칙": [
             "raw TourAPI/RAG 전체를 그대로 복사하지 마세요.",
             "하지만 candidate_evidence_cards의 상품화에 필요한 세부 facts는 삭제하지 마세요.",
+            "candidate_evidence_cards 원본은 서버가 이미 보존합니다. 응답에서는 원본 card 전체를 다시 쓰지 말고, 후보별 상품화 판단, 스토리 각도, 리스크 보강이 필요한 항목을 content_id/title 중심으로 반환하세요.",
+            "추가 guidance가 없는 후보는 생략해도 됩니다. 서버가 기존 card를 병합하므로 원본 근거는 유지됩니다.",
+            "usable_facts와 evidence_document_ids를 원문 그대로 반복하지 마세요. 서버가 기존 값을 보존합니다.",
             "근거가 없는 운영시간, 요금, 예약 가능 여부, 외국어 지원, 안전성, 의료/웰니스 효능은 restricted_claims 또는 operational_unknowns로 분리하세요.",
             "candidate_evidence_cards는 evidence_context.candidate_evidence_cards의 후보를 유지하고, 필요한 guidance만 보강하세요.",
             "evidence_document_ids는 실제 doc_id만 유지하세요. 임의 id를 만들지 마세요.",
+            "각 배열은 꼭 필요한 항목만 남기되 너무 과하게 줄이지 마세요. usable_claims, restricted_claims, operational_unknowns, product_generation_guidance, qa_risk_notes는 각각 최대 8개로 제한하세요.",
             "사용자에게 보이는 모든 텍스트는 한국어로 작성하세요.",
         ],
     }
     return json.dumps(context, ensure_ascii=False)
 
 
-def _geo_resolution_prompt(resolver_input: dict[str, Any]) -> str:
+def _geo_catalog_options_for_prompt(catalog: list[Any]) -> list[dict[str, str | None]]:
+    options: list[dict[str, str | None]] = []
+    for candidate in catalog:
+        options.append(
+            {
+                "name": candidate.full_name,
+                "ldong_regn_cd": candidate.ldong_regn_cd,
+                "ldong_regn_nm": candidate.ldong_regn_nm,
+                "ldong_signgu_cd": candidate.ldong_signgu_cd or "",
+                "ldong_signgu_nm": candidate.ldong_signgu_nm or "",
+            }
+        )
+    return options
+
+
+def _geo_resolution_prompt(
+    resolver_input: dict[str, Any],
+    *,
+    catalog_options: list[dict[str, str | None]] | None = None,
+) -> str:
     context = {
         "요청": resolver_input,
-        "역할": "사용자 자연어에서 지역 의도만 추출합니다. TourAPI 코드 확정은 별도 catalog resolver가 수행합니다.",
+        "역할": (
+            "사용자 자연어에서 지역 의도를 추출하고, 아래 TourAPI 법정동 후보 목록 중 "
+            "실제로 검색에 넣을 수 있는 시도/시군구 코드를 선택합니다."
+        ),
+        "TourAPI_법정동_후보": catalog_options or [],
         "출력_규칙": [
             "locations에는 요청 문장에 실제로 등장한 국내/해외 장소 표현만 넣으세요.",
             "text는 원문에 등장한 장소 span 그대로 쓰세요. 오타가 있으면 text에는 오타 원문을, normalized_text에는 교정 후보를 쓰세요.",
-            "role은 primary, origin, destination, stopover, nearby_anchor, comparison, excluded 중 하나만 쓰세요.",
-            "부산에서 시작해서 양산에서 끝나는 요청은 부산 origin, 양산 destination으로 분리하세요.",
+            "role은 primary, nearby_anchor, comparison, excluded 중 하나만 쓰세요.",
+            "두 곳 이상 지역이나 이동 코스 표현이 있어도 역할을 나누지 말고, 등장한 지역을 각각 primary로 남기세요.",
+            "resolved_locations에는 반드시 TourAPI_법정동_후보에 있는 코드만 넣으세요. 후보에 없는 코드는 절대 만들지 마세요.",
+            "섬, 관광지명, 생활권명, 동네명이 후보 목록에 직접 없으면, 일반 지식으로 어느 시군구에 속하는지 판단한 뒤 해당 시군구 후보를 고르세요.",
+            "후보 목록에 없는 세부 지명, 섬, 관광지, 생활권, 동네명은 resolved_locations[].sub_area_terms와 keywords에 원문 표현 그대로 넣으세요. 예: 해운대 반여동 -> 부산광역시 해운대구 + sub_area_terms ['반여동'].",
+            "반려동물, 야간, 혼잡, 수요, 사진, 외국인, 웰니스, 축제 같은 상품 테마/조건/고객 표현은 절대 장소나 sub_area_terms/keywords로 넣지 마세요.",
+            "확신이 낮거나 같은 이름 후보가 여러 개면 resolved_locations를 비우고 clarification_candidates에 후보만 넣으세요.",
+            "confidence는 0.0~1.0 숫자로 쓰고, 실제 검색에 써도 될 정도로 확실할 때만 0.72 이상으로 쓰세요.",
+            "resolved_locations.reason에는 왜 그 코드가 맞는지 짧게 쓰세요.",
             "전국, 국내 전체처럼 사용자가 명시한 경우에만 allow_nationwide=true로 쓰세요.",
             "도쿄, 오사카, 파리처럼 해외 목적지를 요청하면 unsupported_locations에 넣고 해당 location의 is_foreign=true로 표시하세요.",
             "외국인, 해외 관광객, 인바운드처럼 고객 대상을 뜻하는 표현은 해외 목적지로 취급하지 마세요.",
-            "TourAPI 코드, 법정동 코드, confidence, 후보 목록은 만들지 마세요.",
-            "장소가 애매해도 억지로 특정 행정구역을 선택하지 말고 원문 span만 추출하세요.",
+            "장소가 애매해도 억지로 특정 행정구역을 선택하지 마세요.",
         ],
         "예시": [
             {
-                "input": "부산에서 시작해서 양산에서 끝나는 상품",
+                "input": "부산에서 반려동물 동반 외국인 대상 관광 상품 3개 기획해줘",
                 "locations": [
-                    {"text": "부산", "normalized_text": "부산광역시", "role": "origin", "is_foreign": False},
-                    {"text": "양산", "normalized_text": "양산시", "role": "destination", "is_foreign": False},
+                    {"text": "부산", "normalized_text": "부산광역시", "role": "primary", "is_foreign": False},
+                ],
+                "resolved_locations": [
+                    {
+                        "text": "부산",
+                        "role": "primary",
+                        "name": "부산광역시",
+                        "ldong_regn_cd": "26",
+                        "ldong_signgu_cd": "",
+                        "confidence": 0.95,
+                        "reason": "부산은 TourAPI 후보의 부산광역시에 해당합니다.",
+                        "sub_area_terms": [],
+                        "keywords": [],
+                    }
+                ],
+            },
+            {
+                "input": "부산 해운대 반여동에서 외국인 대상 관광 상품 3개 기획해줘",
+                "locations": [
+                    {"text": "부산 해운대 반여동", "normalized_text": "부산광역시 해운대구 반여동", "role": "primary", "is_foreign": False},
+                ],
+                "resolved_locations": [
+                    {
+                        "text": "부산 해운대 반여동",
+                        "role": "primary",
+                        "name": "부산광역시 해운대구",
+                        "ldong_regn_cd": "26",
+                        "ldong_signgu_cd": "350",
+                        "confidence": 0.9,
+                        "reason": "반여동은 부산광역시 해운대구 관할로 판단됩니다.",
+                        "sub_area_terms": ["반여동"],
+                        "keywords": ["반여동"],
+                    }
                 ],
             },
             {
@@ -3001,24 +3578,43 @@ def _product_prompt(
     evidence_context: dict[str, Any] | None = None,
     source_items: list[dict[str, Any]] | None = None,
     qa_settings: dict[str, Any] | None = None,
+    validation_error: str | None = None,
 ) -> str:
     evidence_context = evidence_context or {}
     qa_settings = qa_settings or {}
+    requested_product_count = _desired_product_count(normalized, fallback=3)
+    effective_product_count = _effective_product_count(normalized, docs, fallback=3)
+    evidence_count = len({str(doc.get("doc_id")) for doc in docs if doc.get("doc_id")})
+    evidence_prompt_limit = min(MAX_PRODUCT_COUNT, max(10, effective_product_count))
     context = {
         "요청": {
             "normalized_request": normalized,
             "geo_scope": normalized.get("geo_scope"),
-            "product_count": _desired_product_count(normalized, fallback=3),
+            "requested_product_count": requested_product_count,
+            "product_count": effective_product_count,
+            "available_evidence_count": evidence_count,
+            "product_count_note": (
+                _product_count_shortage_note(requested_product_count, effective_product_count, evidence_count)
+                or "요청한 상품 수만큼 생성할 근거가 있습니다."
+            ),
             "target_customer": normalized.get("target_customer"),
             "preferred_themes": normalized.get("preferred_themes"),
             "avoid": _string_list(normalized.get("avoid")),
         },
         "리서치_요약": research_summary,
-        "source_items_shortlist": _summarize_source_items_for_prompt(source_items or []),
-        "retrieved_documents": _summarize_evidence(docs, limit=10),
+        "source_items_shortlist": _summarize_source_items_for_prompt(source_items or [], limit=evidence_prompt_limit),
+        "retrieved_documents": _summarize_evidence(docs, limit=evidence_prompt_limit),
         "evidence_based_generation_context": _product_evidence_context_for_prompt(evidence_context),
         "QA_avoid_rules": _string_list(qa_settings.get("avoid")),
         "수정_요청": _prompt_revision_context(normalized.get("revision_context")),
+        "재작성_요청": (
+            {
+                "reason": validation_error,
+                "instruction": "아래 규칙을 지켜 전체 products 배열을 다시 작성하세요. 특히 요청.product_count와 정확히 같은 개수의 상품을 반환해야 합니다.",
+            }
+            if validation_error
+            else None
+        ),
         "출력_필드_추가_의미": {
             "evidence_summary": "상품이 어떤 근거를 썼는지 한 문장으로 요약",
             "needs_review": "상품 본문에 단정하지 말고 운영자가 확인해야 할 항목",
@@ -3026,7 +3622,8 @@ def _product_prompt(
             "claim_limits": "본문/마케팅에서 단정하면 안 되는 claim 제한",
         },
         "규칙": [
-            "요청.product_count 값과 정확히 같은 개수의 상품을 생성하세요. 최대 5개를 절대 넘지 마세요.",
+            f"요청.product_count 값과 정확히 같은 개수의 상품을 생성하세요. 최대 {MAX_PRODUCT_COUNT}개를 절대 넘지 마세요.",
+            "요청.requested_product_count가 요청.product_count보다 크면, 근거 데이터가 부족해서 생성 개수를 줄인 것입니다. 이 사실을 각 상품의 needs_review 또는 coverage_notes에 반영하세요.",
             "각 product는 최소 1개 이상의 source_id를 가져야 합니다.",
             "source_ids는 반드시 retrieved_documents 안에 있는 doc_id만 사용하세요. content_id나 임의 id를 쓰지 마세요.",
             "candidate_evidence_cards의 usable_facts, experience_hooks, recommended_product_angles를 우선 활용하세요.",
@@ -3046,6 +3643,7 @@ def _marketing_prompt(
     revision_context: dict[str, Any] | None = None,
     evidence_context: dict[str, Any] | None = None,
     qa_settings: dict[str, Any] | None = None,
+    validation_error: str | None = None,
 ) -> str:
     context = {
         "상품_목록": products,
@@ -3053,12 +3651,29 @@ def _marketing_prompt(
         "근거_프로필": _product_evidence_context_for_prompt(evidence_context or {}),
         "QA_avoid_rules": _string_list((qa_settings or {}).get("avoid")),
         "수정_요청": _prompt_revision_context(revision_context),
+        "출력_언어": {
+            "language": "ko",
+            "rule": "외국인 대상 상품이어도 출력 문구는 전부 한국어로 작성합니다.",
+            "forbidden": [
+                "중국어 문장",
+                "일본어 문장",
+                "영어만 있는 문장",
+                "영어/중국어/일본어 해시태그만 있는 SNS 문구",
+                "다국어 번역 홍보문",
+            ],
+            "allowed": [
+                "공식 고유명사나 브랜드명은 필요할 때만 원문을 유지할 수 있습니다.",
+                "외국인 고객에게 필요한 내용도 한국어 운영자 검토 문장으로 작성합니다.",
+            ],
+        },
         "규칙": [
             "각 product_id마다 marketing_asset을 정확히 1개씩 생성하세요. product_id 값은 상품_목록의 id를 그대로 사용하세요.",
             "sales_copy는 문자열이 아니라 JSON 객체여야 합니다.",
             "sales_copy.sections는 title과 body를 가진 객체 배열이며 상품당 최대 3개만 작성하세요.",
             "FAQ에는 우천, 가격 확정 여부, 외국어 안내, 집결지, 일정 변경 관련 질문을 포함하되 상품당 최대 5개만 작성하세요.",
             "sns_posts는 상품당 최대 3개만 작성하고, 각 항목은 platform/content 객체가 아니라 한국어 문자열이어야 합니다.",
+            "sns_posts는 반드시 한글 문장을 포함해야 합니다. 중국어/일본어/영어로 작성하지 마세요.",
+            "외국인 대상이라는 이유로 SNS 문구를 중국어, 일본어, 영어 등으로 번역하지 마세요. output_language가 ko이므로 한국어 운영 문구만 작성하세요.",
             "search_keywords는 상품당 최대 10개만 작성하고, 각 항목은 한국어 문자열이어야 합니다.",
             "search_keywords에는 Busan, yacht, food tour 같은 영어만 있는 값을 쓰지 말고 부산, 요트, 푸드투어처럼 한국어로 작성하세요.",
             "상품_목록의 needs_review, assumptions, not_to_claim, claim_limits는 hard constraint입니다.",
@@ -3071,6 +3686,11 @@ def _marketing_prompt(
             "사용자에게 보이는 모든 텍스트 필드는 반드시 한국어로 작성하세요. 영어 문장을 쓰지 마세요.",
         ],
     }
+    if validation_error:
+        context["검증_실패_수정"] = {
+            "error": validation_error,
+            "instruction": "이전 응답이 서버 검증을 통과하지 못했습니다. 전체 marketing_assets를 다시 작성하되, 모든 sns_posts/FAQ/문구/키워드가 한국어 문자열인지 자체 점검한 뒤 출력하세요.",
+        }
     return json.dumps(context, ensure_ascii=False)
 
 
@@ -3248,7 +3868,7 @@ def _summarize_evidence(docs: list[dict[str, Any]], limit: int = 6) -> list[dict
     return summarized
 
 
-def _summarize_source_items_for_prompt(source_items: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
+def _summarize_source_items_for_prompt(source_items: list[dict[str, Any]], limit: int = MAX_PRODUCT_COUNT) -> list[dict[str, Any]]:
     summarized: list[dict[str, Any]] = []
     for item in source_items[:limit]:
         if not isinstance(item, dict):
@@ -3282,7 +3902,7 @@ def _product_evidence_context_for_prompt(evidence_context: dict[str, Any]) -> di
         "candidate_recommendations": [
             item for item in recommendations[:8] if isinstance(item, dict)
         ],
-        "candidate_evidence_cards": [_compact_candidate_card_for_product(card) for card in cards[:10]],
+        "candidate_evidence_cards": [_compact_candidate_card_for_product(card) for card in cards[:MAX_PRODUCT_COUNT]],
         "unresolved_gaps": _compact_unresolved_gaps_for_product(evidence_context.get("unresolved_gaps")),
         "claim_limits": _claim_limits_from_context(evidence_context),
         "needs_review": _needs_review_from_context(evidence_context),

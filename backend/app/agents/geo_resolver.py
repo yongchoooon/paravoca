@@ -82,10 +82,7 @@ FOREIGN_CONTEXT_EXCEPTIONS = {
     "인바운드",
 }
 
-ROUTE_ORIGIN_PATTERNS = ("에서 시작", "에서 출발", "출발", "부터")
-ROUTE_DESTINATION_PATTERNS = ("에서 끝", "까지", "도착", "종료")
 EXCLUSION_MARKERS = ("제외", "빼고", "빼줘", "제외하고")
-SUB_AREA_PATTERN = re.compile(r"[가-힣A-Za-z0-9]{2,}(?:동|읍|면|리)")
 
 REGION_SUFFIXES = (
     "특별자치시",
@@ -155,6 +152,7 @@ class GeoMatch:
     confidence: float
     role: str = "primary"
     keyword: str | None = None
+    sub_area_terms: tuple[str, ...] = field(default_factory=tuple)
 
 
 def resolve_geo_scope(
@@ -209,13 +207,64 @@ def resolve_geo_scope(
     if not catalog:
         return _catalog_not_synced_scope(input_text)
 
+    llm_matches = _llm_resolved_matches(llm_hints, catalog, input_text)
+    if llm_matches:
+        excluded = _extract_excluded_locations(input_text, catalog)
+        matches = [match for match in llm_matches if match.candidate.id not in {item.candidate.id for item in excluded}]
+        matches = _collapse_parent_matches(matches)
+        sub_area_terms = _sub_area_terms_from_matches(matches)
+        if _is_unsupported_multi_region(matches):
+            return _unsupported_multi_region_scope(
+                input_text=input_text,
+                matches=matches,
+                excluded=excluded,
+                sub_area_terms=sub_area_terms,
+                llm_hints=llm_hints,
+            )
+        mode = _mode_from_matches(matches)
+        confidence = min(match.confidence for match in matches)
+        return {
+            "mode": mode,
+            "status": "resolved",
+            "needs_clarification": False,
+            "clarification_question": None,
+            "confidence": round(confidence, 4),
+            "input_text": input_text,
+            "locations": [_match_to_location(match) for match in matches],
+            "excluded_locations": [_match_to_location(match) for match in excluded],
+            "unresolved_locations": [],
+            "keywords": _keywords_from_matches(matches),
+            "sub_area_terms": sub_area_terms,
+            "allow_nationwide": False,
+            "resolution_strategy": _strategy_summary(matches),
+            "candidates": [_match_to_candidate(match) for match in matches],
+            "llm_hints": llm_hints or {},
+        }
+    if isinstance(llm_hints, dict) and hint_locations:
+        return _clarification_scope(
+            input_text=input_text,
+            matches=[],
+            ambiguous_groups=[],
+            fuzzy_suggestions=[],
+            excluded=[],
+            sub_area_terms=[],
+            unresolved_terms=_dedupe_strings(
+                [
+                    str(hint.get("normalized_text") or hint.get("text") or "").strip()
+                    for hint in hint_locations
+                    if str(hint.get("normalized_text") or hint.get("text") or "").strip()
+                ]
+            ),
+            reason="unresolved_location",
+            llm_hints=llm_hints,
+        )
+
     matches, ambiguous_groups, fuzzy_suggestions = _resolve_matches(input_text, catalog, hint_locations=hint_locations)
     excluded = _extract_excluded_locations(input_text, catalog)
     matches = [match for match in matches if match.candidate.id not in {item.candidate.id for item in excluded}]
     matches = _collapse_parent_matches(matches)
-    matches = _apply_route_roles(input_text, matches)
-    sub_area_terms = _extract_sub_area_terms(input_text, matches)
-    unresolved_locality_terms = _unresolved_locality_terms(input_text, matches)
+    sub_area_terms = _sub_area_terms_from_matches(matches)
+    unresolved_locality_terms: list[str] = []
 
     if ambiguous_groups:
         return _clarification_scope(
@@ -256,6 +305,15 @@ def resolve_geo_scope(
             llm_hints=llm_hints,
         )
 
+    if _is_unsupported_multi_region(matches):
+        return _unsupported_multi_region_scope(
+            input_text=input_text,
+            matches=matches,
+            excluded=excluded,
+            sub_area_terms=sub_area_terms,
+            llm_hints=llm_hints,
+        )
+
     mode = _mode_from_matches(matches)
     confidence = min(match.confidence for match in matches)
     return {
@@ -265,10 +323,10 @@ def resolve_geo_scope(
         "clarification_question": None,
         "confidence": round(confidence, 4),
         "input_text": input_text,
-        "locations": [_match_to_location(match, sub_area_terms=sub_area_terms) for match in matches],
+        "locations": [_match_to_location(match) for match in matches],
         "excluded_locations": [_match_to_location(match) for match in excluded],
         "unresolved_locations": [],
-        "keywords": _keywords_from_matches(matches, sub_area_terms=sub_area_terms),
+        "keywords": _keywords_from_matches(matches),
         "sub_area_terms": sub_area_terms,
         "allow_nationwide": False,
         "resolution_strategy": _strategy_summary(matches),
@@ -327,6 +385,8 @@ def normalize_geo_name(value: str | None) -> str:
     text = re.sub(r"[^0-9a-z가-힣]+", "", text)
     text = PROVINCE_ALIASES.get(text, text)
     for suffix in REGION_SUFFIXES:
+        if suffix == "도" and len(text) <= 2:
+            continue
         if len(text) > len(suffix) and text.endswith(suffix):
             text = text[: -len(suffix)]
             break
@@ -398,7 +458,7 @@ def _llm_location_hints(llm_hints: dict[str, Any] | None, input_text: str) -> li
         text = str(raw.get("text") or "").strip()
         normalized_text = str(raw.get("normalized_text") or text).strip()
         role = str(raw.get("role") or "primary").strip()
-        if role not in {"primary", "origin", "destination", "stopover", "nearby_anchor", "comparison", "excluded"}:
+        if role not in {"primary", "nearby_anchor", "comparison", "excluded"}:
             role = "primary"
         if not text and not normalized_text:
             continue
@@ -481,6 +541,124 @@ def _apply_llm_roles(matches: list[GeoMatch], hint_locations: list[dict[str, str
     return _dedupe_matches(updated)
 
 
+def _llm_resolved_matches(
+    llm_hints: dict[str, Any] | None,
+    catalog: list[LdongCandidate],
+    input_text: str,
+) -> list[GeoMatch]:
+    if not isinstance(llm_hints, dict):
+        return []
+    raw_locations = llm_hints.get("resolved_locations")
+    if not isinstance(raw_locations, list):
+        return []
+    candidates_by_code = {
+        (candidate.ldong_regn_cd, candidate.ldong_signgu_cd or ""): candidate
+        for candidate in catalog
+    }
+    matches: list[GeoMatch] = []
+    for raw in raw_locations:
+        if not isinstance(raw, dict):
+            continue
+        regn_cd = str(raw.get("ldong_regn_cd") or "").strip()
+        signgu_cd = str(raw.get("ldong_signgu_cd") or "").strip()
+        candidate = candidates_by_code.get((regn_cd, signgu_cd))
+        if not candidate:
+            continue
+        confidence = _bounded_confidence(raw.get("confidence"), default=0.0)
+        if confidence < 0.72:
+            continue
+        matched_text = str(raw.get("text") or raw.get("matched_text") or candidate.full_name).strip()
+        if matched_text and not _appears_in_input(matched_text, input_text):
+            matched_text = candidate.full_name
+        role = str(raw.get("role") or "primary").strip()
+        if role not in {"primary", "nearby_anchor", "comparison", "excluded"}:
+            role = "primary"
+        sub_area_terms = _llm_sub_area_terms(raw, input_text)
+        keyword = _llm_keyword(raw, matched_text, candidate, input_text, sub_area_terms)
+        matches.append(
+            GeoMatch(
+                candidate=candidate,
+                matched_text=matched_text or candidate.full_name,
+                match_type="llm_catalog",
+                confidence=confidence,
+                role=role,
+                keyword=keyword,
+                sub_area_terms=tuple(sub_area_terms),
+            )
+        )
+    return _dedupe_matches(matches)
+
+
+def _llm_sub_area_terms(raw: dict[str, Any], input_text: str) -> list[str]:
+    terms: list[str] = []
+    for key in ("sub_area_terms", "keywords"):
+        value = raw.get(key)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            term = str(item or "").strip()
+            if term and _appears_in_input(term, input_text):
+                terms.append(term)
+    return list(dict.fromkeys(terms))
+
+
+def _llm_keyword(
+    raw: dict[str, Any],
+    matched_text: str,
+    candidate: LdongCandidate,
+    input_text: str,
+    sub_area_terms: list[str],
+) -> str | None:
+    raw_keywords = raw.get("keywords")
+    if isinstance(raw_keywords, list):
+        for item in raw_keywords:
+            keyword = str(item or "").strip()
+            if keyword and keyword not in sub_area_terms and _appears_in_input(keyword, input_text):
+                return keyword
+    if sub_area_terms:
+        return None
+    return _keyword_for_llm_match(matched_text, candidate, input_text)
+
+
+def _keyword_for_llm_match(
+    matched_text: str,
+    candidate: LdongCandidate,
+    input_text: str,
+) -> str | None:
+    text = str(matched_text or "").strip()
+    if not text or not _appears_in_input(text, input_text):
+        return None
+    normalized_text = normalize_geo_name(text)
+    candidate_terms = _administrative_keyword_terms(candidate)
+    if normalized_text in candidate_terms:
+        return None
+    return text
+
+
+def _administrative_keyword_terms(candidate: LdongCandidate) -> set[str]:
+    terms = {
+        normalize_geo_name(candidate.full_name),
+        normalize_geo_name(candidate.ldong_regn_nm),
+        normalize_geo_name(candidate.ldong_signgu_nm),
+        *[normalize_geo_name(alias) for alias in candidate.aliases],
+    }
+    if candidate.ldong_signgu_nm:
+        terms.add(normalize_geo_name(f"{candidate.ldong_regn_nm} {candidate.ldong_signgu_nm}"))
+        for alias, full_name in PROVINCE_ALIASES.items():
+            if full_name == candidate.ldong_regn_nm:
+                terms.add(normalize_geo_name(f"{alias} {candidate.ldong_signgu_nm}"))
+                terms.add(normalize_geo_name(f"{alias}{candidate.ldong_signgu_nm}"))
+    return {term for term in terms if term}
+
+
+def _bounded_confidence(value: Any, *, default: float) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(1.0, confidence))
+
+
 def _terms_overlap(left_terms: list[str], right_terms: list[str]) -> bool:
     left = {normalize_geo_name(term) for term in left_terms if normalize_geo_name(term)}
     right = {normalize_geo_name(term) for term in right_terms if normalize_geo_name(term)}
@@ -516,7 +694,7 @@ def _exact_or_normalized_matches(
                 )
                 break
             normalized_name = normalize_geo_name(name)
-            if len(normalized_name) >= 2 and normalized_name in normalized_text:
+            if _normalized_name_matches_text(name, normalized_name, text, normalized_text):
                 normalized.append(
                     GeoMatch(
                         candidate=candidate,
@@ -537,14 +715,12 @@ def _alias_matches(
 ) -> list[GeoMatch]:
     existing_ids = {match.candidate.id for match in existing}
     matches: list[GeoMatch] = []
-    compact_text = re.sub(r"\s+", "", text)
     for candidate in catalog:
         if candidate.id in existing_ids:
             continue
         for alias in candidate.aliases:
-            compact_alias = re.sub(r"\s+", "", alias)
             normalized_alias = normalize_geo_name(alias)
-            if compact_alias and compact_alias in compact_text:
+            if _literal_geo_term_matches_text(alias, text):
                 matches.append(
                     GeoMatch(
                         candidate=candidate,
@@ -555,7 +731,7 @@ def _alias_matches(
                     )
                 )
                 break
-            if len(normalized_alias) >= 2 and normalized_alias in normalized_text:
+            if _normalized_name_matches_text(alias, normalized_alias, text, normalized_text):
                 matches.append(
                     GeoMatch(
                         candidate=candidate,
@@ -567,6 +743,38 @@ def _alias_matches(
                 )
                 break
     return _dedupe_matches(matches)
+
+
+def _literal_geo_term_matches_text(term: str, text: str) -> bool:
+    compact_term = re.sub(r"\s+", "", str(term or ""))
+    if not compact_term:
+        return False
+    token_compacts = {re.sub(r"\s+", "", token) for token in _geo_like_tokens(text)}
+    if compact_term in token_compacts:
+        return True
+    normalized_term = normalize_geo_name(term)
+    token_norms = {normalize_geo_name(token) for token in _geo_like_tokens(text)}
+    if normalized_term and normalized_term in token_norms:
+        return True
+    return len(normalized_term) >= 3 and compact_term in re.sub(r"\s+", "", text)
+
+
+def _normalized_name_matches_text(
+    raw_name: str,
+    normalized_name: str,
+    text: str,
+    normalized_text: str,
+) -> bool:
+    if len(normalized_name) < 2 or normalized_name not in normalized_text:
+        return False
+    token_norms = {normalize_geo_name(token) for token in _geo_like_tokens(text)}
+    if normalized_name in token_norms:
+        return True
+    compact_name = re.sub(r"\s+", "", raw_name)
+    compact_text = re.sub(r"\s+", "", text)
+    if len(normalized_name) >= 3 and compact_name and compact_name in compact_text:
+        return True
+    return False
 
 
 def _fuzzy_matches(
@@ -626,7 +834,8 @@ def _fuzzy_score(left: str, right: str) -> float:
     if left in right or right in left:
         short = min(len(left), len(right))
         long = max(len(left), len(right))
-        return max(0.78, short / long)
+        ratio = short / long
+        return ratio if ratio >= 0.8 else 0.0
     ratio = SequenceMatcher(None, left, right).ratio()
     distance = _levenshtein_distance(left, right)
     if distance == 1 and min(len(left), len(right)) >= 2:
@@ -682,64 +891,6 @@ def _collapse_parent_matches(matches: list[GeoMatch]) -> list[GeoMatch]:
     return _dedupe_matches(collapsed)
 
 
-def _apply_route_roles(text: str, matches: list[GeoMatch]) -> list[GeoMatch]:
-    if len(matches) < 2:
-        return matches
-    role_matches: list[GeoMatch] = []
-    route_detected = any(pattern in text for pattern in ROUTE_ORIGIN_PATTERNS + ROUTE_DESTINATION_PATTERNS)
-    for match in matches:
-        role = "primary"
-        if route_detected:
-            role = _infer_route_role(text, match)
-        role_matches.append(
-            GeoMatch(
-                candidate=match.candidate,
-                matched_text=match.matched_text,
-                match_type=match.match_type,
-                confidence=match.confidence,
-                role=role,
-                keyword=match.keyword,
-            )
-        )
-    if route_detected and all(match.role == "primary" for match in role_matches):
-        role_matches[0].role = "origin"
-        role_matches[-1].role = "destination"
-    if route_detected:
-        role_order = {"origin": 0, "primary": 1, "destination": 2}
-        role_matches = sorted(role_matches, key=lambda match: role_order.get(match.role, 1))
-    return role_matches
-
-
-def _infer_route_role(text: str, match: GeoMatch) -> str:
-    terms = [
-        match.matched_text,
-        match.candidate.full_name,
-        match.candidate.ldong_regn_nm,
-        match.candidate.ldong_signgu_nm or "",
-        *match.candidate.aliases,
-    ]
-    index = -1
-    matched_text = ""
-    for term in terms:
-        if not term:
-            continue
-        index = text.find(term)
-        matched_text = term
-        if index >= 0:
-            break
-    if index < 0:
-        return "primary"
-    window = text[index : index + len(matched_text) + 16]
-    if any(pattern in window for pattern in ROUTE_ORIGIN_PATTERNS):
-        return "origin"
-    if any(pattern in window for pattern in ROUTE_DESTINATION_PATTERNS):
-        return "destination"
-    before = text[max(0, index - 8) : index + len(matched_text)]
-    if "까지" in before or "도착" in before:
-        return "destination"
-    return "primary"
-
-
 def _extract_excluded_locations(text: str, catalog: list[LdongCandidate]) -> list[GeoMatch]:
     if not any(marker in text for marker in EXCLUSION_MARKERS):
         return []
@@ -765,68 +916,25 @@ def _extract_excluded_locations(text: str, catalog: list[LdongCandidate]) -> lis
 
 
 def _mode_from_matches(matches: list[GeoMatch]) -> str:
-    roles = {match.role for match in matches}
-    if "origin" in roles or "destination" in roles:
-        return "route"
     if len(matches) > 1:
         return "multi_region"
     return "single_region"
+
+
+def _is_unsupported_multi_region(matches: list[GeoMatch]) -> bool:
+    active_matches = [match for match in matches if match.role != "excluded"]
+    return len({match.candidate.id for match in active_matches}) > 1
 
 
 def _has_specific_location_match(matches: list[GeoMatch]) -> bool:
     return any(match.candidate.ldong_signgu_cd for match in matches)
 
 
-def _extract_sub_area_terms(text: str, matches: list[GeoMatch]) -> list[str]:
-    matched_region_terms: set[str] = set()
-    for match in matches:
-        candidate = match.candidate
-        for value in [
-            candidate.full_name,
-            candidate.ldong_regn_nm,
-            candidate.ldong_signgu_nm or "",
-            match.matched_text,
-        ]:
-            if value:
-                matched_region_terms.add(normalize_geo_name(value))
+def _sub_area_terms_from_matches(matches: list[GeoMatch]) -> list[str]:
     terms: list[str] = []
-    for raw_term in SUB_AREA_PATTERN.findall(text):
-        term = raw_term.strip()
-        normalized = normalize_geo_name(term)
-        if not normalized or normalized in matched_region_terms:
-            continue
-        terms.append(term)
-    return list(dict.fromkeys(terms))
-
-
-def _unresolved_locality_terms(text: str, matches: list[GeoMatch]) -> list[str]:
-    if not matches:
-        return []
-    matched_terms: set[str] = set()
-    top_level_matches = [match for match in matches if not match.candidate.ldong_signgu_cd]
-    if not top_level_matches:
-        return []
     for match in matches:
-        candidate = match.candidate
-        for value in [match.matched_text, candidate.full_name, candidate.ldong_regn_nm, *candidate.aliases]:
-            if value:
-                matched_terms.add(normalize_geo_name(value))
-
-    unresolved: list[str] = []
-    for match in top_level_matches:
-        search_terms = [match.matched_text, match.candidate.ldong_regn_nm, *match.candidate.aliases]
-        for term in search_terms:
-            if not term:
-                continue
-            index = text.find(term)
-            if index < 0:
-                continue
-            window = text[index + len(term) : index + len(term) + 18]
-            for found in re.findall(r"\s*([가-힣A-Za-z0-9]{2,})(?:에서|일대|근처|군|시|구|읍|면|동)", window):
-                normalized = normalize_geo_name(found)
-                if normalized and normalized not in matched_terms:
-                    unresolved.append(found)
-    return list(dict.fromkeys(unresolved))
+        terms.extend(match.sub_area_terms)
+    return list(dict.fromkeys(term for term in terms if term))
 
 
 def _strategy_summary(matches: list[GeoMatch]) -> str:
@@ -837,21 +945,21 @@ def _strategy_summary(matches: list[GeoMatch]) -> str:
     return "+".join(ordered)
 
 
-def _keywords_from_matches(matches: list[GeoMatch], *, sub_area_terms: list[str] | None = None) -> list[str]:
+def _keywords_from_matches(matches: list[GeoMatch]) -> list[str]:
     keywords: list[str] = []
     for match in matches:
         if match.keyword:
             keywords.append(match.keyword)
         for alias in match.candidate.aliases:
-            if alias == match.matched_text:
+            if match.match_type == "alias" and alias == match.matched_text:
                 keywords.append(alias)
-    keywords.extend(sub_area_terms or [])
+        keywords.extend(match.sub_area_terms)
     return list(dict.fromkeys(keywords))
 
 
-def _match_to_location(match: GeoMatch, *, sub_area_terms: list[str] | None = None) -> dict[str, Any]:
+def _match_to_location(match: GeoMatch) -> dict[str, Any]:
     candidate = match.candidate
-    local_terms = list(sub_area_terms or [])
+    local_terms = list(match.sub_area_terms)
     name = candidate.display_name
     if local_terms:
         name = f"{name} {' '.join(local_terms)} 일대"
@@ -909,7 +1017,7 @@ def _clarification_scope(
         "clarification_question": "지역을 하나로 확정할 수 없습니다. 후보 중 원하는 지역을 선택해 주세요.",
         "confidence": min((candidate.get("confidence", 0.0) for candidate in candidates), default=0.0),
         "input_text": input_text,
-        "locations": [_match_to_location(match, sub_area_terms=sub_area_terms) for match in matches],
+        "locations": [_match_to_location(match) for match in matches],
         "excluded_locations": [_match_to_location(match) for match in excluded],
         "unresolved_locations": [
             {
@@ -919,12 +1027,51 @@ def _clarification_scope(
                 "candidates": candidates,
             }
         ],
-        "keywords": _keywords_from_matches(matches, sub_area_terms=sub_area_terms),
+        "keywords": _keywords_from_matches(matches),
         "sub_area_terms": sub_area_terms,
         "allow_nationwide": False,
         "resolution_strategy": reason,
         "candidates": candidates,
         "fuzzy_suggestions": fuzzy_suggestions,
+        "llm_hints": llm_hints or {},
+    }
+
+
+def _unsupported_multi_region_scope(
+    *,
+    input_text: str,
+    matches: list[GeoMatch],
+    excluded: list[GeoMatch],
+    sub_area_terms: list[str],
+    llm_hints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    candidates = _dedupe_dicts([_match_to_candidate(match) for match in matches])
+    candidate_names = [str(candidate.get("name") or "").strip() for candidate in candidates if candidate.get("name")]
+    message = "현재 PARAVOCA는 한 번에 하나의 지역만 지원합니다. 아래 후보 중 하나만 포함해 다시 요청해 주세요."
+    return {
+        "mode": "unsupported_multi_region",
+        "status": "needs_clarification",
+        "needs_clarification": True,
+        "clarification_question": message,
+        "confidence": min((match.confidence for match in matches), default=0.0),
+        "input_text": input_text,
+        "locations": [_match_to_location(match) for match in matches],
+        "excluded_locations": [_match_to_location(match) for match in excluded],
+        "unresolved_locations": [
+            {
+                "input": input_text,
+                "reason": "unsupported_multi_region",
+                "terms": candidate_names,
+                "candidates": candidates,
+            }
+        ],
+        "keywords": [],
+        "sub_area_terms": [],
+        "allow_nationwide": False,
+        "resolution_strategy": "unsupported_multi_region",
+        "candidates": candidates,
+        "unsupported_reason": "PARAVOCA는 현재 지역 이동형 코스나 복수 지역 동시 기획을 지원하지 않습니다.",
+        "fuzzy_suggestions": [],
         "llm_hints": llm_hints or {},
     }
 
@@ -989,7 +1136,7 @@ def _geo_like_tokens(text: str) -> list[str]:
     }
     cleaned: list[str] = []
     for token in tokens:
-        token = re.sub(r"(에서|으로|부터|까지|에는|은|는|이|가|을|를|의)$", "", token)
+        token = re.sub(r"(에서|으로|부터|까지|에는|은|는|이|가|을|를|의|과|와)$", "", token)
         if len(token) >= 2 and token not in blocked:
             cleaned.append(token)
     return cleaned
