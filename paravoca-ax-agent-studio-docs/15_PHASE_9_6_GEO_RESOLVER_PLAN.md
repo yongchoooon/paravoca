@@ -22,14 +22,15 @@ Phase 9까지 PARAVOCA는 TourAPI 검색, 상세 보강, source document, Chroma
 Phase 9.6 구현 결과는 다음과 같습니다.
 
 - `GeoResolverAgent`가 Planner 다음에 실행됩니다.
-- `LLM_ENABLED=true`이면 GeoResolver가 Gemini를 호출해 장소 span, 출발/도착 관계, 해외 목적지 여부를 먼저 추출합니다.
-- Gemini가 TourAPI 코드를 직접 확정하지는 못하며, 최종 코드는 공식 `ldong` catalog resolver가 검증합니다.
+- `LLM_ENABLED=true`이면 GeoResolver가 Gemini를 호출해 장소 span, 복수 지역 여부, 해외 목적지 여부를 추출하고, Phase 12.0부터는 TourAPI `ldong` catalog 후보 중 실제 검색에 사용할 `resolved_locations`도 선택합니다.
+- 최종 코드는 Gemini 선택 결과를 그대로 믿지 않고, Python resolver가 공식 `ldong` catalog에 실제 존재하는 code인지와 confidence를 검증합니다.
 - Run 생성 UI는 별도 Region 입력을 받지 않고 자연어 request를 source of truth로 사용합니다.
 - TourAPI v4.4 `ldongCode2?lDongListYn=Y` 전체 paging sync와 `lclsSystmCode2` sync를 `python -m app.tools.sync_tourapi_catalogs`로 제공합니다.
 - resolver는 DB에 동기화된 공식 TourAPI 시도/시군구 catalog를 우선 사용합니다.
 - 특정 예시 지명을 코드에 하드코딩하거나 실패 시 seed/fallback으로 추정하지 않습니다.
-- `부산 부산진구 전포동 일대`처럼 상위 시군구가 확정된 세부 동네명은 `부산광역시 부산진구` 코드와 `전포동` keyword로 검색합니다.
+- `부산 부산진구 전포동 일대`, `대청도`처럼 상위 시군구가 확정된 세부 동네명/섬/생활권명은 상위 시군구 코드와 원문 keyword를 함께 보존하고, 수집 후 keyword가 포함된 item/document만 남깁니다.
 - `중구`처럼 후보가 여러 개인 요청은 run status를 `failed`로 저장하되 후보 안내를 UI에 표시합니다.
+- 지역 이동형 코스나 두 곳 이상의 지역을 한 번에 연결하는 요청은 현재 지원하지 않습니다. 감지된 후보 중 하나만 선택해 다시 요청하라는 안내로 종료합니다.
 - 해외 목적지는 `unsupported` 상태로 멈추고 "PARAVOCA는 현재 국내 관광 데이터만 지원합니다."라는 안내를 표시합니다.
 - DataAgent와 RAG metadata/filter는 `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3`를 저장하고 사용합니다.
 - Run Detail Evidence table은 사용자에게 내부 `Geo`/`LCLS` 코드 컬럼을 노출하지 않고, content type은 한국어로 표시합니다.
@@ -39,7 +40,7 @@ Phase 9.6 구현 결과는 다음과 같습니다.
 Phase 9.6의 목표는 다음입니다.
 
 1. 사용자가 웹에서 `Region`을 따로 입력하지 않아도 자연어 prompt에서 지역 의도를 추출한다.
-2. 단일 지역, 복수 지역, 출발/도착/경유 route형 요청을 구분한다.
+2. 단일 지역과 복수 지역 요청을 구분한다. 복수 지역 또는 지역 이동형 요청은 지원하지 않고 단일 지역 선택 안내로 종료한다.
 3. TourAPI v4.4 기준 `ldongCode2`와 `lclsSystmCode2`를 catalog로 저장한다.
 4. `areaCode` 중심 조회를 `lDongRegnCd`, `lDongSignguCd`, `lclsSystm1/2/3` 중심으로 전환한다.
 5. 지역 코드를 못 찾았을 때 전국 검색으로 조용히 fallback하지 않는다.
@@ -98,56 +99,53 @@ PlannerAgent는 더 이상 부산 하드코딩 또는 단순 `region` 필드 중
 
 ## GeoScope 출력 스키마
 
-권장 JSON:
+현재 권장 JSON:
 
 ```json
 {
   "geo_scope": {
-    "mode": "route",
+    "mode": "single_region",
     "source": "prompt",
-    "original_text": "부산에서 시작해서 양산에서 끝나는 외국인 대상 액티비티 상품 3개",
+    "original_text": "부산 부산진구 전포동 일대 외국인 대상 액티비티 상품 3개",
     "locations": [
       {
-        "text": "부산",
-        "normalized_name": "부산광역시",
-        "role": "origin",
-        "match_type": "ldong_region",
+        "text": "부산 부산진구",
+        "normalized_name": "부산광역시 부산진구",
+        "role": "primary",
+        "match_type": "ldong_signgu",
         "ldong_regn_cd": "26",
         "ldong_regn_nm": "부산광역시",
-        "ldong_signgu_cd": null,
-        "ldong_signgu_nm": null,
+        "ldong_signgu_cd": "230",
+        "ldong_signgu_nm": "부산진구",
         "legacy_area_code": "6",
         "legacy_sigungu_code": null,
-        "keyword": "부산",
+        "keyword": "전포동",
         "confidence": 0.99,
-        "evidence": "ldongCode2 region exact match"
-      },
-      {
-        "text": "양산",
-        "normalized_name": "경상남도 양산시",
-        "role": "destination",
-        "match_type": "ldong_signgu",
-        "ldong_regn_cd": "48",
-        "ldong_regn_nm": "경상남도",
-        "ldong_signgu_cd": "330",
-        "ldong_signgu_nm": "양산시",
-        "legacy_area_code": null,
-        "legacy_sigungu_code": null,
-        "keyword": "양산",
-        "confidence": 0.98,
         "evidence": "ldongCode2 signgu exact match"
       }
     ],
     "unresolved_locations": [],
     "excluded_locations": [],
-    "route": {
-      "origin_index": 0,
-      "destination_index": 1,
-      "stopover_indexes": []
-    },
-    "keywords": ["부산", "양산", "외국인", "액티비티"],
+    "keywords": ["전포동"],
     "needs_clarification": false,
     "clarification_question": null
+  }
+}
+```
+
+복수 지역 또는 지역 이동형 요청은 아래처럼 정상 검색으로 넘기지 않습니다.
+
+```json
+{
+  "geo_scope": {
+    "mode": "unsupported_multi_region",
+    "status": "needs_clarification",
+    "needs_clarification": true,
+    "clarification_question": "현재 PARAVOCA는 한 번에 하나의 지역만 지원합니다. 아래 후보 중 하나만 포함해 다시 요청해 주세요.",
+    "candidates": [
+      {"name": "부산광역시", "ldong_regn_cd": "26", "ldong_signgu_cd": null},
+      {"name": "경상남도 양산시", "ldong_regn_cd": "48", "ldong_signgu_cd": "330"}
+    ]
   }
 }
 ```
@@ -156,21 +154,17 @@ PlannerAgent는 더 이상 부산 하드코딩 또는 단순 `region` 필드 중
 
 | mode | 의미 | 예시 |
 |---|---|---|
-| `single_area` | 단일 지역 | "대전에서 액티비티 3개" |
-| `multi_area` | 여러 지역을 병렬로 고려 | "부산이랑 울산에서 비교해서" |
-| `route` | 출발/도착/경유가 있는 동선 | "부산에서 시작해서 양산에서 끝나는" |
+| `single_region` | 단일 지역 | "대전에서 액티비티 3개" |
+| `unsupported_multi_region` | 현재 미지원인 복수 지역/지역 이동형 요청 | "부산과 양산을 연결해서" |
 | `nearby` | 특정 장소 주변 | "대전역 근처에서" |
 | `nationwide` | 전국 또는 지역 미지정 | "전국 축제 중에서" |
-| `ambiguous` | 해석 불가 또는 충돌 | "영양 여행"이 음식/지역 양쪽으로 해석되는 경우 |
+| `clarification_required` | 해석 불가 또는 충돌 | "중구 야간 관광"처럼 후보가 여러 개인 경우 |
 
 ### `role` 값
 
 | role | 의미 |
 |---|---|
 | `primary` | 단일 또는 주요 지역 |
-| `origin` | 출발지 |
-| `destination` | 도착지 |
-| `stopover` | 경유지 |
 | `nearby_anchor` | 주변 검색 기준점 |
 | `comparison` | 비교 대상 |
 | `excluded` | 제외 지역 |
@@ -188,20 +182,23 @@ PlannerAgent는 더 이상 부산 하드코딩 또는 단순 `region` 필드 중
 
 GeoResolverAgent는 다음 순서로 resolve합니다.
 
-1. Prompt span extraction
-   - 장소명, 출발/도착/경유 표현, 제외 표현을 추출합니다.
-   - 예: "부산에서 시작해서 양산에서 끝나는" -> 부산 origin, 양산 destination.
+1. Gemini catalog selection
+   - 장소명, 복수 지역 여부, 제외 표현을 추출합니다.
+   - TourAPI `ldong` catalog 후보 중 실제 검색에 사용할 `resolved_locations`를 선택합니다.
+   - 선택한 code가 catalog에 없거나 confidence가 낮으면 확정하지 않습니다.
+   - 두 곳 이상 지역이 감지되면 Python resolver가 `unsupported_multi_region`으로 종료합니다.
 
-2. Exact catalog matching
+2. Exact catalog matching fallback
    - `ldongCode2`로 sync한 시도/시군구 이름에 exact match합니다.
    - 예: 대전 -> 대전광역시 `30`.
 
-3. Normalized matching
+3. Normalized matching fallback
    - "광역시", "특별자치도", "시", "군", "구" suffix를 정규화합니다.
    - 예: "대전" -> "대전광역시", "영양" -> "영양군".
 
 4. Parent-scoped keyword extraction
-   - TourAPI catalog가 시도/시군구까지만 제공하는 경우, 상위 지역이 확정된 세부 동네명은 검색 keyword로 유지합니다.
+   - TourAPI catalog가 시도/시군구까지만 제공하는 경우, 상위 지역이 확정된 세부 동네명/섬/생활권명은 검색 keyword로 유지합니다.
+   - BaselineDataAgent는 상위 code로 수집한 뒤 keyword가 들어간 근거만 유지합니다.
    - 예: "부산 부산진구 전포동 일대" -> 부산광역시 부산진구 `26`/`230` + keyword `전포동`.
    - 상위 지역 없이 catalog에 없는 장소명만 있는 경우에는 억지로 특정 시군구에 매핑하지 않습니다.
 
@@ -522,7 +519,7 @@ created_at
 
 ```json
 {
-  "message": "부산에서 시작해서 양산에서 끝나는 외국인 대상 액티비티 상품 3개",
+  "message": "부산 부산진구 전포동 일대 외국인 대상 액티비티 상품 3개",
   "region": null,
   "preferences": ["야간 관광", "축제"]
 }
@@ -531,7 +528,7 @@ created_at
 처리:
 
 1. 장소 후보 추출.
-2. 출발/도착/경유/제외 관계 추출.
+2. 복수 지역 여부와 제외 관계 추출.
 3. `tourapi_ldong_codes`에서 exact/normalized/fuzzy 후보 match.
 4. 상위 시군구가 확정된 세부 동네명은 keyword로 분리.
 5. confidence와 ambiguity 계산.
@@ -542,7 +539,7 @@ created_at
 ```json
 {
   "geo_scope": {
-    "mode": "route",
+    "mode": "single_region",
     "locations": [...],
     "needs_clarification": false
   }
@@ -560,7 +557,7 @@ created_at
 
 - `geo_scope.locations`를 순회합니다.
 - location별로 `lDongRegnCd`, `lDongSignguCd`를 전달합니다.
-- route형이면 origin/destination/stopover별 source item을 구분합니다.
+- 복수 지역 또는 지역 이동형 요청은 데이터 조회 전에 종료합니다.
 - `needs_clarification=true`면 데이터 조회 전에 run을 `failed` 상태로 전환하고, 사용자에게 지역 후보 안내를 표시합니다.
 - location이 있는 요청에서 `lDongRegnCd`가 없으면 API를 호출하지 않습니다.
 
@@ -568,12 +565,11 @@ DataAgent 검색 전략:
 
 | mode | 검색 전략 |
 |---|---|
-| `single_area` | 해당 지역의 관광지/레포츠/행사/음식/쇼핑/숙박을 의도에 따라 조회 |
-| `multi_area` | 지역별 동일 query set 실행 후 region별 evidence quota 유지 |
-| `route` | origin/destination은 각각 조회, 경유지가 있으면 stopover 조회, route 문맥 keyword 유지 |
+| `single_region` | 해당 지역의 관광지/레포츠/행사/음식/쇼핑/숙박을 의도에 따라 조회 |
+| `unsupported_multi_region` | 조회 금지, 후보 중 하나만 선택하도록 안내 |
 | `nearby` | anchor 좌표가 있으면 `locationBasedList2`, 없으면 keyword + ldong |
 | `nationwide` | 지역 필터 없이 실행 가능하지만, prompt가 전국 의도인지 명시되어야 함 |
-| `ambiguous` | 조회 금지, clarification |
+| `clarification_required` | 조회 금지, clarification |
 
 ### ResearchAgent
 
@@ -679,7 +675,7 @@ Phase 11에서 확장:
 - "인천 중구 영종도" -> `28`/`110`, keyword `영종도`.
 - "울릉도" -> `47`/`940`.
 - "영양" -> `47`/`760`.
-- "부산에서 시작해서 양산에서 끝나는" -> route mode, 부산 origin, 양산 destination.
+- "부산과 양산을 연결해서" 또는 지역 이동형 요청 -> `unsupported_multi_region`, 후보 중 하나만 선택 안내.
 - "중구" -> 후보 여러 개로 run status `failed`, 후보 안내 표시.
 - "도쿄 여행 상품" -> `unsupported`.
 
@@ -732,7 +728,7 @@ python -m app.rag.reindex --collection source_documents --reset
 완료 기준:
 
 - 사용자가 message만으로 run 생성 가능.
-- "부산에서 시작해서 양산에서 끝나는" 요청이 UI에서 route로 표시됨.
+- 복수 지역 또는 지역 이동형 요청은 UI에서 단일 지역 선택 안내로 표시됨.
 - `중구` 요청은 status가 `failed`로 표시되고, 상세 화면에는 지역 후보 안내가 표시됨.
 - 해외 목적지가 error처럼 보이지 않고 PARAVOCA 국내 지원 범위 안내로 표시됨.
 
@@ -750,7 +746,7 @@ python -m app.rag.reindex --collection source_documents --reset
 | `부산 강서구 가덕도` | `26`/`440`, keyword `가덕도` 유지 |
 | `울릉도` | `47`/`940` |
 | `영양` | `47`/`760` |
-| `부산에서 시작해서 양산에서 끝나는` | route mode |
+| `부산에서 시작해서 양산에서 끝나는` | `unsupported_multi_region`, 단일 지역 선택 안내 |
 | `중구에서` | ambiguous, clarification |
 | `부산 부산진구 전포동 일대` | `26`/`230`, keyword `전포동`, 다른 시도 추가 금지 |
 | `도쿄 여행 상품` | `unsupported`, 국내 지원 안내 |
@@ -776,7 +772,7 @@ Phase 9.6 완료 기준:
 3. 지역 명시 요청에서 `region_code=None` 또는 `lDongRegnCd=None`으로 전국 검색하지 않습니다.
 4. Evidence metadata에 법정동 코드와 신분류체계 코드가 남습니다.
 5. `run_e84714a8a7af42a2`와 같은 대전 요청을 새로 실행했을 때 강릉/정선/고창 evidence가 섞이지 않습니다.
-6. route형 요청에서 origin/destination이 분리되어 저장됩니다.
+6. 복수 지역/지역 이동형 요청은 데이터 검색 전에 중단되고, 후보 중 하나만 선택하라는 안내가 표시됩니다.
 7. ambiguous 지역은 run status `failed`로 남고, 사용자에게 후보를 표시합니다.
 8. backend tests와 frontend build가 통과합니다.
 
@@ -812,7 +808,7 @@ Phase 9.6: GeoResolverAgent와 TourAPI v4.4 ldong/lcls 전환을 구현해줘.
 4. TourAPI catalog sync DB/CLI 추가.
 5. GeoResolverAgent 추가.
 6. LangGraph workflow에서 Planner 다음에 GeoResolverAgent를 실행.
-7. DataAgent가 geo_scope 기준으로 지역별/route별 TourAPI 검색.
+7. DataAgent가 geo_scope 기준으로 단일 지역 또는 명시적 전국 TourAPI 검색.
 8. 지역 resolve 실패 시 전국 검색 금지.
 9. RAG filter를 ldong metadata 기준으로 전환하고 reindex 안내 추가.
 10. frontend에서 Region 입력을 제거하고 message 중심 입력과 resolved geo scope 표시.
@@ -823,7 +819,7 @@ Phase 9.6: GeoResolverAgent와 TourAPI v4.4 ldong/lcls 전환을 구현해줘.
    - 인천 중구 영종도, 부산 강서구 가덕도처럼 상위 지역이 있으면 keyword 유지
    - 울릉도
    - 영양
-   - 부산 -> 양산 route
+   - 부산 -> 양산 지역 이동형 요청은 단일 지역 선택 안내
    - 중구 ambiguous
    - 부산 부산진구 전포동 일대
    - 도쿄 같은 해외 목적지 unsupported

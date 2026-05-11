@@ -57,8 +57,9 @@ Run 생성 modal에서 workflow run을 만들기 전에 `PreflightValidationAgen
 
 - 관광 상품 기획과 무관한 요청 차단
 - 국내 관광 데이터 지원 범위 확인
-- 자연어에 6개 이상 상품 생성 요청이 들어오면 차단
-- schema의 `product_count`도 최대 5개로 제한
+- 자연어에 21개 이상 상품 생성 요청이 들어오면 차단
+- schema의 `product_count`도 최대 20개로 제한
+- 실제 사용 가능한 근거 데이터가 요청 수보다 적으면 가능한 개수까지만 생성하고 부족 사유를 `needs_review`/`coverage_notes`에 남김
 
 Preflight 실패는 run review 단계로 넘어가지 않습니다. 생성 화면에서 사용자에게 안내만 표시합니다.
 
@@ -114,7 +115,8 @@ shortlist 기준:
 - 거대한 `kto_api_capability_matrix` JSON을 더 이상 prompt에 넣지 않습니다.
 - API 명세 전체가 아니라 “어떤 API가 어떤 정보를 줄 수 있는지”만 자연어 요약으로 전달합니다.
 - shortlist 밖 raw 후보에 대해서는 개별 gap을 만들지 않습니다.
-- `data_gap_profile`의 `maxOutputTokens`는 16,384로 설정합니다.
+- Phase 12.0부터 `missing_overview`는 `missing_detail_info`로 통합하고, 후보별 item-level gap은 최대 1개, 전체 gaps는 최대 24개로 제한합니다.
+- `data_gap_profile`의 `maxOutputTokens`는 16,384로 유지하지만, token 안정성은 한도 상향이 아니라 짧은 gap report schema와 prompt 제한으로 확보합니다.
 
 출력:
 
@@ -194,8 +196,9 @@ KorService2 상세 보강 대상만 선택합니다.
 
 현재 상태:
 
-- Phase 10.2에서는 capability routing과 skipped/future 기록까지만 합니다.
-- 실제 provider/executor 연결은 Phase 12.1 범위입니다.
+- Phase 10.2에서는 capability routing과 skipped/future 기록까지만 했습니다.
+- Phase 12.1에서 `gallerySearchList1`과 `phokoAwrdList` provider/executor 연결을 완료했습니다.
+- feature flag가 꺼져 있으면 실제 호출하지 않고 disabled/skipped로 기록합니다.
 
 ### RouteSignalPlannerAgent
 
@@ -209,8 +212,9 @@ KorService2 상세 보강 대상만 선택합니다.
 
 현재 상태:
 
-- Phase 10.2에서는 capability routing과 skipped/future 기록까지만 합니다.
-- 실제 provider/executor 연결은 Phase 12.2 범위입니다.
+- Phase 10.2에서는 capability routing과 skipped/future 기록까지만 했습니다.
+- Phase 12.2에서 두루누비, 연관 관광지, 관광빅데이터, 혼잡 예측, 지역 관광수요 provider/executor 연결을 완료했습니다.
+- feature flag가 꺼져 있거나 서비스키가 없으면 실제 호출하지 않고 disabled/skipped로 기록합니다.
 
 ### ThemeDataPlannerAgent
 
@@ -224,9 +228,10 @@ KorService2 상세 보강 대상만 선택합니다.
 
 현재 상태:
 
-- Phase 10.2에서는 capability routing과 skipped/future 기록까지만 합니다.
-- 의료관광은 `ALLOW_MEDICAL_API=true`일 때만 고려합니다.
-- 실제 provider/executor 연결은 Phase 12.3 범위입니다.
+- Phase 10.2에서는 capability routing과 skipped/future 기록까지만 했습니다.
+- Phase 12.3에서 웰니스, 반려동물, 오디오, 생태, 의료관광 provider/executor 연결을 완료했습니다.
+- 의료관광은 `ALLOW_MEDICAL_API=true`일 때만 실제 호출합니다.
+- feature flag가 꺼져 있거나 서비스키가 없으면 실제 호출하지 않고 disabled/skipped로 기록합니다.
 
 ## EnrichmentExecutor
 
@@ -426,6 +431,6 @@ Phase 12는 99번 문서에 정리된 추가 KTO API들을 실제 provider/execu
 
 권장 분리:
 
-- Phase 12.1 Visual APIs: 관광사진, 공모전 사진
-- Phase 12.2 Route/Related/Demand Signals: 두루누비, 연관 관광지, 관광빅데이터, 혼잡도, 지역 관광수요
-- Phase 12.3 Theme APIs: 웰니스, 반려동물, 오디오, 생태, 의료관광
+- Phase 12.1 Visual APIs: 관광사진, 공모전 사진. 구현 완료
+- Phase 12.2 Route/Related/Demand Signals: 두루누비, 연관 관광지, 관광빅데이터, 혼잡도, 지역 관광수요. 구현 완료
+- Phase 12.3 Theme APIs: 웰니스, 반려동물, 오디오, 생태, 의료관광. 구현 완료

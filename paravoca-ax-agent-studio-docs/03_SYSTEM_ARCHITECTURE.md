@@ -195,7 +195,9 @@ Planner는 사용자 요청을 구조화합니다.
 
 ### 3. GeoResolver Agent 실행
 
-GeoResolver는 사용자의 자연어 요청에서 지역 범위를 해석합니다. 기준 데이터는 `python -m app.tools.sync_tourapi_catalogs`로 동기화한 TourAPI v4.4 `ldongCode2?lDongListYn=Y` catalog입니다. 특정 예시 지명을 코드에 강제 매핑하지 않고, catalog exact/normalized/fuzzy 후보를 점수화합니다.
+GeoResolver는 사용자의 자연어 요청에서 지역 범위를 해석합니다. 기준 데이터는 `python -m app.tools.sync_tourapi_catalogs`로 동기화한 TourAPI v4.4 `ldongCode2?lDongListYn=Y` catalog입니다. Phase 12.0부터 Gemini GeoResolverAgent는 이 catalog 후보를 prompt로 받아 `resolved_locations`를 직접 선택하고, Python resolver는 선택된 code가 실제 catalog에 있는지와 confidence가 충분한지만 검증합니다. 특정 예시 지명을 코드에 하드코딩해 강제 매핑하지 않습니다.
+
+TourAPI catalog가 시도/시군구까지만 제공하고 `대청도`, `전포동` 같은 좁은 지명이 직접 후보에 없을 수 있습니다. 이 경우 GeoResolverAgent가 상위 시군구를 확정하면 원문 지명을 keyword로 보존하고, BaselineDataAgent는 상위 code로 수집한 뒤 item/document title, address, content, metadata에 keyword가 있는 근거만 남깁니다. keyword까지 만족하는 근거가 없으면 상위 지역 전체나 전국으로 자동 fallback하지 않고 `insufficient_source_data`로 종료합니다.
 
 출력 예:
 

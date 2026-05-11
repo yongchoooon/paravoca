@@ -29,7 +29,8 @@ User Input
 
 Run 생성 전에는 `PreflightValidationAgent`가 먼저 실행됩니다. 이 검증은 LangGraph run 내부 step으로 기록하지 않고, run 생성 API에서 동기적으로 처리합니다.
 
-- 자연어 요청이나 입력 필드가 상품 6개 이상 생성을 요구하면 run을 만들지 않고 생성 modal에서 최대 5개 안내를 표시합니다.
+- 자연어 요청이나 입력 필드가 상품 21개 이상 생성을 요구하면 run을 만들지 않고 생성 modal에서 최대 20개 안내를 표시합니다.
+- 검증을 통과한 요청도 실제 사용 가능한 근거 데이터가 요청 수보다 적으면, ProductAgent가 가능한 개수까지만 생성하고 부족 사유를 상품별 확인 항목에 남깁니다.
 - 관광 상품 기획과 무관한 요청은 run을 만들지 않고 지원 범위 안내를 표시합니다.
 - 검증을 통과한 요청만 `workflow_created` 이후 LangGraph workflow로 들어갑니다.
 
@@ -163,9 +164,12 @@ class GraphState(TypedDict):
 ### 처리 규칙
 
 - 기준 catalog는 `ldongCode2?lDongListYn=Y` 전체 paging sync 결과입니다.
+- Phase 12.0부터 Gemini GeoResolverAgent는 catalog 후보를 prompt로 받아 `resolved_locations`를 직접 선택합니다.
+- Python resolver는 Gemini가 선택한 code가 실제 catalog에 있는지, confidence가 충분한지 검증합니다.
 - resolver는 특정 테스트 지명을 코드에 하드코딩해 강제 매핑하지 않습니다.
-- 시도/시군구는 exact match, normalized match, fuzzy candidate 순서로 찾습니다.
-- 상위 지역이 확정된 상태에서만 `전포동` 같은 더 좁은 동네명을 keyword로 유지합니다.
+- Python fallback matcher는 명확한 시도/시군구 exact match, normalized match, fuzzy candidate만 처리합니다.
+- 상위 지역이 확정된 상태에서만 `전포동`, `대청도` 같은 더 좁은 지명을 keyword로 유지합니다.
+- 좁은 지명 keyword가 있으면 BaselineDataAgent는 상위 시군구 code로 수집한 뒤 item/document text에 keyword가 있는 근거만 남깁니다.
 - `중구`처럼 여러 시도에 같은 시군구명이 있으면 `needs_clarification=true`로 처리합니다.
 - 해외 목적지는 `unsupported`로 처리하고 PARAVOCA가 현재 국내 관광 데이터만 지원한다는 안내를 반환합니다.
 - 사용자가 `전국`, `국내 전체`처럼 명시한 경우에만 전국 검색을 허용합니다.

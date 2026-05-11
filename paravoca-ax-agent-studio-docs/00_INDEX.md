@@ -1,6 +1,6 @@
 # PARAVOCA AX Agent Studio 문서 인덱스
 
-작성 기준일: 2026-05-10
+작성 기준일: 2026-05-11
 
 이 폴더는 Codex가 실제 개발을 시작할 수 있도록 만든 프로젝트 상세 명세입니다. 원문 아이디어의 방향은 유지하되, 프론트엔드 스택은 `Tailwind CSS`, `shadcn/ui`, `Bootstrap`을 사용하지 않고 `Mantine UI`, `CSS Modules 또는 SCSS Modules`, `React Flow`를 사용하는 것으로 확정했습니다.
 
@@ -16,7 +16,7 @@
 - 평가 자동화: RAG, agent tool call, workflow success, 비용, latency를 측정합니다.
 - 비용 거버넌스: Gemini gateway 사용량 추적, 저가 모델 라우팅, 샘플 기반 eval, batch 실행을 설계합니다.
 
-현재 코드 구현 기준은 Phase 11.5까지입니다. TourAPI 기본 검색, KorService2 상세 보강, source document/Chroma 색인, local semantic embedding provider, Gemini 기반 Planner/DataGap/Router/Planner lane/EvidenceFusion/Research/Product/Marketing/QA, revision workflow, KTO capability catalog, Run Detail Evidence의 상세 정보/이미지 후보 표시까지 구현되어 있습니다. Phase 9.6에서는 `GeoResolverAgent`를 추가해 자연어 요청에서 지역 의도를 해석하고, TourAPI v4.4 `ldongCode2?lDongListYn=Y`/`lclsSystmCode2` catalog를 기준으로 `lDongRegnCd`/`lDongSignguCd` 검색을 수행합니다. 지역이 애매하면 run status는 `failed`로 저장하고 지역 후보 안내를 표시하며, 해외 목적지는 PARAVOCA 국내 지원 범위 안내로 종료합니다. Phase 10에서는 Data 단계를 `BaselineDataAgent`, `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 4개 API family planner, `EnrichmentExecutor`, `EvidenceFusionAgent`로 분리해 필요한 데이터 보강만 실행하고, Product/Marketing/QA에 넘길 `evidence_profile`, `productization_advice`, `data_coverage`, `unresolved_gaps`를 생성합니다. Phase 10.2에서는 DataGap/Router/Planner/Fusion 판단을 Gemini prompt + JSON schema 기반으로 전환했고, raw 후보 shortlist, compact capability brief, KorService2 상세 보강 전체 처리, 후보별 EvidenceFusion card, prompt debug log, Dashboard task 삭제, QA Review Avoid 표시를 반영했습니다. Phase 10.1에서는 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation shell을 추가했고, Dashboard 안에 summary와 Runs table을 유지한 채 Workflow Preview와 후속 placeholder 화면을 전역 navigation으로 분리했습니다. Phase 10.5에서는 Run Detail의 사용자용 화면과 Developer debug 화면을 분리하고, Data Coverage / Enrichment / Evidence 표시를 운영자가 읽기 쉬운 상태와 문장 중심으로 정리했습니다. Phase 11에서는 Product/Marketing/QA를 evidence 기반 claim 제한 구조로 강화했고, Phase 11.5에서는 PlannerAgent와 ResearchSynthesisAgent를 Gemini 기반으로 전환하면서 deterministic `data_summary`를 LLM Calls에서 분리했습니다.
+현재 코드 구현 기준은 Phase 12.3까지입니다. TourAPI 기본 검색, KorService2 상세 보강, Visual 계열 KTO API 이미지 후보 보강, Route/Related/Demand Signal 계열 KTO API 보조 근거 보강, Theme 계열 KTO API 테마 후보 보강, source document/Chroma 색인, local semantic embedding provider, Gemini 기반 Planner/GeoResolver/DataGap/Router/Planner lane/EvidenceFusion/Research/Product/Marketing/QA, revision workflow, KTO capability catalog, Run Detail Evidence의 상세 정보/이미지 후보/보조 신호/테마 후보 표시까지 구현되어 있습니다. Phase 9.6에서는 `GeoResolverAgent`를 추가해 자연어 요청에서 지역 의도를 해석하고, TourAPI v4.4 `ldongCode2?lDongListYn=Y`/`lclsSystmCode2` catalog를 기준으로 `lDongRegnCd`/`lDongSignguCd` 검색을 수행합니다. Phase 12.0에서는 GeoResolverAgent가 catalog 후보를 prompt로 받아 `resolved_locations`를 직접 선택하도록 보강했고, catalog에 직접 없는 섬/생활권/관광지명은 상위 시군구 코드와 원문 keyword를 함께 보존해 수집 후 item/document를 다시 좁힙니다. 현재 지역 이동형 코스와 복수 지역 동시 기획은 지원하지 않으며, 두 곳 이상이 감지되면 후보 중 하나만 선택하라는 안내로 종료합니다. Phase 12.1에서는 `kto_tourism_photo`/`kto_photo_contest` provider와 executor를 연결해 활성화된 flag에서만 이미지 후보를 가져오고 `needs_license_review` 상태로 저장합니다. Phase 12.2에서는 두루누비, 연관 관광지, 관광빅데이터, 혼잡 예측, 지역 관광수요 provider/executor를 연결해 `tourism_route_assets`, `tourism_signal_records`, `source_documents`에 보조 근거를 저장합니다. Phase 12.3에서는 웰니스, 반려동물, 오디오, 생태, 의료관광 provider/executor를 연결해 `tourism_entities`, `tourism_visual_assets`, `source_documents`에 테마 보조 근거를 저장합니다. 지역이 애매하면 run status는 `failed`로 저장하고 지역 후보 안내를 표시하며, 해외 목적지는 PARAVOCA 국내 지원 범위 안내로 종료합니다. Phase 10에서는 Data 단계를 `BaselineDataAgent`, `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 4개 API family planner, `EnrichmentExecutor`, `EvidenceFusionAgent`로 분리해 필요한 데이터 보강만 실행하고, Product/Marketing/QA에 넘길 `evidence_profile`, `productization_advice`, `data_coverage`, `unresolved_gaps`를 생성합니다. Phase 10.2에서는 DataGap/Router/Planner/Fusion 판단을 Gemini prompt + JSON schema 기반으로 전환했고, raw 후보 shortlist, compact capability brief, KorService2 상세 보강 전체 처리, 후보별 EvidenceFusion card, prompt debug log, Dashboard task 삭제, QA Review Avoid 표시를 반영했습니다. Phase 12.0에서는 Chroma metadata filter를 query 단계에 적용하고, 데이터 부족을 `insufficient_source_data` 사용자 안내로 처리하며, DataGapProfiler 출력 gap을 목적에 맞게 제한해 반복 JSON으로 인한 token failure를 줄였습니다. Phase 10.1에서는 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation shell을 추가했고, Phase 10.5에서는 Run Detail의 사용자용 화면과 Developer debug 화면을 분리했습니다. Phase 11에서는 Product/Marketing/QA를 evidence 기반 claim 제한 구조로 강화했고, Phase 11.5에서는 PlannerAgent와 ResearchSynthesisAgent를 Gemini 기반으로 전환하면서 deterministic `data_summary`를 LLM Calls에서 분리했습니다. 현재 상품 생성 상한은 20개이며, 실제 evidence document 수가 부족하면 가능한 개수까지만 생성하고 부족 사유를 상품별 확인 항목에 남깁니다. ResearchSynthesisAgent는 원본 evidence를 대체하지 않고 상품화 해석만 병합하며, timeout 시 compact retry를 수행합니다.
 
 ## 문서 목록
 
@@ -85,6 +85,18 @@
 
 19. [19_PHASE_11_5_PLANNER_RESEARCH_LLM_CLEANUP.md](./19_PHASE_11_5_PLANNER_RESEARCH_LLM_CLEANUP.md)
    - Gemini PlannerAgent/ResearchSynthesisAgent 전환, EvidenceFusion card 보존, deterministic data_summary LLM Calls 분리, ApiCapabilityRouter와 future BaselineSearchPlanner 역할 구분
+
+20. [20_PHASE_12_0_RETRIEVAL_STABILITY.md](./20_PHASE_12_0_RETRIEVAL_STABILITY.md)
+   - Chroma metadata filter 안정화, empty result UX, GeoResolver catalog selection, 좁은 지역 keyword filter, DataGapProfiler 출력 상한
+
+21. [21_PHASE_12_1_VISUAL_APIS.md](./21_PHASE_12_1_VISUAL_APIS.md)
+   - 관광사진/관광공모전 사진 provider/executor 연결, 이미지 후보 저장, 사용권 확인 필요 상태, EvidenceFusion/Product UI 반영
+
+22. [22_PHASE_12_2_ROUTE_SIGNAL_APIS.md](./22_PHASE_12_2_ROUTE_SIGNAL_APIS.md)
+   - 두루누비/연관 관광지/관광빅데이터/혼잡 예측/지역 관광수요 provider/executor 연결, route asset/signal record/source document 저장, 보조 근거 claim 제한
+
+23. [23_PHASE_12_3_THEME_APIS.md](./23_PHASE_12_3_THEME_APIS.md)
+   - 웰니스/반려동물/오디오/생태/의료관광 provider/executor 연결, theme candidate/source document 저장, 테마 근거 claim 제한
 
 99. [99_00_KTO_API_SPEC_INDEX.md](./99_00_KTO_API_SPEC_INDEX.md)
     - KTO/TourAPI API 명세 canonical 인덱스, 99-01부터 99-13까지 서비스별 endpoint/response schema 정규화 문서

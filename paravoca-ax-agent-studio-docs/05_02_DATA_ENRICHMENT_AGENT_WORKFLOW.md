@@ -4,7 +4,7 @@
 
 이 문서는 한국관광공사 OpenAPI 묶음을 PARAVOCA AX Agent Studio의 workflow에 붙이는 구현 계획입니다. 핵심은 전체 API를 매번 호출하는 방식이 아니라, 현재 run의 요청, 수집된 데이터, 상품 초안, QA 결과를 보고 필요한 보강만 실행하는 구조입니다.
 
-구현 상태: Phase 10에서 1차 구현을 완료했고, Phase 10.2에서 `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 네 개의 API family planner, `EvidenceFusionAgent`를 Gemini prompt + JSON schema 기반 판단으로 전환했습니다. 현재 코드는 기본 TourAPI 수집 이후 raw 후보를 `TOURAPI_CANDIDATE_SHORTLIST_LIMIT` 기준 shortlist로 줄이고, Gemini가 shortlist 기준 gap report를 만듭니다. Router는 gap을 planner lane으로 분배하고, `TourApiDetailPlannerAgent`, `VisualDataPlannerAgent`, `RouteSignalPlannerAgent`, `ThemeDataPlannerAgent`가 각자 짧은 계획을 만듭니다. 코드 action인 `EnrichmentExecutor`는 KorService2 `detailCommon2`/`detailIntro2`/`detailInfo2`/`detailImage2`를 실행하며, shortlist 안에서 실행 가능한 `contentId` 대상은 `ENRICHMENT_MAX_CALL_BUDGET=6` 때문에 임의로 잘리지 않습니다. 아직 provider가 없는 KTO 묶음은 plan/skipped 상태로만 기록합니다. OfficialWebEvidenceAgent, HumanDataRequestAgent, VisualDataEnrichment, 수요/혼잡/두루누비/관광사진 API 실제 호출은 후속 Phase 범위입니다.
+구현 상태: Phase 10에서 1차 구현을 완료했고, Phase 10.2에서 `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 네 개의 API family planner, `EvidenceFusionAgent`를 Gemini prompt + JSON schema 기반 판단으로 전환했습니다. Phase 12.3 기준 현재 코드는 기본 TourAPI 수집 이후 raw 후보를 `TOURAPI_CANDIDATE_SHORTLIST_LIMIT` 기준 shortlist로 줄이고, Gemini가 shortlist 기준 gap report를 만듭니다. `DataGapProfilerAgent`는 반복적인 `missing_overview`를 만들지 않고 `missing_detail_info`로 통합하며, 후보별 item-level gap은 최대 1개, 전체 gap은 최대 24개로 제한합니다. Router는 gap을 planner lane으로 분배하고, `TourApiDetailPlannerAgent`, `VisualDataPlannerAgent`, `RouteSignalPlannerAgent`, `ThemeDataPlannerAgent`가 각자 짧은 계획을 만듭니다. 코드 action인 `EnrichmentExecutor`는 KorService2 상세 보강, Visual API 이미지 후보, Route/Signal API 보조 근거, Theme API 테마 후보를 계획된 call에 한해서만 실행합니다. shortlist 안에서 실행 가능한 `contentId` 대상은 `ENRICHMENT_MAX_CALL_BUDGET=6` 때문에 임의로 잘리지 않습니다. 아직 provider가 없는 KTO operation은 plan/skipped 상태로만 기록합니다. OfficialWebEvidenceAgent와 HumanDataRequestAgent는 후속 Phase 범위입니다.
 
 ## 목표
 
@@ -575,19 +575,17 @@ kto_medical_detail_intro
 kto_medical_detail_info
 
 kto_pet_area_search
+kto_pet_keyword_search
 kto_pet_location_search
-kto_pet_detail
+kto_pet_detail_pet
 
 kto_durunubi_course_list
 kto_durunubi_path_list
 
-kto_audio_keyword_search
-kto_audio_location_search
-kto_audio_detail
-kto_audio_sync
+kto_audio_story_search
+kto_audio_theme_search
 
-kto_eco_tourism_search
-kto_eco_tourism_detail
+kto_eco_area_search
 ```
 
 ### 수요/혼잡/연관 보강
@@ -980,6 +978,9 @@ Poster Studio에서 사용할 데이터:
 - 방문자 수, 집중률, 연관 관광지 데이터는 운영 판단 보조 신호로만 분류한다.
 - poster_studio에 필요한 이미지/시각 키워드 공백도 별도 표시한다.
 - 요청 상품 유형과 무관한 gap을 만들지 않는다.
+- `missing_overview`는 만들지 않고 `missing_detail_info`로 통합한다.
+- 같은 후보에 반복 gap을 여러 개 만들지 않고 우선순위 gap만 남긴다.
+- 전체 gaps는 24개 이하로 제한한다.
 - 확실하지 않은 정보는 추측하지 말고 needs_review에 남긴다.
 - 출력은 JSON schema를 지킨다.
 ```
@@ -1005,10 +1006,10 @@ Router가 배정한 gap과 해당 lane의 짧은 capability 요약만 보고 세
 
 규칙:
 - assigned_gaps에 없는 gap_id를 만들지 않는다.
-- TourApiDetailPlannerAgent만 Phase 10.2에서 실제 planned_calls를 만들 수 있다.
+- TourApiDetailPlannerAgent는 Phase 10.2부터 실제 planned_calls를 만들 수 있다.
 - detail planner의 실행 call은 detailCommon2/detailIntro2/detailInfo2/detailImage2 묶음으로 만든다.
 - shortlist 안에서 contentId가 있는 실행 가능 대상은 임의 6개 budget으로 자르지 않는다.
-- VisualDataPlannerAgent, RouteSignalPlannerAgent, ThemeDataPlannerAgent는 provider가 붙기 전까지 future_provider_not_implemented로 남긴다.
+- VisualDataPlannerAgent는 Phase 12.1부터, RouteSignalPlannerAgent는 Phase 12.2부터, ThemeDataPlannerAgent는 Phase 12.3부터 feature flag와 서비스키가 있으면 실제 planned_calls를 만들 수 있다.
 - 의료관광은 allow_medical_api가 false이면 feature_flag_disabled로 남긴다.
 - reason과 planning_reasoning은 짧게 쓴다.
 ```

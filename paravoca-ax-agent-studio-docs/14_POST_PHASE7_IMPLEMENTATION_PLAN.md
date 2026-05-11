@@ -2,7 +2,7 @@
 
 작성 기준일: 2026-05-07
 
-이 문서는 Phase 10.2까지 구현된 PARAVOCA AX Agent Studio를 기준으로, 평가와 배포 전에 보강해야 할 구현 단계를 다시 정리한 문서입니다. 기존 `11_IMPLEMENTATION_ROADMAP.md`의 Phase 8/9는 초기 계획 기준이며, 실제 다음 개발은 이 문서의 순서를 우선합니다.
+이 문서는 Phase 12.3까지 구현된 PARAVOCA AX Agent Studio를 기준으로, 평가와 배포 전에 보강해야 할 구현 단계를 다시 정리한 문서입니다. 기존 `11_IMPLEMENTATION_ROADMAP.md`의 Phase 8/9는 초기 계획 기준이며, 실제 다음 개발은 이 문서의 순서를 우선합니다.
 
 ## 현재 구현 기준
 
@@ -36,14 +36,17 @@ Planner
 - source document 생성
 - Chroma 기반 vector search
 - local semantic embedding provider와 source document reindex command
-- Gemini 기반 Product, Marketing, QA, Revision patch
+- Gemini 기반 Planner, GeoResolver, DataGap, API Router, API family planner, EvidenceFusion, ResearchSynthesis, Product, Marketing, QA, Revision patch
 - LLM/tool/error usage log
 - KTO API capability catalog
 - 데이터 보강용 DB foundation
-- 상세 이미지 후보 저장
+- KorService2 상세/이미지 후보 저장
+- Visual, Route/Related/Demand Signal, Theme 계열 KTO API provider/executor 연결
+- `tourism_visual_assets`, `tourism_route_assets`, `tourism_signal_records`, `tourism_entities`, `source_documents` 보강 저장
 - Run Detail, Result Review, QA issue 삭제, revision history UI
-- Run Detail Evidence 상세 정보/이미지 후보 UI
-- 현재 frontend는 단일 Dashboard 중심 화면이며, Mantine `AppShell.Navbar` 기반 앱 전체 navigation shell은 아직 구현되지 않음
+- Run Detail Evidence 상세 정보/이미지 후보/보조 신호/테마 후보 UI
+- Mantine `AppShell.Header`/`AppShell.Navbar` 기반 앱 전체 navigation shell
+- 상품 생성 상한 20개, evidence 부족 시 가능한 개수 생성과 부족 사유 표시
 
 현재 TourAPI 사용 범위:
 
@@ -63,15 +66,10 @@ Planner
 
 아직 부족한 부분:
 
-- 주변 관광지와 분류 코드는 provider method만 추가되어 있고 workflow 보강 판단에는 아직 직접 연결되지 않음
-- Product/Marketing이 evidence 내용을 완전히 반영하는 생성 품질은 Phase 10 이후 Data Enrichment/EvidenceFusion/Agent 실제화에서 보강 필요
-- 방문 수요, 혼잡도 같은 운영 판단 신호
-- 웰니스, 반려동물, 두루누비, 오디오 가이드, 생태, 의료 같은 테마별 공공데이터
 - 공식 홈페이지/예약 페이지/행사 공지에서 최신 운영 정보를 확인하는 웹 근거 수집
-- Planner, Data, Research Agent의 실제 데이터 기반 판단
 - Poster Studio용 이미지 후보와 poster context
 - 데이터 보강 품질까지 포함한 evaluation
-- Dashboard 내부 탭을 넘어서는 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation과 route 구조
+- 운영 배포를 위한 env/CI/log/cost/monitoring 정리
 
 ## 구현 원칙
 
@@ -513,6 +511,31 @@ Phase 12는 99번 문서에 정리된 추가 KTO API를 실제 provider/executor
 
 - 상품 구성, 이미지 후보, route/연관 장소, 수요 판단, 혼잡 리스크, 테마형 상품 근거를 실제 API 데이터로 보강한다.
 
+### Phase 12.0: Retrieval Stability and Empty Result UX
+
+구현 상태: 완료.
+
+Phase 12.0은 추가 KTO API 실제 연결 전에 기존 TourAPI/RAG 검색 안정성을 보강한 단계입니다.
+
+- Chroma metadata filter를 query `where` 조건에 먼저 적용
+- list filter를 Chroma `$in`으로 변환
+- Python 후처리 filter는 안전장치로 유지
+- TourAPI raw 수집, geo-filter, source document upsert/indexing, vector search, post-filter count를 retrieval diagnostics로 저장
+- TourAPI 결과가 없거나 vector search 결과가 없을 때 RuntimeError stack trace 대신 `insufficient_source_data` 사용자 안내 생성
+- 사용자가 명시한 지역 밖으로 자동 fallback하지 않음
+- GeoResolverAgent가 TourAPI `ldongCode2` catalog 후보를 prompt로 받아 `resolved_locations`를 직접 선택
+- Python resolver는 Gemini가 고른 code가 catalog에 있는지와 confidence만 검증
+- `대청도` 같은 좁은 지명은 상위 시군구 코드와 keyword를 함께 보존하고, 수집 후 item/document를 keyword로 다시 좁힘
+- `DataGapProfilerAgent`는 반복적인 `missing_overview`를 만들지 않고 `missing_detail_info`로 통합
+- DataGap output은 전체 24개 이하, 후보별 item-level gap 1개 이하로 제한
+
+완료 기준:
+
+- 지역 데이터가 실제로 있는데도 후처리 filter 때문에 vector search에서 빠지는 문제를 줄인다.
+- 데이터가 진짜 부족한 경우 사용자 화면에서 에러가 아니라 데이터 부족 안내로 보인다.
+- GeoResolver가 catalog에 직접 없는 좁은 지명을 상위 코드 + keyword로 다룬다.
+- DataGapProfiler가 반복 JSON으로 `MAX_TOKENS`에 걸리는 문제를 줄인다.
+
 ### Phase 12.1: Visual APIs
 
 대상 API:
@@ -522,13 +545,16 @@ Phase 12는 99번 문서에 정리된 추가 KTO API를 실제 provider/executor
 
 작업:
 
-- 관광사진/공모전 사진 provider method 추가
-- 이미지 후보를 `tourism_visual_assets`에 저장
+- 관광사진/공모전 사진 provider method 추가: 구현 완료
+- 이미지 후보를 `tourism_visual_assets`와 `source_documents`에 저장: 구현 완료
 - 게시 가능 후보와 참고 후보를 분리
 - 이미지 저작권/사용 조건 확인 필요 상태를 UI에 표시
-- Poster Studio에 넘길 visual hints 생성
+- Product/Evidence UI에 이미지 후보와 사용권 확인 필요 상태 표시
+- Poster Studio에 넘길 visual hints는 후속 Poster Studio 단계에서 활용
 
 ### Phase 12.2: Route, Related Places, Demand Signals
+
+구현 상태: 완료.
 
 대상 API:
 
@@ -540,13 +566,17 @@ Phase 12는 99번 문서에 정리된 추가 KTO API를 실제 provider/executor
 
 작업:
 
-- 연관 관광지를 코스 조합 후보로 저장
-- 두루누비 코스/경로를 `tourism_route_assets`와 `source_documents`에 저장
-- 방문 수요와 집중률을 `tourism_signal_records`에 저장
-- Product ranking에 수요/혼잡/연관성 signal을 반영
-- QA에서 혼잡/수요 신호를 확정 정보처럼 쓰지 않는지 검수
+- Route/Signal provider를 `backend/app/tools/route_signals.py`에 추가
+- 연관 관광지를 코스 조합 후보 보조 신호로 저장
+- 두루누비 코스 후보를 `tourism_route_assets`와 `source_documents`에 저장
+- 방문 수요, 집중률, 지역 관광수요를 `tourism_signal_records`와 `source_documents`에 저장
+- `RouteSignalPlannerAgent`가 활성화된 source family와 call budget 안에서만 실제 call을 계획
+- `EvidenceFusionAgent`가 `route_assets`, `signal_records`를 candidate evidence card에 반영
+- 수요/혼잡/연관성 signal은 Product/QA에서 판매량, 예약 가능성, 안전 보장 claim으로 쓰지 못하도록 제한
 
 ### Phase 12.3: Theme APIs
+
+구현 상태: Phase 12.3에서 provider/executor 연결 완료.
 
 대상 API:
 
@@ -560,7 +590,7 @@ Phase 12는 99번 문서에 정리된 추가 KTO API를 실제 provider/executor
 
 - 요청 의도에 따라 theme gap 생성
 - theme별 provider method 추가
-- theme 결과를 `tourism_entities`, `source_documents`, 필요 시 theme-specific metadata에 저장
+- theme 결과를 `tourism_entities`, `tourism_visual_assets`, `source_documents`, 필요 시 theme-specific metadata에 저장
 - 반려동물 조건, 웰니스 속성, 오디오 해설, 생태 맥락을 상품 구성에 반영
 - 의료관광 API는 `ALLOW_MEDICAL_API=true`일 때만 활성화
 - 테마 API 근거가 Product card와 Run Detail에서 “확인된 정보”와 “운영자 확인 필요”로 나뉘어 보이게 함
@@ -754,22 +784,17 @@ Approved or Reviewable Run
 
 ## 다음 구현 시작점
 
-바로 다음 구현은 Phase 12.1 Visual APIs부터 시작합니다. Phase 10 Data Enrichment Workflow, Phase 10.1 AppShell Navbar and Global Navigation, Phase 10.2 Gemini Data Enrichment Agent 전환, Phase 10.5 UI and Operations Surface Cleanup, Phase 11 Evidence-based ProductAgent Actualization, Phase 11.5 Gemini Planner/Research Actualization and LLM Call Surface Cleanup은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 작업은 Phase 12에서 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 진행합니다.
+Phase 10 Data Enrichment Workflow, Phase 10.1 AppShell Navbar and Global Navigation, Phase 10.2 Gemini Data Enrichment Agent 전환, Phase 10.5 UI and Operations Surface Cleanup, Phase 11 Evidence-based ProductAgent Actualization, Phase 11.5 Gemini Planner/Research Actualization and LLM Call Surface Cleanup, Phase 12.0 Retrieval Stability and Empty Result UX, Phase 12.1 Visual APIs Actual Connection, Phase 12.2 Route/Related/Demand Signals Actual Connection, Phase 12.3 Theme APIs Actual Connection은 구현 완료 상태입니다. 99번 문서에 있는 추가 KTO API를 실제로 호출하고 저장해 상품 생성에 활용하는 Phase 12 작업은 `12.1 Visual APIs`, `12.2 Route/Related/Demand Signals`, `12.3 Theme APIs`로 나눠 완료했습니다.
 
 Codex에게 줄 다음 작업 범위:
 
 ```text
-Phase 12.1: Visual APIs Actual Connection을 구현해줘.
+Phase 13: Deployment / Operations Readiness를 구현해줘.
 
 범위:
-- KTO 사진/이미지 계열 API를 실제 provider/executor로 연결
-- 이미지 후보를 tourism_visual_assets/source_documents에 저장
-- Evidence + QA와 상품 카드에서 이미지 근거를 후보 상태로 표시
-- 실제 호출되지 않은 API를 호출된 것처럼 표시하지 않음
-- backend test와 frontend build로 확인
-
-주의:
-- Phase 11/11.5 evidence 기반 Product/Research 흐름을 깨지 마.
-- 지역 resolve 실패 시 전국 fallback하지 마.
-- 구현되지 않은 API를 실제 작동하는 것처럼 보이게 하지 마.
+- env 정리, 운영 설정, production build/deploy 구조
+- CI/test/build command 정리
+- 비용/로그/prompt debug/LLM call 관리
+- 운영 모니터링과 실패 run 진단 UX
+- 필요하면 인증/권한/관리자 설정 범위 확정
 ```
