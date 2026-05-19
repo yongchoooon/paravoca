@@ -168,6 +168,44 @@ def test_geo_resolver_marks_ambiguous_signgu_for_clarification():
     assert {candidate["ldong_signgu_cd"] for candidate in scope["candidates"]} >= {"110", "140"}
 
 
+def test_geo_resolver_rechecks_ambiguous_llm_catalog_selection():
+    llm_hints = {
+        "locations": [
+            {
+                "text": "중구",
+                "normalized_text": "서울특별시 중구",
+                "role": "primary",
+                "is_foreign": False,
+            }
+        ],
+        "resolved_locations": [
+            {
+                "text": "중구",
+                "role": "primary",
+                "name": "서울특별시 중구",
+                "ldong_regn_cd": "11",
+                "ldong_signgu_cd": "140",
+                "confidence": 0.95,
+                "reason": "중구는 서울특별시 중구에 해당합니다.",
+            }
+        ],
+        "excluded_locations": [],
+        "allow_nationwide": False,
+        "unsupported_locations": [],
+    }
+    with SessionLocal() as db:
+        scope = resolve_geo_scope(db, message="중구 야간 관광 상품을 3개 기획해줘.", llm_hints=llm_hints)
+
+    assert scope["status"] == "needs_clarification"
+    assert scope["needs_clarification"] is True
+    assert len(scope["candidates"]) >= 2
+    assert {candidate["name"] for candidate in scope["candidates"]} >= {
+        "서울특별시 중구",
+        "부산광역시 중구",
+        "대전광역시 중구",
+    }
+
+
 def test_geo_resolver_uses_parent_region_context_for_ambiguous_signgu():
     with SessionLocal() as db:
         scope = resolve_geo_scope(db, message="대전 중구 야간 관광 상품을 만들어줘")

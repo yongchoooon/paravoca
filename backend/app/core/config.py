@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     tourapi_enabled: bool = True
     tourapi_service_key: str | None = None
     tourapi_base_url: str = "https://apis.data.go.kr/B551011/KorService2"
+    tourapi_timeout_seconds: float = 20.0
+    tourapi_max_retries: int = 2
+    tourapi_retry_base_seconds: float = 0.8
+    tourapi_retry_max_seconds: float = 4.0
     tourapi_detail_enrichment_limit: int = 5
     tourapi_candidate_shortlist_limit: int = 20
     enrichment_max_call_budget: int = 6
@@ -57,6 +61,7 @@ class Settings(BaseSettings):
     llm_prompt_debug_log_enabled: bool = False
     llm_prompt_debug_log_dir: str = "logs/prompt_debug"
     app_log_dir: str = "logs"
+    evaluation_report_dir: str = "reports/evaluations"
     usd_krw_rate: float = 1400
 
     model_config = SettingsConfigDict(

@@ -61,6 +61,12 @@ class WorkflowRunDeleteResult(BaseModel):
     deleted_count: int
 
 
+class WorkflowRunCancelResult(BaseModel):
+    run: dict[str, Any]
+    cancellation_requested: bool
+    message: str
+
+
 class WorkflowTemplateRead(BaseModel):
     id: str
     name: str

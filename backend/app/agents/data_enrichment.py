@@ -438,6 +438,51 @@ DATA_GAP_PROFILE_RESPONSE_SCHEMA = {
     },
 }
 
+DATA_GAP_PROFILE_REF_RESPONSE_SCHEMA = {
+    "type": "object",
+    "required": ["selected_gap_refs", "selected_gap_groups", "coverage", "reasoning_summary", "needs_review"],
+    "properties": {
+        "selected_gap_refs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["gap_ref_id", "priority", "reason"],
+                "properties": {
+                    "gap_ref_id": {"type": "string"},
+                    "priority": {"type": "string"},
+                    "severity": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "suggested_source_family": {"type": "string"},
+                    "needs_review": {"type": "boolean"},
+                    "productization_impact": {"type": "string"},
+                },
+            },
+        },
+        "selected_gap_groups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["gap_type", "priority", "reason"],
+                "properties": {
+                    "gap_type": {"type": "string"},
+                    "priority": {"type": "string"},
+                    "severity": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "suggested_source_family": {"type": "string"},
+                    "source_family": {"type": "string"},
+                    "needs_review": {"type": "boolean"},
+                    "productization_impact": {"type": "string"},
+                    "applies_to": {"type": "string"},
+                    "max_targets": {"type": "number"},
+                },
+            },
+        },
+        "coverage": {"type": "object"},
+        "reasoning_summary": {"type": "string"},
+        "needs_review": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
 API_CAPABILITY_ROUTING_RESPONSE_SCHEMA = {
     "type": "object",
     "required": ["family_routes", "routing_reasoning"],
@@ -657,6 +702,44 @@ def summarize_candidate_pool(
     }
 
 
+def build_gap_inventory(
+    *,
+    source_items: list[Any],
+    retrieved_documents: list[dict[str, Any]] | None = None,
+    normalized_request: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create deterministic gap objects that Gemini can reference without rewriting."""
+    report = profile_data_gaps(
+        source_items=source_items,
+        retrieved_documents=retrieved_documents,
+        normalized_request=normalized_request,
+    )
+    source_by_item_id = {
+        str(_get(item, "id")): item
+        for item in source_items
+        if _get(item, "id")
+    }
+    inventory_gaps: list[dict[str, Any]] = []
+    for index, gap in enumerate(_prioritize_gaps(_dedupe_gaps(report.get("gaps") or [])), start=1):
+        enriched_gap = dict(gap)
+        enriched_gap["gap_ref_id"] = f"gap_ref_{index:03d}"
+        source_item = source_by_item_id.get(str(gap.get("target_item_id") or ""))
+        if source_item:
+            enriched_gap["content_type"] = _get(source_item, "content_type")
+            enriched_gap["address"] = _get(source_item, "address")
+        inventory_gaps.append(enriched_gap)
+    return {
+        "gaps": inventory_gaps,
+        "coverage": report.get("coverage") or {},
+        "retrieved_document_count": report.get("retrieved_document_count", len(retrieved_documents or [])),
+        "summary": {
+            **(report.get("summary") or {}),
+            "inventory_gap_count": len(inventory_gaps),
+            "gap_counts": (report.get("coverage") or {}).get("gap_counts") or {},
+        },
+    }
+
+
 def build_data_gap_profile_prompt(
     *,
     source_items: list[dict[str, Any]],
@@ -664,7 +747,42 @@ def build_data_gap_profile_prompt(
     normalized_request: dict[str, Any],
     capability_brief: str,
     candidate_pool_summary: dict[str, Any] | None = None,
+    gap_inventory: dict[str, Any] | None = None,
 ) -> str:
+    if gap_inventory is not None:
+        context = {
+            "역할": "DataGapProfilerAgent",
+            "목표": "서버가 만든 gap inventory를 보고 상품화에 중요한 gap refs/groups만 선택합니다.",
+            "사용자_요청": normalized_request,
+            "후보_pool_요약": candidate_pool_summary or {},
+            "gap_inventory_summary": _compact_gap_inventory_for_prompt(gap_inventory),
+            "api_capability_brief": capability_brief,
+            "허용_gap_type": sorted(GAP_TYPES),
+            "핵심_원칙": [
+                "서버가 후보별 상세 gap 객체와 원본 후보 데이터를 이미 보관합니다.",
+                "source_items나 gap 객체 전체를 다시 쓰지 마세요.",
+                "반복되는 후보별 누락은 selected_gap_groups로 표현하세요.",
+                "특정 후보만 우선순위가 다르면 selected_gap_refs에 gap_ref_id만 넣으세요.",
+                "서버가 selected_gap_refs/groups를 gap_inventory와 병합해 기존 gap_report.gaps 구조를 복원합니다.",
+                "요청 상품 유형과 무관한 gap은 선택하지 마세요.",
+                "근거에 없는 운영시간, 요금, 예약정보, 언어지원, 동선, 반려동물 정책을 추측하지 마세요.",
+                "overview 부족은 missing_detail_info로만 다루고 missing_overview는 쓰지 마세요.",
+                "웰니스/반려동물/생태/오디오/의료 같은 테마 요청은 api_capability_brief의 source family와 연결하세요.",
+            ],
+            "출력_규칙": [
+                "selected_gap_refs는 최대 12개만 작성하세요.",
+                "selected_gap_groups는 최대 8개만 작성하세요.",
+                "selected_gap_refs[].gap_ref_id는 gap_inventory_summary.gap_refs에 있는 값만 쓰세요.",
+                "selected_gap_groups[].gap_type은 허용_gap_type 중 하나만 쓰세요.",
+                "priority는 high, medium, low 중 하나만 쓰세요.",
+                "severity는 high, medium, low 중 하나만 쓰세요.",
+                "reason은 80자 이내, productization_impact는 100자 이내로 쓰세요.",
+                "coverage에는 total_items, gap_count, detail_info_coverage, image_coverage, operating_hours_coverage, price_or_fee_coverage, booking_info_coverage, gap_counts를 포함하세요.",
+                f"needs_review에는 운영자가 확인해야 하는 핵심 항목만 최대 {DATA_GAP_PROFILE_MAX_NEEDS_REVIEW}개 한국어 문장으로 넣으세요.",
+            ],
+        }
+        return json.dumps(context, ensure_ascii=False)
+
     max_gap_count = min(DATA_GAP_PROFILE_MAX_GAPS, max(8, len(source_items) + 4))
     context = {
         "역할": "DataGapProfilerAgent",
@@ -914,7 +1032,19 @@ def normalize_gap_profile_payload(
     source_items: list[Any],
     retrieved_documents: list[dict[str, Any]] | None = None,
     normalized_request: dict[str, Any] | None = None,
+    gap_inventory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if gap_inventory is not None and (
+        "selected_gap_refs" in payload or "selected_gap_groups" in payload
+    ):
+        return _normalize_gap_profile_ref_payload(
+            payload,
+            source_items=source_items,
+            retrieved_documents=retrieved_documents,
+            normalized_request=normalized_request,
+            gap_inventory=gap_inventory,
+        )
+
     source_item_ids = {str(_get(item, "id")) for item in source_items if _get(item, "id")}
     source_item_id_by_content_id = {
         str(_get(item, "content_id")): str(_get(item, "id"))
@@ -975,6 +1105,108 @@ def normalize_gap_profile_payload(
             "needs_review_gaps": sum(1 for gap in gaps if gap.get("needs_review")),
         },
     }
+
+
+def _normalize_gap_profile_ref_payload(
+    payload: dict[str, Any],
+    *,
+    source_items: list[Any],
+    retrieved_documents: list[dict[str, Any]] | None = None,
+    normalized_request: dict[str, Any] | None = None,
+    gap_inventory: dict[str, Any],
+) -> dict[str, Any]:
+    inventory_gaps = [
+        gap for gap in gap_inventory.get("gaps") or []
+        if isinstance(gap, dict) and gap.get("gap_ref_id")
+    ]
+    gap_by_ref = {str(gap["gap_ref_id"]): gap for gap in inventory_gaps}
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+
+    for raw_ref in (payload.get("selected_gap_refs") or [])[:24]:
+        if not isinstance(raw_ref, dict):
+            continue
+        ref_id = str(raw_ref.get("gap_ref_id") or "")
+        gap = gap_by_ref.get(ref_id)
+        if not gap:
+            continue
+        _append_selected_gap(selected, selected_ids, gap, raw_ref)
+
+    for raw_group in (payload.get("selected_gap_groups") or [])[:12]:
+        if not isinstance(raw_group, dict):
+            continue
+        group_type = GAP_TYPE_ALIASES.get(str(raw_group.get("gap_type") or ""), str(raw_group.get("gap_type") or ""))
+        if group_type not in GAP_TYPES:
+            continue
+        source_family_filter = str(raw_group.get("source_family") or "").strip()
+        max_targets = _positive_int(raw_group.get("max_targets"))
+        matches: list[dict[str, Any]] = []
+        for gap in inventory_gaps:
+            if str(gap.get("gap_type") or "") != group_type:
+                continue
+            if source_family_filter and str(gap.get("suggested_source_family") or "") != source_family_filter:
+                continue
+            matches.append(gap)
+        if max_targets:
+            matches = matches[:max_targets]
+        for gap in matches:
+            _append_selected_gap(selected, selected_ids, gap, raw_group)
+
+    if not selected:
+        selected = _prioritize_gaps(inventory_gaps)[:DATA_GAP_PROFILE_MAX_GAPS]
+
+    selected = _merge_required_request_level_gaps(
+        selected,
+        source_items=source_items,
+        normalized_request=normalized_request or {},
+    )
+    gaps = [dict(gap) for gap in _prioritize_gaps(_dedupe_gaps(selected))[:DATA_GAP_PROFILE_MAX_GAPS]]
+    for gap in gaps:
+        gap.pop("gap_ref_id", None)
+    coverage = _normalize_coverage(payload.get("coverage") or gap_inventory.get("coverage"), source_items, gaps)
+    return {
+        "gaps": gaps,
+        "coverage": coverage,
+        "retrieved_document_count": len(retrieved_documents or []),
+        "reasoning_summary": str(payload.get("reasoning_summary") or ""),
+        "needs_review": _string_list(payload.get("needs_review"))[:DATA_GAP_PROFILE_MAX_NEEDS_REVIEW],
+        "summary": {
+            "total_gaps": len(gaps),
+            "high_severity_gaps": sum(1 for gap in gaps if gap["severity"] == "high"),
+            "needs_review_gaps": sum(1 for gap in gaps if gap.get("needs_review")),
+            "inventory_gap_count": len(inventory_gaps),
+            "selection_mode": "gap_inventory_refs",
+        },
+    }
+
+
+def _append_selected_gap(
+    selected: list[dict[str, Any]],
+    selected_ids: set[str],
+    base_gap: dict[str, Any],
+    override: dict[str, Any],
+) -> None:
+    gap_id = str(base_gap.get("id") or "")
+    if not gap_id or gap_id in selected_ids:
+        return
+    gap = dict(base_gap)
+    gap.pop("gap_ref_id", None)
+    for key in ["severity", "reason", "suggested_source_family", "productization_impact"]:
+        value = override.get(key)
+        if value not in (None, ""):
+            gap[key] = _normalize_severity(value) if key == "severity" else str(value)
+    if "needs_review" in override:
+        gap["needs_review"] = override.get("needs_review") is not False
+    selected_ids.add(gap_id)
+    selected.append(gap)
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def normalize_routing_payload(
@@ -3494,6 +3726,44 @@ def _compact_gap_report_for_router(gap_report: dict[str, Any]) -> dict[str, Any]
         "summary": gap_report.get("summary") if isinstance(gap_report.get("summary"), dict) else {},
         "reasoning_summary": str(gap_report.get("reasoning_summary") or "")[:500],
         "truncated": len(gaps) > len(compact_gaps),
+    }
+
+
+def _compact_gap_inventory_for_prompt(gap_inventory: dict[str, Any]) -> dict[str, Any]:
+    gaps = gap_inventory.get("gaps") if isinstance(gap_inventory.get("gaps"), list) else []
+    compact_gaps: list[dict[str, Any]] = []
+    for gap in gaps[:80]:
+        if not isinstance(gap, dict):
+            continue
+        compact_gaps.append(
+            {
+                "gap_ref_id": gap.get("gap_ref_id"),
+                "gap_type": gap.get("gap_type"),
+                "severity": gap.get("severity"),
+                "target_item_id": gap.get("target_item_id"),
+                "target_content_id": gap.get("target_content_id"),
+                "source_item_title": gap.get("source_item_title"),
+                "content_type": gap.get("content_type"),
+                "address": gap.get("address"),
+                "suggested_source_family": gap.get("suggested_source_family"),
+                "needs_review": bool(gap.get("needs_review")),
+            }
+        )
+    coverage = gap_inventory.get("coverage") if isinstance(gap_inventory.get("coverage"), dict) else {}
+    return {
+        "total_gap_count": len(gaps),
+        "gap_counts": coverage.get("gap_counts") or {},
+        "coverage": {
+            "total_items": coverage.get("total_items"),
+            "detail_info_coverage": coverage.get("detail_info_coverage"),
+            "image_coverage": coverage.get("image_coverage"),
+            "operating_hours_coverage": coverage.get("operating_hours_coverage"),
+            "price_or_fee_coverage": coverage.get("price_or_fee_coverage"),
+            "booking_info_coverage": coverage.get("booking_info_coverage"),
+        },
+        "gap_refs": compact_gaps,
+        "truncated": len(gaps) > len(compact_gaps),
+        "grouping_hint": "같은 gap_type/source_family가 반복되면 selected_gap_groups로 선택하면 서버가 원래 gap 객체들과 병합합니다.",
     }
 
 

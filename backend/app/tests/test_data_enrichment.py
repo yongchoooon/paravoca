@@ -5,6 +5,7 @@ from app.agents.data_enrichment import (
     build_api_capability_router_prompt,
     build_data_gap_profile_prompt,
     build_evidence_fusion_prompt,
+    build_gap_inventory,
     build_tourapi_detail_planner_prompt,
     capability_brief_for_prompt,
     capability_matrix_for_prompt,
@@ -655,6 +656,51 @@ def test_gap_profile_normalization_adds_wellness_request_gap_when_gemini_omits_i
     assert wellness_gap["search_keyword"] == "웰니스"
     assert wellness_gap["ldong_regn_cd"] == "26"
     assert len(normalized["gaps"]) <= DATA_GAP_PROFILE_MAX_GAPS
+
+
+def test_gap_profile_ref_payload_merges_with_server_gap_inventory():
+    source_items = [
+        _source_item(item_id=f"tourapi:content:{index}", content_id=str(index))
+        for index in range(6)
+    ]
+    for index, item in enumerate(source_items):
+        item["title"] = f"후보 {index}"
+    inventory = build_gap_inventory(
+        source_items=source_items,
+        retrieved_documents=[],
+        normalized_request={"message": "대전에서 사진 후보가 중요한 상품 3개"},
+    )
+    payload = {
+        "selected_gap_refs": [],
+        "selected_gap_groups": [
+            {
+                "gap_type": "missing_image_asset",
+                "priority": "medium",
+                "severity": "medium",
+                "reason": "사진 후보가 상품 판단에 필요합니다.",
+                "suggested_source_family": "kto_tourism_photo",
+                "needs_review": True,
+                "productization_impact": "이미지 후보와 사용권 확인 상태를 상품 카드에 연결합니다.",
+            }
+        ],
+        "coverage": {},
+        "reasoning_summary": "반복 이미지 gap은 group으로 선택합니다.",
+        "needs_review": ["이미지 후보는 사용권 확인 후 게시해야 합니다."],
+    }
+
+    normalized = normalize_gap_profile_payload(
+        payload,
+        source_items=source_items,
+        retrieved_documents=[],
+        normalized_request={"message": "대전에서 사진 후보가 중요한 상품 3개"},
+        gap_inventory=inventory,
+    )
+
+    image_gaps = [gap for gap in normalized["gaps"] if gap["gap_type"] == "missing_image_asset"]
+    assert len(image_gaps) == len(source_items)
+    assert {gap["source_item_title"] for gap in image_gaps} == {f"후보 {index}" for index in range(6)}
+    assert all(gap["suggested_source_family"] == "kto_tourism_photo" for gap in image_gaps)
+    assert "gap_ref_id" not in image_gaps[0]
 
 
 def test_tourapi_detail_planner_uses_compact_target_selection():

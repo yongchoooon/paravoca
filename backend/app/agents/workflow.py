@@ -15,6 +15,7 @@ from app.agents.geo_resolver import load_ldong_catalog, resolve_geo_scope, save_
 from app.agents.state import GraphState
 from app.agents.data_enrichment import (
     API_CAPABILITY_ROUTING_RESPONSE_SCHEMA,
+    DATA_GAP_PROFILE_REF_RESPONSE_SCHEMA,
     DATA_GAP_PROFILE_RESPONSE_SCHEMA,
     EVIDENCE_FUSION_RESPONSE_SCHEMA,
     API_FAMILY_PLANNER_RESPONSE_SCHEMA,
@@ -23,6 +24,7 @@ from app.agents.data_enrichment import (
     build_api_family_planner_prompt,
     build_data_gap_profile_prompt,
     build_evidence_fusion_prompt,
+    build_gap_inventory,
     build_tourapi_detail_planner_prompt,
     capability_brief_for_prompt,
     capability_matrix_for_prompt,
@@ -49,11 +51,16 @@ from app.llm.usage_log import safe_write_llm_usage_log
 from app.rag.chroma_store import index_source_documents, search_source_documents
 from app.rag.source_documents import upsert_source_documents_from_items
 from app.tools.tourism import get_tourism_provider, log_tool_call, upsert_tourism_items
+from app.agents.run_cancellation import clear_run_cancellation, is_run_cancellation_requested
 
 
 logger = logging.getLogger("uvicorn.error")
 
 MAX_PRODUCT_COUNT = 20
+
+
+class WorkflowCancelled(RuntimeError):
+    pass
 
 
 def run_product_planning_workflow(db: Session, run_id: str) -> dict[str, Any]:
@@ -62,11 +69,23 @@ def run_product_planning_workflow(db: Session, run_id: str) -> dict[str, Any]:
     graph = _build_graph(db)
     state = _initial_workflow_state(run)
     try:
+        _raise_if_cancelled(db, run.id)
         final_state = graph.invoke(state)
+    except WorkflowCancelled as exc:
+        _cancel_run(db, run, started, exc)
+        clear_run_cancellation(run.id)
+        return run.final_output or {}
     except Exception as exc:
+        if _is_run_cancelled(db, run.id):
+            _cancel_run(db, run, started, WorkflowCancelled("사용자가 workflow 실행 중지를 요청했습니다."))
+            clear_run_cancellation(run.id)
+            return run.final_output or {}
         _fail_run(db, run, started, exc)
+        clear_run_cancellation(run.id)
         raise
-    return _complete_run(db, run, started, final_state)
+    final_report = _complete_run(db, run, started, final_state)
+    clear_run_cancellation(run.id)
+    return final_report
 
 
 def run_revision_workflow(db: Session, run_id: str) -> dict[str, Any]:
@@ -76,6 +95,7 @@ def run_revision_workflow(db: Session, run_id: str) -> dict[str, Any]:
     started = _start_run(db, run)
 
     try:
+        _raise_if_cancelled(db, run.id)
         if mode == "manual_save":
             final_state = _run_manual_save_revision(db, run, context)
         elif mode in {"manual_edit", "qa_only"}:
@@ -84,10 +104,21 @@ def run_revision_workflow(db: Session, run_id: str) -> dict[str, Any]:
             final_state = _run_llm_partial_revision(db, run, context)
         else:
             raise ValueError(f"Unsupported revision_mode: {mode}")
+    except WorkflowCancelled as exc:
+        _cancel_run(db, run, started, exc)
+        clear_run_cancellation(run.id)
+        return run.final_output or {}
     except Exception as exc:
+        if _is_run_cancelled(db, run.id):
+            _cancel_run(db, run, started, WorkflowCancelled("사용자가 workflow 실행 중지를 요청했습니다."))
+            clear_run_cancellation(run.id)
+            return run.final_output or {}
         _fail_run(db, run, started, exc)
+        clear_run_cancellation(run.id)
         raise
-    return _complete_run(db, run, started, final_state)
+    final_report = _complete_run(db, run, started, final_state)
+    clear_run_cancellation(run.id)
+    return final_report
 
 
 def _get_workflow_run(db: Session, run_id: str) -> models.WorkflowRun:
@@ -99,6 +130,8 @@ def _get_workflow_run(db: Session, run_id: str) -> models.WorkflowRun:
 
 def _start_run(db: Session, run: models.WorkflowRun) -> float:
     started = time.perf_counter()
+    if run.status in {"cancelling", "cancelled"} or is_run_cancellation_requested(run.id):
+        return started
     run.status = "running"
     run.started_at = models.utcnow()
     db.commit()
@@ -121,8 +154,71 @@ def _fail_run(
     started: float,
     exc: Exception,
 ) -> None:
+    if _is_run_cancelled(db, run.id):
+        _cancel_run(db, run, started, WorkflowCancelled("사용자가 workflow 실행 중지를 요청했습니다."))
+        return
     run.status = "failed"
     run.error = {"type": exc.__class__.__name__, "message": str(exc)}
+    _finish_run(db, run, started)
+
+
+def _cancel_run(
+    db: Session,
+    run: models.WorkflowRun,
+    started: float,
+    exc: Exception,
+) -> None:
+    message = str(exc) or "사용자가 workflow 실행 중지를 요청했습니다."
+    db.refresh(run)
+    if run.status == "cancelled" and run.final_output:
+        return
+    run.status = "cancelled"
+    run.error = {"type": exc.__class__.__name__, "message": message}
+    if not run.final_output:
+        run.final_output = {
+            "status": "cancelled",
+            "run_status": "cancelled",
+            "reason": "user_cancelled",
+            "normalized_request": run.normalized_input or {},
+            "geo_scope": (run.normalized_input or {}).get("geo_scope") or {},
+            "user_message": {
+                "title": "실행이 중지되었습니다",
+                "message": message,
+                "detail": "이미 완료된 단계의 로그는 Developer 탭에서 확인할 수 있습니다.",
+            },
+            "source_items": [],
+            "retrieved_documents": [],
+            "products": [],
+            "marketing_assets": [],
+            "qa_report": {
+                "overall_status": "not_run",
+                "summary": "사용자 요청으로 실행이 중지되어 QA 검수를 실행하지 않았습니다.",
+                "issues": [],
+                "pass_count": 0,
+                "needs_review_count": 0,
+                "fail_count": 0,
+            },
+            "agent_execution": [],
+            "cost_summary": _cost_summary(db, run.id),
+            "approval": {
+                "required": False,
+                "status": "not_required",
+                "message": message,
+            },
+        }
+    db.add(
+        models.AgentStep(
+            run_id=run.id,
+            agent_name="System",
+            step_type="workflow_cancelled",
+            status="succeeded",
+            input={"run_id": run.id},
+            output={"message": message},
+            latency_ms=0,
+            started_at=models.utcnow(),
+            finished_at=models.utcnow(),
+        )
+    )
     _finish_run(db, run, started)
 
 
@@ -132,6 +228,9 @@ def _complete_run(
     started: float,
     final_state: GraphState,
 ) -> dict[str, Any]:
+    if _is_run_cancelled(db, run.id):
+        db.refresh(run)
+        return run.final_output or {}
     final_report = final_state.get("final_report") or {}
     run.status = str(final_state.get("run_status") or final_report.get("run_status") or "awaiting_approval")
     run.normalized_input = final_state.get("normalized_request")
@@ -166,7 +265,9 @@ def _run_qa_only_revision(
         }
     )
     _revision_context_step(db, state, context)
+    _raise_if_cancelled(db, run.id)
     state.update(qa_agent(db, state))
+    _raise_if_cancelled(db, run.id)
     state.update(human_approval_node(db, state))
     return state
 
@@ -191,6 +292,7 @@ def _run_manual_save_revision(
         }
     )
     _revision_context_step(db, state, context)
+    _raise_if_cancelled(db, run.id)
     state.update(human_approval_node(db, state))
     return state
 
@@ -202,8 +304,11 @@ def _run_llm_partial_revision(
 ) -> GraphState:
     state = _base_revision_state(run, context)
     _revision_context_step(db, state, context)
+    _raise_if_cancelled(db, run.id)
     state.update(revision_patch_agent(db, state))
+    _raise_if_cancelled(db, run.id)
     state.update(qa_agent(db, state))
+    _raise_if_cancelled(db, run.id)
     state.update(human_approval_node(db, state))
     return state
 
@@ -296,23 +401,23 @@ def _run_revision_metadata(db: Session, run_id: str, state: GraphState) -> dict[
 
 def _build_graph(db: Session):
     graph = StateGraph(GraphState)
-    graph.add_node("planner", lambda state: planner_agent(db, state))
-    graph.add_node("geo_resolver", lambda state: geo_resolver_agent(db, state))
-    graph.add_node("geo_exit", lambda state: geo_exit_node(db, state))
-    graph.add_node("baseline_data", lambda state: baseline_data_agent(db, state))
-    graph.add_node("data_gap_profiler", lambda state: data_gap_profiler_agent(db, state))
-    graph.add_node("api_capability_router", lambda state: api_capability_router_agent(db, state))
-    graph.add_node("tourapi_detail_planner", lambda state: tourapi_detail_planner_agent(db, state))
-    graph.add_node("visual_data_planner", lambda state: visual_data_planner_agent(db, state))
-    graph.add_node("route_signal_planner", lambda state: route_signal_planner_agent(db, state))
-    graph.add_node("theme_data_planner", lambda state: theme_data_planner_agent(db, state))
-    graph.add_node("data_enrichment", lambda state: data_enrichment_agent(db, state))
-    graph.add_node("evidence_fusion", lambda state: evidence_fusion_agent(db, state))
-    graph.add_node("research", lambda state: research_agent(db, state))
-    graph.add_node("product", lambda state: product_agent(db, state))
-    graph.add_node("marketing", lambda state: marketing_agent(db, state))
-    graph.add_node("qa", lambda state: qa_agent(db, state))
-    graph.add_node("human_approval", lambda state: human_approval_node(db, state))
+    graph.add_node("planner", _cancellable_node(db, lambda state: planner_agent(db, state)))
+    graph.add_node("geo_resolver", _cancellable_node(db, lambda state: geo_resolver_agent(db, state)))
+    graph.add_node("geo_exit", _cancellable_node(db, lambda state: geo_exit_node(db, state)))
+    graph.add_node("baseline_data", _cancellable_node(db, lambda state: baseline_data_agent(db, state)))
+    graph.add_node("data_gap_profiler", _cancellable_node(db, lambda state: data_gap_profiler_agent(db, state)))
+    graph.add_node("api_capability_router", _cancellable_node(db, lambda state: api_capability_router_agent(db, state)))
+    graph.add_node("tourapi_detail_planner", _cancellable_node(db, lambda state: tourapi_detail_planner_agent(db, state)))
+    graph.add_node("visual_data_planner", _cancellable_node(db, lambda state: visual_data_planner_agent(db, state)))
+    graph.add_node("route_signal_planner", _cancellable_node(db, lambda state: route_signal_planner_agent(db, state)))
+    graph.add_node("theme_data_planner", _cancellable_node(db, lambda state: theme_data_planner_agent(db, state)))
+    graph.add_node("data_enrichment", _cancellable_node(db, lambda state: data_enrichment_agent(db, state)))
+    graph.add_node("evidence_fusion", _cancellable_node(db, lambda state: evidence_fusion_agent(db, state)))
+    graph.add_node("research", _cancellable_node(db, lambda state: research_agent(db, state)))
+    graph.add_node("product", _cancellable_node(db, lambda state: product_agent(db, state)))
+    graph.add_node("marketing", _cancellable_node(db, lambda state: marketing_agent(db, state)))
+    graph.add_node("qa", _cancellable_node(db, lambda state: qa_agent(db, state)))
+    graph.add_node("human_approval", _cancellable_node(db, lambda state: human_approval_node(db, state)))
 
     graph.set_entry_point("planner")
     graph.add_edge("planner", "geo_resolver")
@@ -354,6 +459,37 @@ def _build_graph(db: Session):
     graph.add_edge("qa", "human_approval")
     graph.add_edge("human_approval", END)
     return graph.compile()
+
+
+def _cancellable_node(db: Session, func):
+    def runner(state: GraphState) -> GraphState:
+        _raise_if_cancelled(db, state["run_id"])
+        output = func(state)
+        _raise_if_cancelled(db, state["run_id"])
+        return output
+
+    return runner
+
+
+def _raise_if_cancelled(db: Session, run_id: str) -> None:
+    if is_run_cancellation_requested(run_id):
+        raise WorkflowCancelled("사용자가 workflow 실행 중지를 요청했습니다.")
+    status = (
+        db.query(models.WorkflowRun.status)
+        .filter(models.WorkflowRun.id == run_id)
+        .scalar()
+    )
+    if status in {"cancelling", "cancelled"}:
+        raise WorkflowCancelled("사용자가 workflow 실행 중지를 요청했습니다.")
+
+
+def _is_run_cancelled(db: Session, run_id: str) -> bool:
+    status = (
+        db.query(models.WorkflowRun.status)
+        .filter(models.WorkflowRun.id == run_id)
+        .scalar()
+    )
+    return status in {"cancelling", "cancelled"} or is_run_cancellation_requested(run_id)
 
 
 def _route_after_geo_resolution(state: GraphState) -> str:
@@ -960,9 +1096,16 @@ def data_agent(db: Session, state: GraphState) -> GraphState:
 def data_gap_profiler_agent(db: Session, state: GraphState) -> GraphState:
     settings = get_settings()
     capability_brief = capability_brief_for_prompt(settings)
+    gap_inventory = build_gap_inventory(
+        source_items=state.get("source_items", []),
+        retrieved_documents=state.get("retrieved_documents", []),
+        normalized_request=state.get("normalized_request", {}),
+    )
     input_payload = {
         "source_item_count": len(state.get("source_items", [])),
         "retrieved_document_count": len(state.get("retrieved_documents", [])),
+        "gap_inventory_count": len(gap_inventory.get("gaps") or []),
+        "gap_inventory_counts": (gap_inventory.get("coverage") or {}).get("gap_counts") or {},
         "normalized_request": state.get("normalized_request", {}),
         "candidate_pool_summary": state.get("candidate_pool_summary", {}),
     }
@@ -979,9 +1122,10 @@ def data_gap_profiler_agent(db: Session, state: GraphState) -> GraphState:
                     normalized_request=state.get("normalized_request", {}),
                     capability_brief=capability_brief,
                     candidate_pool_summary=state.get("candidate_pool_summary", {}),
+                    gap_inventory=gap_inventory,
                 ),
-                response_schema=DATA_GAP_PROFILE_RESPONSE_SCHEMA,
-                max_output_tokens=16384,
+                response_schema=DATA_GAP_PROFILE_REF_RESPONSE_SCHEMA,
+                max_output_tokens=8192,
                 temperature=0.1,
                 settings=settings,
             )
@@ -990,6 +1134,7 @@ def data_gap_profiler_agent(db: Session, state: GraphState) -> GraphState:
                 source_items=state.get("source_items", []),
                 retrieved_documents=state.get("retrieved_documents", []),
                 normalized_request=state.get("normalized_request", {}),
+                gap_inventory=gap_inventory,
             )
             meta = _gemini_generation_meta("DataGapProfilerAgent", "data_gap_profile", gemini_result)
             step.model = gemini_result.model
@@ -2050,7 +2195,7 @@ RESEARCH_SYNTHESIS_RESPONSE_SCHEMA = {
     "type": "object",
     "required": [
         "research_brief",
-        "candidate_evidence_cards",
+        "candidate_card_guidance",
         "usable_claims",
         "restricted_claims",
         "operational_unknowns",
@@ -2060,6 +2205,7 @@ RESEARCH_SYNTHESIS_RESPONSE_SCHEMA = {
     ],
     "properties": {
         "research_brief": {"type": "string"},
+        "candidate_card_guidance": {"type": "array", "items": {"type": "object"}},
         "candidate_evidence_cards": {"type": "array", "items": {"type": "object"}},
         "usable_claims": {"type": "array", "items": {"type": "string"}},
         "restricted_claims": {"type": "array", "items": {"type": "string"}},
@@ -3233,7 +3379,13 @@ def validate_research_synthesis(payload: dict[str, Any], state: GraphState) -> d
 
 def _is_timeout_like_gemini_error(exc: GeminiGatewayError) -> bool:
     message = str(exc).lower()
-    return "timeout" in message or "timed out" in message
+    return (
+        "timeout" in message
+        or "timed out" in message
+        or "maxoutputtokens" in message
+        or "max_tokens" in message
+        or "truncated" in message
+    )
 
 
 def _complete_research_synthesis(payload: dict[str, Any], state: GraphState) -> dict[str, Any]:
@@ -3244,7 +3396,13 @@ def _complete_research_synthesis(payload: dict[str, Any], state: GraphState) -> 
         else {}
     )
     base_cards = _product_evidence_context_for_prompt(evidence_context)["candidate_evidence_cards"]
-    payload_cards = payload.get("candidate_evidence_cards") if isinstance(payload.get("candidate_evidence_cards"), list) else []
+    payload_cards = (
+        payload.get("candidate_card_guidance")
+        if isinstance(payload.get("candidate_card_guidance"), list)
+        else payload.get("candidate_evidence_cards")
+        if isinstance(payload.get("candidate_evidence_cards"), list)
+        else []
+    )
     cards = _merge_research_candidate_cards(base_cards, payload_cards)
     unresolved = _merge_research_unresolved_gaps(
         _compact_unresolved_gaps_for_product(evidence_context.get("unresolved_gaps")),
@@ -3429,12 +3587,13 @@ def _research_synthesis_prompt(
     enrichment_summary: dict[str, Any],
     compact_retry_error: str | None = None,
 ) -> str:
-    product_evidence_context = _product_evidence_context_for_prompt(evidence_context)
+    compact_retry = bool(compact_retry_error)
+    research_evidence_context = _research_evidence_context_for_prompt(evidence_context, compact=compact_retry)
     context = {
         "역할": "ResearchSynthesisAgent",
         "목표": (
-            "EvidenceFusion 결과를 ProductAgent가 바로 사용할 수 있는 근거 브리프로 재구성합니다. "
-            "요약해서 정보를 줄이는 단계가 아니라, 상품 생성에 필요한 후보별 사실과 제한 claim을 보존하는 단계입니다."
+            "EvidenceFusion이 이미 보존한 근거 card 위에 ProductAgent가 참고할 상품화 해석과 risk guidance만 추가합니다. "
+            "원본 TourAPI/RAG/API facts를 대체하거나 재출력하지 않습니다."
         ),
         "요청": {
             "normalized_request": normalized,
@@ -3444,30 +3603,30 @@ def _research_synthesis_prompt(
             "avoid": normalized.get("avoid"),
         },
         "재시도_사유": compact_retry_error,
-        "retrieved_documents": _summarize_evidence(docs, limit=10),
-        "evidence_context": product_evidence_context,
+        "retrieved_document_summary": _summarize_evidence(docs, limit=3 if compact_retry else 6),
+        "evidence_context": research_evidence_context,
         "data_gap_summary": {
             "gap_count": len(data_gap_report.get("gaps") or []) if isinstance(data_gap_report.get("gaps"), list) else 0,
             "coverage": data_gap_report.get("coverage") if isinstance(data_gap_report, dict) else {},
         },
-        "enrichment_summary": enrichment_summary,
+        "enrichment_summary": _compact_enrichment_summary_for_research(enrichment_summary),
         "보존해야_하는_정보": [
-            "candidate_evidence_cards[].usable_facts",
-            "candidate_evidence_cards[].operational_unknowns",
-            "candidate_evidence_cards[].restricted_claims",
-            "candidate_evidence_cards[].evidence_document_ids",
+            "서버가 보존하는 candidate_evidence_cards[].usable_facts",
+            "서버가 보존하는 candidate_evidence_cards[].operational_unknowns",
+            "서버가 보존하는 candidate_evidence_cards[].restricted_claims",
+            "서버가 보존하는 candidate_evidence_cards[].evidence_document_ids",
             "unresolved_gaps",
             "data_coverage와 source_confidence의 의미",
         ],
         "출력_규칙": [
-            "raw TourAPI/RAG 전체를 그대로 복사하지 마세요.",
-            "하지만 candidate_evidence_cards의 상품화에 필요한 세부 facts는 삭제하지 마세요.",
-            "candidate_evidence_cards 원본은 서버가 이미 보존합니다. 응답에서는 원본 card 전체를 다시 쓰지 말고, 후보별 상품화 판단, 스토리 각도, 리스크 보강이 필요한 항목을 content_id/title 중심으로 반환하세요.",
-            "추가 guidance가 없는 후보는 생략해도 됩니다. 서버가 기존 card를 병합하므로 원본 근거는 유지됩니다.",
-            "usable_facts와 evidence_document_ids를 원문 그대로 반복하지 마세요. 서버가 기존 값을 보존합니다.",
+            "candidate_evidence_cards 필드를 출력하지 마세요.",
+            "usable_facts, detail_facts, evidence_document_ids, 주소, 개요 원문을 반복 출력하지 마세요.",
+            "후보별 보강 판단은 candidate_card_guidance에 content_id/source_item_id/title과 짧은 guidance만 넣으세요.",
+            "candidate_card_guidance는 최대 8개만 작성하세요. 추가 guidance가 없는 후보는 생략하세요.",
+            "각 candidate_card_guidance 항목에는 product_angle, experience_hooks, recommended_product_angles, operational_unknowns, restricted_claims만 필요한 만큼 짧게 넣으세요.",
+            "서버가 candidate_card_guidance를 기존 candidate_evidence_cards와 병합하므로 원본 근거는 유지됩니다.",
             "근거가 없는 운영시간, 요금, 예약 가능 여부, 외국어 지원, 안전성, 의료/웰니스 효능은 restricted_claims 또는 operational_unknowns로 분리하세요.",
-            "candidate_evidence_cards는 evidence_context.candidate_evidence_cards의 후보를 유지하고, 필요한 guidance만 보강하세요.",
-            "evidence_document_ids는 실제 doc_id만 유지하세요. 임의 id를 만들지 마세요.",
+            "새 evidence_document_id를 만들지 마세요.",
             "각 배열은 꼭 필요한 항목만 남기되 너무 과하게 줄이지 마세요. usable_claims, restricted_claims, operational_unknowns, product_generation_guidance, qa_risk_notes는 각각 최대 8개로 제한하세요.",
             "사용자에게 보이는 모든 텍스트는 한국어로 작성하세요.",
         ],
@@ -3907,6 +4066,87 @@ def _product_evidence_context_for_prompt(evidence_context: dict[str, Any]) -> di
         "claim_limits": _claim_limits_from_context(evidence_context),
         "needs_review": _needs_review_from_context(evidence_context),
     }
+
+
+def _research_evidence_context_for_prompt(evidence_context: dict[str, Any], *, compact: bool = False) -> dict[str, Any]:
+    product_context = _product_evidence_context_for_prompt(evidence_context)
+    card_refs: list[dict[str, Any]] = []
+    card_limit = 8 if compact else MAX_PRODUCT_COUNT
+    fact_sample_limit = 1 if compact else 2
+    for card in (product_context.get("candidate_evidence_cards") or [])[:card_limit]:
+        if not isinstance(card, dict):
+            continue
+        usable_facts = card.get("usable_facts") if isinstance(card.get("usable_facts"), list) else []
+        fact_samples: list[dict[str, Any]] = []
+        for fact in usable_facts[:fact_sample_limit]:
+            if not isinstance(fact, dict):
+                continue
+            fact_samples.append(
+                {
+                    "field": fact.get("field"),
+                    "value": str(fact.get("value") or "")[:80],
+                }
+            )
+        card_refs.append(
+            {
+                "content_id": card.get("content_id"),
+                "source_item_id": card.get("source_item_id"),
+                "title": card.get("title"),
+                "evidence_strength": card.get("evidence_strength"),
+                "source_confidence": card.get("source_confidence"),
+                "usable_fact_count": len(usable_facts),
+                "usable_fact_samples": fact_samples,
+                "experience_hook_count": len(_string_list(card.get("experience_hooks"))),
+                "recommended_angle_count": len(_string_list(card.get("recommended_product_angles"))),
+                "operational_unknowns": _string_list(card.get("operational_unknowns"))[:4],
+                "restricted_claims": _string_list(card.get("restricted_claims"))[:4],
+                "evidence_document_count": len(_string_list(card.get("evidence_document_ids"))),
+            }
+        )
+    return {
+        "source_confidence": product_context.get("source_confidence"),
+        "data_coverage": product_context.get("data_coverage"),
+        "ui_highlights": product_context.get("ui_highlights"),
+        "usable_claims": product_context.get("usable_claims"),
+        "candidate_recommendations": product_context.get("candidate_recommendations"),
+        "candidate_card_refs": card_refs,
+        "candidate_card_count": len(product_context.get("candidate_evidence_cards") or []),
+        "unresolved_gaps": (product_context.get("unresolved_gaps") or [])[:8 if compact else 12],
+        "claim_limits": (product_context.get("claim_limits") or [])[:6 if compact else 12],
+        "needs_review": (product_context.get("needs_review") or [])[:6 if compact else 12],
+        "merge_contract": "응답에는 candidate_card_guidance만 작성하세요. 서버가 이 guidance를 원래 candidate_evidence_cards와 병합합니다.",
+    }
+
+
+def _compact_enrichment_summary_for_research(enrichment_summary: dict[str, Any]) -> dict[str, Any]:
+    summary = enrichment_summary.get("summary") if isinstance(enrichment_summary.get("summary"), dict) else enrichment_summary
+    summary = summary if isinstance(summary, dict) else {}
+    executed = summary.get("executed") if isinstance(summary.get("executed"), list) else []
+    failed = summary.get("failed") if isinstance(summary.get("failed"), list) else []
+    skipped = summary.get("skipped") if isinstance(summary.get("skipped"), list) else []
+    return {
+        "executed_calls": summary.get("executed_calls", 0),
+        "skipped_calls": summary.get("skipped_calls", 0),
+        "failed_calls": summary.get("failed_calls", 0),
+        "indexed_documents": summary.get("indexed_documents", 0),
+        "visual_assets": summary.get("visual_assets", 0),
+        "route_assets": summary.get("route_assets", 0),
+        "signal_records": summary.get("signal_records", 0),
+        "theme_candidates": summary.get("theme_candidates", 0),
+        "executed_families": _count_source_families(executed),
+        "failed_families": _count_source_families(failed),
+        "skipped_families": _count_source_families(skipped),
+    }
+
+
+def _count_source_families(items: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        family = str(item.get("source_family") or "unknown")
+        counts[family] = counts.get(family, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _compact_candidate_card_for_product(card: dict[str, Any]) -> dict[str, Any]:

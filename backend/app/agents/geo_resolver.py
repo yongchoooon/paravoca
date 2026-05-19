@@ -213,6 +213,19 @@ def resolve_geo_scope(
         matches = [match for match in llm_matches if match.candidate.id not in {item.candidate.id for item in excluded}]
         matches = _collapse_parent_matches(matches)
         sub_area_terms = _sub_area_terms_from_matches(matches)
+        llm_ambiguous_groups = _llm_catalog_ambiguous_groups(matches, catalog, input_text)
+        if llm_ambiguous_groups:
+            return _clarification_scope(
+                input_text=input_text,
+                matches=[],
+                ambiguous_groups=llm_ambiguous_groups,
+                fuzzy_suggestions=[],
+                excluded=excluded,
+                sub_area_terms=sub_area_terms,
+                unresolved_terms=_dedupe_strings([match.matched_text for group in llm_ambiguous_groups for match in group]),
+                reason="ambiguous_location",
+                llm_hints=llm_hints,
+            )
         if _is_unsupported_multi_region(matches):
             return _unsupported_multi_region_scope(
                 input_text=input_text,
@@ -587,6 +600,62 @@ def _llm_resolved_matches(
             )
         )
     return _dedupe_matches(matches)
+
+
+def _llm_catalog_ambiguous_groups(
+    matches: list[GeoMatch],
+    catalog: list[LdongCandidate],
+    input_text: str,
+) -> list[list[GeoMatch]]:
+    ambiguous_groups: list[list[GeoMatch]] = []
+    for match in matches:
+        signgu_name = match.candidate.ldong_signgu_nm
+        if not signgu_name:
+            continue
+        matched_norm = normalize_geo_name(match.matched_text)
+        signgu_norm = normalize_geo_name(signgu_name)
+        if not matched_norm or matched_norm != signgu_norm:
+            continue
+        if _candidate_parent_context_in_input(match.candidate, input_text):
+            continue
+        same_name_candidates = [
+            candidate
+            for candidate in catalog
+            if candidate.ldong_signgu_nm and normalize_geo_name(candidate.ldong_signgu_nm) == signgu_norm
+        ]
+        if len({candidate.id for candidate in same_name_candidates}) <= 1:
+            continue
+        ambiguous_groups.append(
+            [
+                GeoMatch(
+                    candidate=candidate,
+                    matched_text=match.matched_text,
+                    match_type="ambiguous_llm_catalog",
+                    confidence=match.confidence,
+                    role=match.role,
+                )
+                for candidate in same_name_candidates
+            ]
+        )
+    return _dedupe_ambiguous_groups(ambiguous_groups)
+
+
+def _candidate_parent_context_in_input(candidate: LdongCandidate, input_text: str) -> bool:
+    parent_terms = [candidate.ldong_regn_nm]
+    parent_terms.extend(alias for alias, full_name in PROVINCE_ALIASES.items() if full_name == candidate.ldong_regn_nm)
+    return any(term and _appears_in_input(term, input_text) for term in parent_terms)
+
+
+def _dedupe_ambiguous_groups(groups: list[list[GeoMatch]]) -> list[list[GeoMatch]]:
+    seen_keys: set[tuple[str, ...]] = set()
+    deduped: list[list[GeoMatch]] = []
+    for group in groups:
+        key = tuple(sorted(match.candidate.id for match in group))
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(group)
+    return deduped
 
 
 def _llm_sub_area_terms(raw: dict[str, Any], input_text: str) -> list[str]:

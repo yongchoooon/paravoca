@@ -8,7 +8,7 @@ from typing import Any, Protocol
 import httpx
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db import models
 
 
@@ -200,6 +200,7 @@ class TourApiProvider:
         self.enabled = settings.tourapi_enabled
         self.service_key = service_key or settings.tourapi_service_key
         self.base_url = settings.tourapi_base_url
+        self.settings = settings
 
     def area_code(self, region: str | None = None) -> list[dict[str, Any]]:
         data = self.request_operation(self.operation_names["area_code"], {"numOfRows": 50})
@@ -476,8 +477,12 @@ class TourApiProvider:
             "_type": "json",
             **{key: value for key, value in params.items() if value is not None},
         }
-        response = httpx.get(self.operation_url(operation), params=clean_params, timeout=10)
-        response.raise_for_status()
+        response = _get_with_retries(
+            url=self.operation_url(operation),
+            params=clean_params,
+            settings=self.settings,
+            operation=operation,
+        )
         data = response.json()
         top_level_code = str(data.get("resultCode", ""))
         if top_level_code and top_level_code != "0000":
@@ -493,6 +498,49 @@ class TourApiProvider:
                 f"TourAPI {operation} failed with resultCode={result_code}: {result_message}"
             )
         return data
+
+
+def _get_with_retries(
+    *,
+    url: str,
+    params: dict[str, Any],
+    settings: Settings,
+    operation: str,
+) -> httpx.Response:
+    max_retries = max(0, int(settings.tourapi_max_retries))
+    timeout = httpx.Timeout(
+        max(1.0, float(settings.tourapi_timeout_seconds)),
+        connect=10.0,
+    )
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = httpx.get(url, params=params, timeout=timeout)
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < max_retries:
+                time.sleep(_tourapi_retry_delay(attempt, settings))
+                continue
+            response.raise_for_status()
+            return response
+        except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
+            last_error = exc
+            if not _is_retryable_tourapi_error(exc) or attempt >= max_retries:
+                break
+            time.sleep(_tourapi_retry_delay(attempt, settings))
+    raise RuntimeError(f"TourAPI {operation} request failed after retries: {last_error}") from last_error
+
+
+def _is_retryable_tourapi_error(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {429, 500, 502, 503, 504}
+    return False
+
+
+def _tourapi_retry_delay(attempt: int, settings: Settings) -> float:
+    base = max(0.1, float(settings.tourapi_retry_base_seconds))
+    cap = max(base, float(settings.tourapi_retry_max_seconds))
+    return min(cap, base * (2 ** attempt))
 
 
 def get_tourism_provider() -> TourismDataProvider:

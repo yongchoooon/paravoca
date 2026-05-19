@@ -10,9 +10,11 @@ from app.api.responses import error as api_error
 from app.api.responses import ok
 from app.agents.data_enrichment import enrichment_run_to_dict
 from app.agents.preflight import validate_preflight_request
+from app.agents.run_cancellation import request_run_cancellation
 from app.agents.workflow import run_product_planning_workflow, run_revision_workflow
 from app.db import models
 from app.db.session import SessionLocal, get_db
+from app.evals.reporting import list_evaluation_reports, read_evaluation_report
 from app.observability.workflow_error_log import safe_write_workflow_error_log
 from app.schemas.workflow import (
     AgentStepRead,
@@ -22,6 +24,7 @@ from app.schemas.workflow import (
     QAIssueDeleteRequest,
     ToolCallRead,
     WorkflowRunCreate,
+    WorkflowRunCancelResult,
     WorkflowRunDeleteRequest,
     WorkflowRunDeleteResult,
     WorkflowRunRead,
@@ -30,7 +33,8 @@ from app.schemas.workflow import (
 
 router = APIRouter(prefix="/workflow-runs", tags=["workflow-runs"])
 logger = logging.getLogger("uvicorn.error")
-ACTIVE_RUN_STATUSES = {"pending", "running"}
+ACTIVE_RUN_STATUSES = {"pending", "running", "cancelling"}
+CANCELLABLE_RUN_STATUSES = {"pending", "running", "cancelling"}
 
 
 def _log_workflow_exception(
@@ -251,6 +255,8 @@ def create_workflow_run(
 @router.get("")
 def list_workflow_runs(db: Session = Depends(get_db)) -> dict:
     runs = db.query(models.WorkflowRun).order_by(models.WorkflowRun.created_at.desc()).all()
+    evaluation_run_ids = _evaluation_report_run_ids()
+    runs = [run for run in runs if not _is_evaluation_run(run, evaluation_run_ids)]
     data = [WorkflowRunRead.model_validate(run).model_dump(mode="json") for run in runs]
     return ok(data, count=len(data))
 
@@ -294,6 +300,109 @@ def delete_workflow_runs(
             deleted_count=len(deleted_run_ids),
         ).model_dump(mode="json")
     )
+
+
+@router.post("/{run_id}/cancel")
+def cancel_workflow_run(run_id: str, db: Session = Depends(get_db)) -> dict:
+    run = get_run_or_404(db, run_id)
+    if run.status not in CANCELLABLE_RUN_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Workflow run status {run.status} cannot be cancelled",
+        )
+
+    request_run_cancellation(run.id)
+    run.status = "cancelled"
+    run.error = {
+        "type": "CancellationRequested",
+        "message": "사용자가 workflow 실행 중지를 요청했습니다.",
+    }
+    run.finished_at = models.utcnow()
+    if run.started_at:
+        run.latency_ms = max(0, int((run.finished_at - run.started_at).total_seconds() * 1000))
+    run.final_output = _cancelled_final_output(run)
+    db.add(
+        models.AgentStep(
+            run_id=run.id,
+            agent_name="System",
+            step_type="workflow_cancelled",
+            status="succeeded",
+            input={"run_id": run.id},
+            output={"message": "사용자가 workflow 실행 중지를 요청했습니다."},
+            latency_ms=0,
+            started_at=run.finished_at,
+            finished_at=run.finished_at,
+        )
+    )
+    db.commit()
+    db.refresh(run)
+    return ok(
+        WorkflowRunCancelResult(
+            run=WorkflowRunRead.model_validate(run).model_dump(mode="json"),
+            cancellation_requested=True,
+            message="Workflow 실행을 중지했습니다.",
+        ).model_dump(mode="json")
+    )
+
+
+def _cancelled_final_output(run: models.WorkflowRun) -> dict:
+    normalized = run.normalized_input or {}
+    return {
+        "status": "cancelled",
+        "run_status": "cancelled",
+        "reason": "user_cancelled",
+        "normalized_request": normalized,
+        "geo_scope": normalized.get("geo_scope") or {},
+        "user_message": {
+            "title": "실행이 중지되었습니다",
+            "message": "사용자가 workflow 실행 중지를 요청했습니다.",
+            "detail": "이미 완료된 단계의 로그는 Developer 탭에서 확인할 수 있습니다.",
+        },
+        "source_items": [],
+        "retrieved_documents": [],
+        "products": [],
+        "marketing_assets": [],
+        "qa_report": {
+            "overall_status": "not_run",
+            "summary": "사용자 요청으로 실행이 중지되어 QA 검수를 실행하지 않았습니다.",
+            "issues": [],
+            "pass_count": 0,
+            "needs_review_count": 0,
+            "fail_count": 0,
+        },
+        "agent_execution": [],
+        "cost_summary": {
+            "estimated_cost_usd": float(run.cost_total_usd or 0),
+            "mode": "cancelled",
+        },
+        "approval": {
+            "required": False,
+            "status": "not_required",
+            "message": "사용자가 workflow 실행 중지를 요청했습니다.",
+        },
+    }
+
+
+def _is_evaluation_run(run: models.WorkflowRun, evaluation_run_ids: set[str]) -> bool:
+    if run.id in evaluation_run_ids:
+        return True
+    run_input = run.input if isinstance(run.input, dict) else {}
+    return isinstance(run_input.get("_evaluation"), dict)
+
+
+def _evaluation_report_run_ids() -> set[str]:
+    run_ids: set[str] = set()
+    for summary in list_evaluation_reports():
+        eval_id = str(summary.get("eval_id") or "")
+        if not eval_id:
+            continue
+        report = read_evaluation_report(eval_id)
+        if not report or (report.get("options") or {}).get("reuse_run_id"):
+            continue
+        for case in report.get("cases") or []:
+            if isinstance(case, dict) and case.get("workflow_run_id"):
+                run_ids.add(str(case["workflow_run_id"]))
+    return run_ids
 
 
 @router.get("/{run_id}")

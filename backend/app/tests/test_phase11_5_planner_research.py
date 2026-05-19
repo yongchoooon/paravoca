@@ -129,11 +129,12 @@ def test_research_synthesis_preserves_candidate_card_detail(monkeypatch):
     def fake_call_gemini_json(**kwargs):
         assert kwargs["purpose"] == "research_synthesis"
         assert kwargs["response_schema"] == RESEARCH_SYNTHESIS_RESPONSE_SCHEMA
-        assert "상품 생성에 필요한 후보별 사실과 제한 claim을 보존" in kwargs["prompt"]
+        assert "candidate_evidence_cards 필드를 출력하지 마세요" in kwargs["prompt"]
+        assert "candidate_card_guidance" in kwargs["prompt"]
         return _fake_result(
             {
                 "research_brief": "대전 수변 산책 후보는 근거 card를 기준으로 상품화할 수 있습니다.",
-                "candidate_evidence_cards": [
+                "candidate_card_guidance": [
                     {
                         "content_id": "100",
                         "title": "갑천 야간 산책",
@@ -228,7 +229,7 @@ def test_research_synthesis_retries_with_compact_prompt_after_timeout(monkeypatc
         return _fake_result(
             {
                 "research_brief": "시간 초과 후 compact 재시도로 근거 브리프를 생성했습니다.",
-                "candidate_evidence_cards": [],
+                "candidate_card_guidance": [],
                 "usable_claims": ["장소명과 개요는 사용할 수 있습니다."],
                 "restricted_claims": ["가격 확정"],
                 "operational_unknowns": ["요금 정보"],

@@ -24,7 +24,7 @@ from app.llm.gemini_gateway import (
 from app.main import app
 from app.rag.source_documents import build_source_document
 from app.tests.geo_catalog_helpers import seed_test_ldong_catalog
-from app.tools.tourism import TourismItem
+from app.tools.tourism import TourismItem, _get_with_retries
 
 
 def unwrap(response):
@@ -337,6 +337,83 @@ def test_delete_workflow_runs_rejects_active_rows():
 
     assert response.status_code == 409
     assert still_exists is not None
+
+
+def test_cancel_workflow_run_marks_active_run_as_cancelled():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            run = models.WorkflowRun(
+                template_id="default_product_planning",
+                status="running",
+                input={"message": "실행 중지 테스트"},
+            )
+            db.add(run)
+            db.commit()
+            run_id = run.id
+
+        result = unwrap(client.post(f"/api/workflow-runs/{run_id}/cancel"))
+
+        with SessionLocal() as db:
+            updated = db.get(models.WorkflowRun, run_id)
+            cancel_step = (
+                db.query(models.AgentStep)
+                .filter(models.AgentStep.run_id == run_id, models.AgentStep.step_type == "workflow_cancelled")
+                .first()
+            )
+
+    assert result["cancellation_requested"] is True
+    assert result["run"]["status"] == "cancelled"
+    assert updated is not None
+    assert updated.status == "cancelled"
+    assert updated.error["type"] == "CancellationRequested"
+    assert updated.final_output["status"] == "cancelled"
+    assert cancel_step is not None
+    assert cancel_step.status == "succeeded"
+
+
+def test_cancel_workflow_run_rejects_completed_run():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            run = models.WorkflowRun(
+                template_id="default_product_planning",
+                status="awaiting_approval",
+                input={"message": "완료된 run"},
+            )
+            db.add(run)
+            db.commit()
+            run_id = run.id
+
+        response = client.post(f"/api/workflow-runs/{run_id}/cancel")
+
+    assert response.status_code == 409
+
+
+def test_list_workflow_runs_hides_evaluation_runs():
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            normal = models.WorkflowRun(
+                template_id="default_product_planning",
+                status="failed",
+                input={"message": "일반 run"},
+            )
+            evaluation = models.WorkflowRun(
+                template_id="default_product_planning",
+                status="awaiting_approval",
+                input={
+                    "message": "평가 run",
+                    "_evaluation": {"eval_id": "eval_test", "case_id": "case_1"},
+                },
+            )
+            db.add_all([normal, evaluation])
+            db.commit()
+            normal_id = normal.id
+            evaluation_id = evaluation.id
+
+        runs = unwrap(client.get("/api/workflow-runs"))
+
+    run_ids = {run["id"] for run in runs}
+    assert normal_id in run_ids
+    assert evaluation_id not in run_ids
 
 
 def legacy_area_from_ldong(ldong_regn_cd, fallback):
@@ -844,6 +921,49 @@ def test_data_source_capabilities_show_phase8_foundation(monkeypatch):
         for operation in tourapi["operations"]
     )
     assert data["implemented_operation_count"] >= 11
+
+
+def test_data_source_overview_returns_operator_summary(monkeypatch):
+    monkeypatch.setenv("TOURAPI_ENABLED", "true")
+    monkeypatch.setenv("TOURAPI_SERVICE_KEY", "")
+    monkeypatch.setenv("KTO_PHOTO_CONTEST_ENABLED", "false")
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        data = unwrap(client.get("/api/data/sources/overview"))
+
+    get_settings.cache_clear()
+
+    assert data["purpose"] == "운영자가 관광 데이터 API와 실제 저장 데이터를 확인하는 화면"
+    assert data["summary"]["total_sources"] >= 1
+    assert data["documents"]["status"] in {"empty", "ready", "pending", "attention"}
+    assert {catalog["key"] for catalog in data["catalogs"]} == {"tourapi_ldong", "tourapi_lcls"}
+    assert {profile["key"] for profile in data["purpose_profiles"]} >= {"all", "visual", "pet", "walking"}
+
+    source_families = {source["source_family"]: source for source in data["sources"]}
+    tourapi = source_families["kto_tourapi_kor"]
+    assert tourapi["readiness_status"] == "setup_required"
+    assert tourapi["status_label"] == "키 연결 필요"
+    assert "inventory" in tourapi
+    assert "지역 코드" in tourapi["input_fields"]
+    assert "관광지명" in tourapi["output_fields"]
+    assert tourapi["stored_count"] >= 0
+    assert tourapi["evidence_count"] >= 0
+
+
+def test_data_source_browsers_return_operator_catalogs():
+    with TestClient(app) as client:
+        documents = unwrap(client.get("/api/data/sources/documents?limit=5"))
+        tourism_items = unwrap(client.get("/api/data/sources/tourism-items?limit=5"))
+        catalogs = unwrap(client.get("/api/data/sources/catalogs/browser?limit=5"))
+
+    assert documents["limit"] == 5
+    assert isinstance(documents["items"], list)
+    assert tourism_items["limit"] == 5
+    assert isinstance(tourism_items["items"], list)
+    assert catalogs["limit"] == 5
+    assert isinstance(catalogs["regions"], list)
+    assert isinstance(catalogs["classifications"], list)
 
 
 def test_phase8_tables_are_created():
@@ -1480,6 +1600,40 @@ def test_gemini_retry_delay_respects_retry_after_header():
     response = httpx.Response(503, headers={"retry-after": "2"})
 
     assert _retry_delay_seconds(attempt=0, response=response, settings=settings) == 2
+
+
+def test_tourapi_request_retries_read_timeout(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_get(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ReadTimeout("read timed out")
+        return httpx.Response(
+            200,
+            json={"response": {"header": {"resultCode": "0000"}, "body": {"items": {"item": []}}}},
+            request=httpx.Request("GET", "https://example.com/areaBasedList2"),
+        )
+
+    monkeypatch.setattr("app.tools.tourism.httpx.get", fake_get)
+    monkeypatch.setattr("app.tools.tourism.time.sleep", lambda *_: None)
+    settings = Settings(
+        tourapi_service_key="test-key",
+        tourapi_timeout_seconds=1,
+        tourapi_max_retries=1,
+        tourapi_retry_base_seconds=0.1,
+        tourapi_retry_max_seconds=0.1,
+    )
+
+    response = _get_with_retries(
+        url="https://example.com/areaBasedList2",
+        params={"serviceKey": "test-key"},
+        settings=settings,
+        operation="areaBasedList2",
+    )
+
+    assert response.status_code == 200
+    assert calls["count"] == 2
 
 
 def test_parse_json_uses_first_object_when_gemini_appends_extra_json():
