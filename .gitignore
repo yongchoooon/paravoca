@@ -22,3 +22,9 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 .DS_Store
 API명세서/
+vendor/pm-skills/
+공모전_기획서_작성안.md
+ai_agent_travel_product_evaluation.md
+.agents/
+backend/reports/
+reports/
