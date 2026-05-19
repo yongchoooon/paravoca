@@ -34,6 +34,7 @@ import {
   IconEdit,
   IconEye,
   IconGitBranch,
+  IconPlayerStop,
   IconRefresh,
   IconX,
 } from "@tabler/icons-react";
@@ -42,6 +43,7 @@ import {
   AgentStep,
   Approval,
   approveWorkflowRun,
+  cancelWorkflowRun,
   createWorkflowRevision,
   deleteWorkflowRunQaIssues,
   EnrichmentRun,
@@ -167,6 +169,7 @@ export function RunDetail({
   const [selectedQaIssueKeys, setSelectedQaIssueKeys] = useState<string[]>([]);
   const [qaIssueDeleting, setQaIssueDeleting] = useState(false);
   const [activeTab, setActiveTab] = useState<RunDetailTab>("review");
+  const [stoppingRun, setStoppingRun] = useState(false);
 
   async function loadRunDetail(options: { silent?: boolean } = {}) {
     try {
@@ -459,6 +462,30 @@ export function RunDetail({
     }
   }
 
+  async function stopActiveRun() {
+    if (!run || !isActiveRun) return;
+    try {
+      setStoppingRun(true);
+      const response = await cancelWorkflowRun(run.id);
+      setRun(response.run);
+      notifications.show({
+        title: "실행 중지 요청",
+        message: response.message,
+        color: "yellow",
+      });
+      await loadRunDetail({ silent: true });
+      await onStatusChanged();
+    } catch (err) {
+      notifications.show({
+        title: "실행 중지 실패",
+        message: err instanceof Error ? err.message : String(err),
+        color: "red",
+      });
+    } finally {
+      setStoppingRun(false);
+    }
+  }
+
   function updateEditableProduct(productId: string, patch: Partial<ProductIdea>) {
     setEditableProducts((current) =>
       current.map((product) => (product.id === productId ? { ...product, ...patch } : product))
@@ -618,6 +645,17 @@ export function RunDetail({
                 {run.id}
               </Text>
             </div>
+            {isActiveRun ? (
+              <Button
+                color="red"
+                variant="light"
+                leftSection={<IconPlayerStop size={16} />}
+                loading={stoppingRun}
+                onClick={stopActiveRun}
+              >
+                실행 중지
+              </Button>
+            ) : null}
           </Group>
           <RequestPromptPanel run={run} originalRun={rootRun ?? run} />
           <Alert
@@ -672,6 +710,17 @@ export function RunDetail({
                 <IconRefresh size={16} />
               </ActionIcon>
             </Tooltip>
+            {isActiveRun ? (
+              <Button
+                color="red"
+                variant="light"
+                leftSection={<IconPlayerStop size={16} />}
+                loading={stoppingRun}
+                onClick={stopActiveRun}
+              >
+                실행 중지
+              </Button>
+            ) : null}
             <Button
               variant="light"
               leftSection={<IconGitBranch size={16} />}
@@ -712,7 +761,12 @@ export function RunDetail({
             <Group gap="sm" align="flex-start">
               <Loader size="sm" type="oval" mt={2} />
               <div>
-                <Text fw={700}>Workflow is running</Text>
+                <Text fw={700}>{run.status === "cancelling" ? "Workflow stop requested" : "Workflow is running"}</Text>
+                {run.status === "cancelling" ? (
+                  <Text size="sm" c="dimmed">
+                    현재 실행 중인 단계가 끝나면 중지됩니다.
+                  </Text>
+                ) : null}
                 <UserWorkflowProgress steps={steps} run={run} result={result} />
               </div>
             </Group>
@@ -735,6 +789,14 @@ export function RunDetail({
 
         {isInsufficientSourceDataResult(result) ? (
           <InsufficientSourceDataNotice result={result} />
+        ) : null}
+
+        {result.status === "cancelled" ? (
+          <Alert color="gray" title="실행이 중지되었습니다">
+            {typeof result.user_message?.message === "string"
+              ? result.user_message.message
+              : "사용자 요청으로 workflow 실행을 중지했습니다."}
+          </Alert>
         ) : null}
 
         <SimpleGrid cols={{ base: 1, sm: 4 }}>
@@ -796,6 +858,10 @@ export function RunDetail({
               <GeoClarificationReviewNotice result={result} />
             ) : isInsufficientSourceDataResult(result) ? (
               <InsufficientSourceDataNotice result={result} compact />
+            ) : result.status === "cancelled" ? (
+              <Alert color="gray" title="실행이 중지되었습니다">
+                이 run은 사용자 요청으로 중지되었습니다. 이미 완료된 단계는 Developer 탭에서 확인할 수 있습니다.
+              </Alert>
             ) : (
               <Alert color="gray">
                 <Group gap="sm" align="flex-start">

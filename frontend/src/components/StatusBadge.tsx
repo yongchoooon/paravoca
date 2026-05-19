@@ -3,6 +3,7 @@ import { Badge } from "@mantine/core";
 const statusColor: Record<string, string> = {
   pending: "gray",
   running: "blue",
+  cancelling: "yellow",
   awaiting_approval: "yellow",
   changes_requested: "yellow",
   succeeded: "green",
@@ -18,6 +19,7 @@ const statusColor: Record<string, string> = {
 const statusLabel: Record<string, string> = {
   pending: "대기",
   running: "실행 중",
+  cancelling: "중지 중",
   awaiting_approval: "승인 대기",
   changes_requested: "수정 요청",
   succeeded: "성공",

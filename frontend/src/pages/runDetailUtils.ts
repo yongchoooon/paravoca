@@ -167,7 +167,7 @@ export const avoidOptions = [
   "외국어 지원 과장 표현",
 ];
 
-export const ACTIVE_RUN_STATUSES = new Set(["pending", "running"]);
+export const ACTIVE_RUN_STATUSES = new Set(["pending", "running", "cancelling"]);
 
 const severityConfig: Record<string, { label: string; color: string }> = {
   critical: { label: "치명", color: "red" },

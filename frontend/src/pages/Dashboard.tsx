@@ -34,6 +34,7 @@ import {
 import { ApiError } from "../services/apiClient";
 import { StatusBadge } from "../components/StatusBadge";
 import { RunDetail } from "./RunDetail";
+import { DataSourcesPanel } from "./DataSourcesPanel";
 import { formatKstDateTime } from "../utils/datetime";
 import type { AppSection } from "../components/AppShellLayout/AppShellLayout";
 import classes from "./Dashboard.module.css";
@@ -632,7 +633,7 @@ const workflowEdges: Edge[] = [
   },
 ];
 
-const ACTIVE_RUN_STATUSES = new Set(["pending", "running"]);
+const ACTIVE_RUN_STATUSES = new Set(["pending", "running", "cancelling"]);
 const PERIOD_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 function getRunTitle(run: WorkflowRun) {
@@ -1126,7 +1127,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
     },
     "data-sources": {
       title: "Data Sources",
-      description: "KTO/TourAPI와 향후 연결할 데이터 소스 상태를 관리할 화면입니다.",
+      description: "관광 데이터 연결, 수집, 색인, 보강 준비 상태를 운영자가 확인합니다.",
     },
     evaluation: {
       title: "Evaluation",
@@ -1349,14 +1350,6 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
   );
 
   const placeholderCopy: Partial<Record<AppSection, { phase: string; items: string[] }>> = {
-    "data-sources": {
-      phase: "Phase 12",
-      items: [
-        "Visual, Route/Signal, Theme 계열 KTO API 실제 연결",
-        "source family별 활성화 상태와 보강 이력",
-        "catalog sync, cache, reindex 상태 표시",
-      ],
-    },
     evaluation: {
       phase: "Phase 11 이후",
       items: [
@@ -1427,7 +1420,9 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
       )
         : activeSection === "workflow"
           ? workflowPreview
-          : plannedView;
+          : activeSection === "data-sources"
+            ? <DataSourcesPanel />
+            : plannedView;
 
   return (
     <Stack gap="md">

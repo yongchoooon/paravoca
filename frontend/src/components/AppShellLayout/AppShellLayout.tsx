@@ -24,8 +24,8 @@ export type AppSection =
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: IconChartBar },
   { id: "workflow", label: "Workflow Preview", icon: IconRoute },
-  { id: "data-sources", label: "Data Sources", icon: IconDatabase, planned: true },
-  { id: "evaluation", label: "Evaluation", icon: IconAdjustments, planned: true },
+  { id: "data-sources", label: "Data Sources", icon: IconDatabase },
+  { id: "evaluation", label: "Evaluation", icon: IconAdjustments },
   { id: "costs", label: "Costs", icon: IconCoins, planned: true },
   { id: "poster-studio", label: "Poster Studio", icon: IconBrush, planned: true },
   { id: "settings", label: "Settings", icon: IconSettings, planned: true },

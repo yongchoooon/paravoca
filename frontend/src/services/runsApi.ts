@@ -250,6 +250,12 @@ export type WorkflowRunDeleteResult = {
   deleted_count: number;
 };
 
+export type WorkflowRunCancelResult = {
+  run: WorkflowRun;
+  cancellation_requested: boolean;
+  message: string;
+};
+
 export type WorkflowTemplate = {
   id: string;
   name: string;
@@ -323,6 +329,10 @@ export function createWorkflowRevision(runId: string, payload: WorkflowRevisionP
 
 export function deleteWorkflowRuns(payload: WorkflowRunDeletePayload) {
   return apiPost<WorkflowRunDeleteResult>("/workflow-runs/delete", payload);
+}
+
+export function cancelWorkflowRun(runId: string) {
+  return apiPost<WorkflowRunCancelResult>(`/workflow-runs/${runId}/cancel`, {});
 }
 
 export function deleteWorkflowRunQaIssues(runId: string, payload: QAIssueDeletePayload) {
