@@ -9,6 +9,7 @@ from app.api import (
     routes_health,
     routes_evaluations,
     routes_llm,
+    routes_posters,
     routes_rag,
     routes_runs,
     routes_workflows,
@@ -47,4 +48,5 @@ app.include_router(routes_data.router, prefix="/api")
 app.include_router(routes_data_sources.router, prefix="/api")
 app.include_router(routes_rag.router, prefix="/api")
 app.include_router(routes_llm.router, prefix="/api")
+app.include_router(routes_posters.router, prefix="/api")
 app.include_router(routes_evaluations.router, prefix="/api")

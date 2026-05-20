@@ -47,6 +47,19 @@ class Settings(BaseSettings):
     allow_medical_api: bool = False
     official_web_search_enabled: bool = False
     openai_api_key: str | None = None
+    poster_asset_dir: str = "data/poster_assets"
+    poster_image_model: str = "gpt-image-2"
+    poster_image_size: str = "1024x1536"
+    poster_image_quality: str = "medium"
+    poster_image_timeout_seconds: float = 120.0
+    poster_image_estimated_cost_usd: float = 0
+    poster_text_input_cost_per_million_tokens_usd: float = 5.0
+    poster_text_cached_input_cost_per_million_tokens_usd: float = 1.25
+    poster_image_input_cost_per_million_tokens_usd: float = 8.0
+    poster_image_cached_input_cost_per_million_tokens_usd: float = 2.0
+    poster_image_output_cost_per_million_tokens_usd: float = 30.0
+    poster_usage_log_dir: str = "logs"
+    poster_prompt_log_dir: str = "logs/poster_prompts"
     gemini_api_key: str | None = None
     openai_check_model: str = "gpt-4.1-nano"
     gemini_check_model: str = "gemini-2.5-flash-lite"
@@ -62,7 +75,7 @@ class Settings(BaseSettings):
     llm_prompt_debug_log_dir: str = "logs/prompt_debug"
     app_log_dir: str = "logs"
     evaluation_report_dir: str = "reports/evaluations"
-    usd_krw_rate: float = 1400
+    usd_krw_rate: float = 1490
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

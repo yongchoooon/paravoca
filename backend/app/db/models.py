@@ -85,6 +85,47 @@ class WorkflowRun(Base):
     web_evidence_documents: Mapped[list["WebEvidenceDocument"]] = relationship(
         back_populates="workflow_run", cascade="all, delete-orphan"
     )
+    poster_assets: Mapped[list["PosterAsset"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class PosterAsset(Base):
+    __tablename__ = "poster_assets"
+
+    id: Mapped[str] = mapped_column(
+        String(120), primary_key=True, default=lambda: new_id("poster")
+    )
+    run_id: Mapped[str] = mapped_column(
+        String(120), ForeignKey("workflow_runs.id"), nullable=False, index=True
+    )
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    product_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    style_preset: Mapped[str] = mapped_column(String(80), nullable=False)
+    included_sections: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    prompt_language: Mapped[str] = mapped_column(String(20), default="en", nullable=False)
+    image_model: Mapped[str] = mapped_column(String(120), nullable=False)
+    image_size: Mapped[str] = mapped_column(String(40), nullable=False)
+    image_quality: Mapped[str] = mapped_column(String(40), nullable=False)
+    image_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider: Mapped[str] = mapped_column(String(80), default="openai", nullable=False)
+    provider_response_summary: Mapped[dict] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), default=0)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(40), default="pending", nullable=False)
+    error: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    run: Mapped[WorkflowRun] = relationship(back_populates="poster_assets")
 
 
 class AgentStep(Base):
