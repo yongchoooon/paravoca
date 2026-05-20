@@ -11,8 +11,14 @@ backend/logs/
 logs/
 data/chroma/
 data/test_chroma/
+data/poster_assets/
+data/test_poster_assets/
+data/test_logs/
 backend/data/chroma/
 backend/data/test_chroma/
+backend/data/poster_assets/
+backend/data/test_poster_assets/
+backend/data/test_logs/
 data/qdrant_storage/
 *.egg-info/
 node_modules/
