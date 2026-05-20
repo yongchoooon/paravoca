@@ -20,6 +20,7 @@ PosterIncludedSection = Literal[
 class PosterCreateRequest(BaseModel):
     style_preset: PosterStylePreset
     included_sections: list[PosterIncludedSection] = Field(default_factory=list)
+    input_images: list[str] = Field(default_factory=list)
 
     @field_validator("included_sections")
     @classmethod
@@ -31,6 +32,21 @@ class PosterCreateRequest(BaseModel):
                 continue
             seen.add(item)
             result.append(item)
+        return result
+
+    @field_validator("input_images")
+    @classmethod
+    def validate_input_images(cls, value: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            normalized = str(item or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        if len(result) > 3:
+            raise ValueError("입력 이미지는 최대 3개까지만 제공할 수 있습니다.")
         return result
 
 
@@ -47,6 +63,7 @@ class PosterAssetRead(BaseModel):
     product_title: str
     style_preset: str
     included_sections: list[str]
+    input_images: list[str] = Field(default_factory=list)
     prompt: str
     prompt_language: str
     image_model: str

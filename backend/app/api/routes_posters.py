@@ -130,6 +130,7 @@ def create_product_poster(
         marketing=marketing,
         included_sections=included_sections,
         style_preset=payload.style_preset,
+        input_images=list(payload.input_images or []),
     )
 
     poster = models.PosterAsset(
@@ -138,6 +139,7 @@ def create_product_poster(
         product_title=str(product.get("title") or product_id),
         style_preset=payload.style_preset,
         included_sections=included_sections,
+        input_images=list(payload.input_images or []),
         prompt=prompt_result.prompt,
         prompt_language="en",
         image_model=settings.poster_image_model,
@@ -296,7 +298,12 @@ def _generate_poster_background(poster_id: str) -> None:
         if not poster or poster.status not in ACTIVE_POSTER_STATUSES:
             return
         try:
-            generated = generate_poster_image(prompt=poster.prompt, settings=settings)
+            input_images = list(poster.input_images or []) if poster.input_images else []
+            generated = generate_poster_image(
+                prompt=poster.prompt,
+                settings=settings,
+                input_images=input_images if input_images else None,
+            )
             image_path = _save_poster_file(
                 asset_dir=Path(settings.poster_asset_dir),
                 poster_id=poster.id,
@@ -395,6 +402,7 @@ def _log_poster_prompt(poster: models.PosterAsset, settings: Settings) -> None:
         image_model=poster.image_model,
         image_size=poster.image_size,
         image_quality=poster.image_quality,
+        input_images=list(poster.input_images or []),
         prompt_source=prompt_source,
         settings=settings,
     )

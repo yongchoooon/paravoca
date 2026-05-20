@@ -27,6 +27,7 @@ def write_poster_prompt_log(
     image_model: str,
     image_size: str,
     image_quality: str,
+    input_images: list[str] | None,
     prompt_source: dict[str, Any] | None,
     settings: Settings | None = None,
 ) -> None:
@@ -43,6 +44,7 @@ def write_poster_prompt_log(
         "image_model": image_model,
         "image_size": image_size,
         "image_quality": image_quality,
+        "input_images": list(input_images or []),
         "prompt_source": prompt_source or {},
         "prompt": prompt,
     }

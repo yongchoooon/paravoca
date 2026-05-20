@@ -103,6 +103,7 @@ class PosterAsset(Base):
     product_title: Mapped[str] = mapped_column(String(255), nullable=False)
     style_preset: Mapped[str] = mapped_column(String(80), nullable=False)
     included_sections: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    input_images: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
     prompt_language: Mapped[str] = mapped_column(String(20), default="en", nullable=False)
     image_model: Mapped[str] = mapped_column(String(120), nullable=False)

@@ -2244,7 +2244,18 @@ PRODUCT_RESPONSE_SCHEMA = {
                     "one_liner": {"type": "string"},
                     "target_customer": {"type": "string"},
                     "core_value": {"type": "array", "items": {"type": "string"}},
-                    "itinerary": {"type": "array", "items": {"type": "object"}},
+                    "itinerary": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["order", "name", "source_id"],
+                            "properties": {
+                                "order": {"type": "integer"},
+                                "name": {"type": "string"},
+                                "source_id": {"type": "string"},
+                            },
+                        },
+                    },
                     "estimated_duration": {"type": "string"},
                     "operation_difficulty": {"type": "string"},
                     "source_ids": {"type": "array", "items": {"type": "string"}},

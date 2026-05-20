@@ -29,8 +29,19 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     migrate_workflow_runs_revision_columns()
     migrate_tourism_item_geo_columns()
+    migrate_poster_assets_input_images_column()
     with SessionLocal() as db:
         seed_default_workflow(db)
+
+
+def migrate_poster_assets_input_images_column() -> None:
+    if not settings.database_url.startswith("sqlite"):
+        return
+    with engine.begin() as connection:
+        rows = connection.execute(text("PRAGMA table_info(poster_assets)")).mappings().all()
+        existing_columns = {row["name"] for row in rows}
+        if "input_images" not in existing_columns:
+            connection.execute(text("ALTER TABLE poster_assets ADD COLUMN input_images JSON NOT NULL DEFAULT '[]'"))
 
 
 def check_db() -> bool:

@@ -25,7 +25,12 @@ class GeneratedPosterImage:
     cost_usd: float
 
 
-def generate_poster_image(*, prompt: str, settings: Settings) -> GeneratedPosterImage:
+def generate_poster_image(
+    *,
+    prompt: str,
+    settings: Settings,
+    input_images: list[str] | None = None,
+) -> GeneratedPosterImage:
     api_key = (settings.openai_api_key or "").strip()
     if not api_key:
         raise PosterImageGenerationError(
@@ -33,25 +38,30 @@ def generate_poster_image(*, prompt: str, settings: Settings) -> GeneratedPoster
             {"reason": "missing_openai_api_key"},
         )
 
-    request_payload = {
-        "model": settings.poster_image_model,
-        "prompt": prompt,
-        "n": 1,
-        "size": settings.poster_image_size,
-        "quality": settings.poster_image_quality,
-    }
+    resolved_images = input_images or []
+    input_image_count = len(resolved_images)
+    use_edits_endpoint = input_image_count > 0
+
     started = time.perf_counter()
 
     try:
         with httpx.Client(timeout=settings.poster_image_timeout_seconds) as client:
-            response = client.post(
-                "https://api.openai.com/v1/images/generations",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=request_payload,
-            )
+            if use_edits_endpoint:
+                response = _post_images_edits(
+                    client=client,
+                    api_key=api_key,
+                    prompt=prompt,
+                    image_urls=resolved_images,
+                    settings=settings,
+                )
+            else:
+                response = _post_images_generations(
+                    client=client,
+                    api_key=api_key,
+                    prompt=prompt,
+                    settings=settings,
+                )
+
             latency_ms = int((time.perf_counter() - started) * 1000)
             if response.status_code >= 400:
                 raise PosterImageGenerationError(
@@ -87,20 +97,22 @@ def generate_poster_image(*, prompt: str, settings: Settings) -> GeneratedPoster
             cost = estimate_poster_image_cost(
                 prompt=prompt,
                 usage=usage,
-                size=str(payload.get("size") or request_payload["size"]),
-                quality=str(payload.get("quality") or request_payload["quality"]),
+                size=str(payload.get("size") or settings.poster_image_size),
+                quality=str(payload.get("quality") or settings.poster_image_quality),
                 settings=settings,
+                input_image_count=input_image_count,
             )
             return GeneratedPosterImage(
                 image_bytes=image_bytes,
                 provider_response_summary={
                     "request_id": response.headers.get("x-request-id"),
-                    "model": request_payload["model"],
-                    "size": payload.get("size") or request_payload["size"],
-                    "quality": payload.get("quality") or request_payload["quality"],
+                    "model": settings.poster_image_model,
+                    "size": payload.get("size") or settings.poster_image_size,
+                    "quality": payload.get("quality") or settings.poster_image_quality,
                     "output_format": payload.get("output_format") or "png",
                     "usage": usage,
                     "cost_breakdown": cost.as_dict(),
+                    "input_image_count": input_image_count,
                 },
                 latency_ms=latency_ms,
                 cost_usd=cost.total_cost_usd,
@@ -117,6 +129,102 @@ def generate_poster_image(*, prompt: str, settings: Settings) -> GeneratedPoster
             "OpenAI image generation request failed.",
             {"reason": "openai_image_generation_request_error", "error": str(exc)},
         ) from exc
+
+
+def _post_images_generations(
+    *,
+    client: httpx.Client,
+    api_key: str,
+    prompt: str,
+    settings: Settings,
+) -> httpx.Response:
+    request_payload = {
+        "model": settings.poster_image_model,
+        "prompt": prompt,
+        "n": 1,
+        "size": settings.poster_image_size,
+        "quality": settings.poster_image_quality,
+    }
+    return client.post(
+        "https://api.openai.com/v1/images/generations",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=request_payload,
+    )
+
+
+def _post_images_edits(
+    *,
+    client: httpx.Client,
+    api_key: str,
+    prompt: str,
+    image_urls: list[str],
+    settings: Settings,
+) -> httpx.Response:
+    image_binaries = _resolve_image_binaries(client, api_key, image_urls)
+    files: list[tuple[str, tuple[str, bytes, str]]] = []
+    for idx, img_bytes in enumerate(image_binaries):
+        files.append(("image[]", (f"image_{idx}.png", img_bytes, "image/png")))
+
+    form_data = {
+        "model": settings.poster_image_model,
+        "prompt": prompt,
+        "n": "1",
+        "size": settings.poster_image_size,
+        "quality": settings.poster_image_quality,
+    }
+    return client.post(
+        "https://api.openai.com/v1/images/edits",
+        headers={"Authorization": f"Bearer {api_key}"},
+        data=form_data,
+        files=files,
+    )
+
+
+def _resolve_image_binaries(
+    client: httpx.Client,
+    api_key: str,
+    image_urls: list[str],
+) -> list[bytes]:
+    result: list[bytes] = []
+    for url in image_urls:
+        url = url.strip()
+        if not url:
+            continue
+        if url.startswith("data:"):
+            # data URI: data:image/png;base64,<encoded>
+            _, _, encoded = url.partition(",")
+            try:
+                result.append(base64.b64decode(encoded))
+            except ValueError as exc:
+                raise PosterImageGenerationError(
+                    "Input image data URI contains invalid base64.",
+                    {"reason": "invalid_input_image_base64"},
+                ) from exc
+        elif url.startswith("http://") or url.startswith("https://"):
+            response = client.get(url)
+            if response.status_code >= 400:
+                raise PosterImageGenerationError(
+                    f"Input image could not be downloaded: {url}",
+                    {
+                        "reason": "input_image_download_failed",
+                        "status_code": response.status_code,
+                        "url": url,
+                    },
+                )
+            result.append(response.content)
+        else:
+            # Treat as raw base64 string
+            try:
+                result.append(base64.b64decode(url))
+            except ValueError as exc:
+                raise PosterImageGenerationError(
+                    "Input image string is not a valid URL or base64.",
+                    {"reason": "invalid_input_image_format"},
+                ) from exc
+    return result
 
 
 def _image_bytes_from_response(client: httpx.Client, image_data: dict[str, Any]) -> bytes:

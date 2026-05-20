@@ -19,6 +19,7 @@ export type PosterAsset = {
   product_title: string;
   style_preset: PosterStylePresetId | string;
   included_sections: PosterIncludedSection[];
+  input_images: string[];
   prompt: string;
   prompt_language: "en" | string;
   image_model: string;
@@ -55,6 +56,7 @@ export type PosterOptions = {
 export type CreatePosterPayload = {
   style_preset: PosterStylePresetId;
   included_sections: PosterIncludedSection[];
+  input_images?: string[];
 };
 
 export const POSTER_SECTION_LABELS: Record<PosterIncludedSection, string> = {

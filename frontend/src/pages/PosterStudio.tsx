@@ -16,6 +16,7 @@ import {
   Skeleton,
   Stack,
   Text,
+  TextInput,
   Title,
   Tooltip,
 } from "@mantine/core";
@@ -73,6 +74,8 @@ export function PosterStudio() {
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [previewPoster, setPreviewPoster] = useState<PosterAsset | null>(null);
   const [deletingPosterIds, setDeletingPosterIds] = useState<string[]>([]);
+  const [selectedInputImages, setSelectedInputImages] = useState<string[]>([]);
+  const [imageUrlInput, setImageUrlInput] = useState("");
 
   async function loadData(options: { silent?: boolean } = {}) {
     try {
@@ -130,6 +133,18 @@ export function PosterStudio() {
     });
   }, [productOptions]);
 
+  const imageCandidates = useMemo(() => {
+    return selectedRun && selectedProductId
+      ? productImageCandidatesForRun(selectedRun, selectedProductId)
+      : [];
+  }, [selectedRun, selectedProductId]);
+
+  // Reset image selection when product changes
+  useEffect(() => {
+    setSelectedInputImages([]);
+    setImageUrlInput("");
+  }, [selectedProductId, selectedRunId]);
+
   const selectedProduct = productOptions.find((product) => product.id === selectedProductId) ?? null;
   const maxPostersPerProduct = options?.max_posters_per_product ?? 3;
   const selectedProductPosters = useMemo(
@@ -176,6 +191,7 @@ export function PosterStudio() {
       const poster = await createPoster(selectedRunId, selectedProductId, {
         style_preset: stylePreset,
         included_sections: includedSections,
+        input_images: selectedInputImages.length > 0 ? selectedInputImages : undefined,
       });
       setPosters((current) => [poster, ...current.filter((item) => item.id !== poster.id)]);
       notifications.show({
@@ -336,6 +352,107 @@ export function PosterStudio() {
                 {options.style_presets.find((preset) => preset.id === stylePreset)?.description}
               </Text>
             ) : null}
+
+            {/* --- Image selection section --- */}
+            <Stack gap={6}>
+              <Text fw={700} size="sm">참조 이미지 선택 (최대 3개)</Text>
+              <Text size="xs" c="dimmed">
+                수집된 데이터에서 발견된 이미지를 선택하거나, 직접 URL을 입력할 수 있습니다.
+              </Text>
+
+              {imageCandidates.length > 0 ? (
+                <SimpleGrid cols={{ base: 3, sm: 4 }} spacing="xs">
+                  {imageCandidates.map((url) => {
+                    const isSelected = selectedInputImages.includes(url);
+                    const isDisabled = !isSelected && selectedInputImages.length >= 3;
+                    return (
+                      <Tooltip key={url} label={isDisabled ? "최대 3개까지 선택 가능" : url} multiline w={240}>
+                        <Paper
+                          withBorder
+                          p={2}
+                          style={{
+                            cursor: isDisabled ? "not-allowed" : "pointer",
+                            opacity: isDisabled ? 0.4 : 1,
+                            outline: isSelected ? "2px solid var(--mantine-color-blue-6)" : "none",
+                            outlineOffset: "-2px",
+                            borderRadius: "var(--mantine-radius-sm)",
+                          }}
+                          onClick={() => {
+                            if (isDisabled) return;
+                            setSelectedInputImages((prev) =>
+                              isSelected
+                                ? prev.filter((u) => u !== url)
+                                : [...prev, url]
+                            );
+                          }}
+                        >
+                          <Image
+                            src={url}
+                            alt="후보 이미지"
+                            h={64}
+                            w="100%"
+                            fit="cover"
+                            radius="xs"
+                            fallbackSrc="data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect fill='%23ddd' width='64' height='64'/%3E%3C/svg%3E"
+                          />
+                        </Paper>
+                      </Tooltip>
+                    );
+                  })}
+                </SimpleGrid>
+              ) : (
+                <Text size="xs" c="dimmed" fs="italic">
+                  선택한 run에서 이미지 후보를 찾지 못했습니다. 아래에서 직접 URL을 입력할 수 있습니다.
+                </Text>
+              )}
+
+              <Group gap="xs" align="flex-end">
+                <TextInput
+                  label="이미지 URL 직접 입력"
+                  placeholder="https://example.com/image.jpg"
+                  value={imageUrlInput}
+                  onChange={(e) => setImageUrlInput(e.currentTarget.value)}
+                  disabled={selectedInputImages.length >= 3}
+                  style={{ flex: 1 }}
+                  size="xs"
+                />
+                <Button
+                  size="xs"
+                  variant="light"
+                  disabled={!imageUrlInput.trim() || selectedInputImages.length >= 3}
+                  onClick={() => {
+                    const url = imageUrlInput.trim();
+                    if (url && !selectedInputImages.includes(url) && selectedInputImages.length < 3) {
+                      setSelectedInputImages((prev) => [...prev, url]);
+                      setImageUrlInput("");
+                    }
+                  }}
+                >
+                  추가
+                </Button>
+              </Group>
+
+              {selectedInputImages.length > 0 ? (
+                <Stack gap={4}>
+                  <Text size="xs" fw={600}>선택된 이미지 ({selectedInputImages.length}/3):</Text>
+                  {selectedInputImages.map((url, idx) => (
+                    <Group key={idx} gap="xs" wrap="nowrap">
+                      <Text size="xs" lineClamp={1} style={{ flex: 1, wordBreak: "break-all" }}>
+                        {url}
+                      </Text>
+                      <ActionIcon
+                        size="xs"
+                        variant="subtle"
+                        color="red"
+                        onClick={() => setSelectedInputImages((prev) => prev.filter((u) => u !== url))}
+                      >
+                        <IconTrash size={12} />
+                      </ActionIcon>
+                    </Group>
+                  ))}
+                </Stack>
+              ) : null}
+            </Stack>
 
             <Alert color="blue" variant="light">
               포스터 초안 이미지는 상품 1개당 최대 {maxPostersPerProduct}개까지 저장됩니다. 현재 선택한 상품은 {selectedProductPosterCount}개를 사용 중입니다.
@@ -500,6 +617,7 @@ function PosterCard({
           <Text fw={700} lineClamp={2}>{poster.product_title}</Text>
           <Text size="xs" c="dimmed" lineClamp={2}>
             옵션: {includedSections || "선택 없음"}
+            {poster.input_images.length > 0 ? ` · 참조 이미지 ${poster.input_images.length}개` : ""}
           </Text>
           <Text size="xs" c="dimmed" lineClamp={1}>
             {poster.run_id}
@@ -563,6 +681,54 @@ function runsWithProducts(runs: WorkflowRun[]) {
   return runs.filter((run) => productOptionsForRun(run).length > 0);
 }
 
+function productImageCandidatesForRun(run: WorkflowRun, productId: string): string[] {
+  const finalOutput = run.final_output;
+  if (!finalOutput) return [];
+
+  const products = recordsFromUnknown(finalOutput["products"]);
+  const product = products.find((item) => String(item.id ?? "") === productId);
+  if (!product) return [];
+
+  const sourceIds = new Set(stringListFromUnknown(product.source_ids));
+  const docs = recordsFromUnknown(finalOutput["retrieved_documents"]);
+  const linkedContentIds = new Set(
+    docs
+      .filter((doc) => sourceIds.has(String(doc.doc_id ?? "")))
+      .map((doc) => recordFromUnknown(doc.metadata).content_id)
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)
+  );
+
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const addCandidate = (url: unknown) => {
+    if (typeof url !== "string") return;
+    const normalized = url.trim();
+    if (!normalized.startsWith("http") || seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push(normalized);
+  };
+
+  docs.forEach((doc) => {
+    const metadata = recordFromUnknown(doc.metadata);
+    const contentId = String(metadata.content_id ?? "").trim();
+    if (!sourceIds.has(String(doc.doc_id ?? "")) && (!contentId || !linkedContentIds.has(contentId))) {
+      return;
+    }
+    addCandidate(doc.image_url);
+    addCandidate(metadata.image_url);
+    addCandidate(metadata.firstimage);
+    addCandidate(metadata.firstimage2);
+    const imageCandidates = parseMetadataJson(metadata.image_candidates);
+    recordsFromUnknown(imageCandidates).forEach((candidate) => {
+      addCandidate(candidate.image_url);
+      addCandidate(candidate.thumbnail_url);
+    });
+  });
+
+  return candidates;
+}
+
 function productOptionsForRun(run: WorkflowRun): ProductOption[] {
   const finalOutput = run.final_output;
   const rawProducts = finalOutput?.["products"];
@@ -580,4 +746,29 @@ function productOptionsForRun(run: WorkflowRun): ProductOption[] {
 function runLabel(run: WorkflowRun) {
   const message = typeof run.input?.message === "string" ? run.input.message : run.id;
   return `${message.slice(0, 48)} · ${run.id.slice(0, 14)}`;
+}
+
+function recordsFromUnknown(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    : [];
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function stringListFromUnknown(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+}
+
+function parseMetadataJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }

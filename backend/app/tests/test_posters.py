@@ -105,7 +105,7 @@ def test_poster_prompt_builder_separates_visible_text_and_constraints():
     assert "Key details:" in prompt.prompt
     assert "Included text:" in prompt.prompt
     assert "Style:" in prompt.prompt
-    assert "Constraints:" in prompt.prompt
+    assert "=== CONSTRAINTS ===" in prompt.prompt
     assert '"광안리 야경 로컬 워크"' in prompt.prompt
     assert any("가격, 할인율" in item for item in prompt.constraints)
     assert "Avoid claiming: 가격, 할인율" in prompt.prompt
@@ -163,7 +163,7 @@ def test_create_poster_without_openai_key_records_failed_poster():
 
 
 def test_create_poster_with_monkeypatched_gateway_saves_asset_and_downloads(monkeypatch):
-    def fake_generate_poster_image(*, prompt, settings):
+    def fake_generate_poster_image(*, prompt, settings, input_images=None):
         assert "Create one portrait travel promotion poster draft." in prompt
         return GeneratedPosterImage(
             image_bytes=b"poster-bytes",
@@ -294,3 +294,101 @@ def test_product_poster_limit_counts_running_and_succeeded(monkeypatch):
             )
         )
         assert next_poster["status"] == "running"
+
+
+def test_input_images_validation_rejects_more_than_three():
+    with TestClient(app) as client:
+        run_id = _create_run()
+        response = client.post(
+            f"/api/workflow-runs/{run_id}/products/product_1/posters",
+            json={
+                "style_preset": "editorial_travel",
+                "included_sections": ["product_summary"],
+                "input_images": [
+                    "https://example.com/1.jpg",
+                    "https://example.com/2.jpg",
+                    "https://example.com/3.jpg",
+                    "https://example.com/4.jpg",
+                ],
+            },
+        )
+        assert response.status_code == 422
+
+
+def test_input_images_within_limit_accepted(monkeypatch):
+    monkeypatch.setattr(
+        routes_posters,
+        "generate_poster_image",
+        lambda **kwargs: GeneratedPosterImage(b"ok", {}, 1, 0),
+    )
+
+    with TestClient(app) as client:
+        run_id = _create_run()
+        created = _unwrap(
+            client.post(
+                f"/api/workflow-runs/{run_id}/products/product_1/posters",
+                json={
+                    "style_preset": "editorial_travel",
+                    "included_sections": ["product_summary"],
+                    "input_images": [
+                        "https://example.com/1.jpg",
+                        "https://example.com/2.jpg",
+                    ],
+                },
+            )
+        )
+        assert created["status"] == "running"
+        poster = _unwrap(client.get(f"/api/posters/{created['id']}"))
+        assert poster["input_images"] == [
+            "https://example.com/1.jpg",
+            "https://example.com/2.jpg",
+        ]
+        assert "=== REFERENCE IMAGES ===" in poster["prompt"]
+        assert poster["provider_response_summary"]["prompt_source"]["input_image_count"] == 2
+
+
+def test_cost_estimate_includes_image_input_tokens_for_local_estimate():
+    settings = get_settings()
+    cost = estimate_poster_image_cost(
+        prompt="A" * 2000,
+        usage=None,
+        size="1024x1536",
+        quality="medium",
+        settings=settings,
+        input_image_count=2,
+    )
+    assert cost.basis == "local_estimate_from_prompt_chars_and_size_quality"
+    assert cost.image_input_tokens == 2000
+    assert cost.image_input_cost_usd == round((2000 / 1_000_000) * 8.0, 8)
+    assert cost.total_cost_usd > 0
+
+
+def test_cost_estimate_zero_image_input_when_no_images():
+    settings = get_settings()
+    cost = estimate_poster_image_cost(
+        prompt="A" * 2000,
+        usage=None,
+        size="1024x1536",
+        quality="medium",
+        settings=settings,
+        input_image_count=0,
+    )
+    assert cost.image_input_tokens == 0
+    assert cost.image_input_cost_usd == 0
+
+
+def test_prompt_builder_no_truncation_on_long_text():
+    result = _sample_result()
+    long_title = "이것은 아주 긴 제목으로서 기존 _clean_text 함수의 limit 값보다 훨씬 더 길게 작성된 텍스트입니다"
+    result["products"][0]["title"] = long_title
+    prompt = build_poster_prompt(
+        run_input={"message": "부산 야경 여행 상품", "region": "부산"},
+        result=result,
+        product=result["products"][0],
+        marketing=result["marketing_assets"][0],
+        included_sections=["product_summary"],
+        style_preset="editorial_travel",
+    )
+    # 말줄임표(…)가 포함되지 않아야 함
+    assert "…" not in prompt.prompt
+    assert long_title in prompt.prompt

@@ -88,6 +88,7 @@ def estimate_poster_image_cost(
     size: str,
     quality: str,
     settings: Settings,
+    input_image_count: int = 0,
 ) -> PosterCostBreakdown:
     pricing = {
         "text_input": settings.poster_text_input_cost_per_million_tokens_usd,
@@ -108,7 +109,7 @@ def estimate_poster_image_cost(
         basis = "local_estimate_from_prompt_chars_and_size_quality"
         text_input_tokens = _estimate_text_tokens(prompt)
         text_cached_input_tokens = 0
-        image_input_tokens = 0
+        image_input_tokens = _estimate_image_input_tokens(input_image_count)
         image_cached_input_tokens = 0
         image_output_tokens = output_image_token_estimate(size=size, quality=quality)
 
@@ -201,6 +202,11 @@ def _parse_usage(usage: dict[str, Any] | None) -> dict[str, int] | None:
 def _estimate_text_tokens(prompt: str) -> int:
     # A conservative local estimate for cases where the Image API response omits usage.
     return max(1, math.ceil(len(prompt) / 4))
+
+
+def _estimate_image_input_tokens(image_count: int) -> int:
+    # Conservative local estimate: ~1,000 tokens per input image.
+    return max(0, int(image_count or 0)) * 1000
 
 
 def _token_cost(tokens: int, per_million_usd: float) -> float:

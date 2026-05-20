@@ -206,6 +206,8 @@ export function RunDetail({
   const [posterResult, setPosterResult] = useState<PosterAsset | null>(null);
   const [previewPoster, setPreviewPoster] = useState<PosterAsset | null>(null);
   const [deletingPosterIds, setDeletingPosterIds] = useState<string[]>([]);
+  const [posterInputImages, setPosterInputImages] = useState<string[]>([]);
+  const [posterImageUrlInput, setPosterImageUrlInput] = useState("");
 
   async function loadRunDetail(options: { silent?: boolean } = {}) {
     try {
@@ -366,6 +368,10 @@ export function RunDetail({
     isCountedPosterStatus(poster.status)
   ).length;
   const modalProductAtLimit = modalCountedPosterCount >= maxPostersPerProduct;
+  const modalImageCandidates = useMemo(() => {
+    if (!posterModalProduct || !result) return [];
+    return productVisualCandidates(posterModalProduct, result.retrieved_documents);
+  }, [posterModalProduct, result]);
 
   const selectedQaIssues = useMemo(() => {
     if (!result) return [];
@@ -574,6 +580,8 @@ export function RunDetail({
     setPosterStylePreset(posterOptions?.style_presets[0]?.id ?? DEFAULT_POSTER_STYLE);
     setPosterError(null);
     setPosterResult(postersByProduct.get(product.id)?.[0] ?? null);
+    setPosterInputImages([]);
+    setPosterImageUrlInput("");
   }
 
   function togglePosterSection(section: PosterIncludedSection, checked: boolean) {
@@ -588,6 +596,25 @@ export function RunDetail({
     });
   }
 
+  function togglePosterInputImage(url: string) {
+    setPosterInputImages((current) => {
+      if (current.includes(url)) {
+        return current.filter((item) => item !== url);
+      }
+      if (current.length >= 3) {
+        return current;
+      }
+      return [...current, url];
+    });
+  }
+
+  function addPosterInputImage() {
+    const url = posterImageUrlInput.trim();
+    if (!url || posterInputImages.includes(url) || posterInputImages.length >= 3) return;
+    setPosterInputImages((current) => [...current, url]);
+    setPosterImageUrlInput("");
+  }
+
   async function submitPosterGeneration() {
     if (!run || !posterModalProduct) return;
     try {
@@ -596,6 +623,7 @@ export function RunDetail({
       const poster = await createPoster(run.id, posterModalProduct.id, {
         style_preset: posterStylePreset,
         included_sections: posterIncludedSections,
+        input_images: posterInputImages.length > 0 ? posterInputImages : undefined,
       });
       setPosterResult(poster);
       setPosters((current) => [poster, ...current.filter((item) => item.id !== poster.id)]);
@@ -606,6 +634,8 @@ export function RunDetail({
       });
       setPosterModalProduct(null);
       setPosterResult(null);
+      setPosterInputImages([]);
+      setPosterImageUrlInput("");
     } catch (err) {
       const message = err instanceof Error ? err.message : "포스터 생성에 실패했습니다.";
       setPosterError(message);
@@ -1161,6 +1191,8 @@ export function RunDetail({
         onClose={() => {
           setPosterModalProduct(null);
           setPosterError(null);
+          setPosterInputImages([]);
+          setPosterImageUrlInput("");
         }}
         title="포스터 만들기"
         size="xl"
@@ -1188,6 +1220,106 @@ export function RunDetail({
                     disabled={posterGenerating}
                   />
                 ))}
+              </Stack>
+
+              <Stack gap={6}>
+                <Text fw={700} size="sm">참조 이미지 선택 (최대 3개)</Text>
+                <Text size="xs" c="dimmed">
+                  상품 근거 데이터의 이미지 후보를 선택하거나 직접 URL을 입력할 수 있습니다. 선택한 이미지는 포스터 초안의 시각 참고로 함께 전달됩니다.
+                </Text>
+                {modalImageCandidates.length > 0 ? (
+                  <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="xs">
+                    {modalImageCandidates.map((candidate) => {
+                      const url = candidate.image_url;
+                      const selected = posterInputImages.includes(url);
+                      const disabled = !selected && posterInputImages.length >= 3;
+                      return (
+                        <Tooltip
+                          key={url}
+                          label={disabled ? "최대 3개까지 선택 가능" : candidate.title || url}
+                          multiline
+                          w={240}
+                        >
+                          <Paper
+                            withBorder
+                            p={2}
+                            style={{
+                              cursor: disabled || posterGenerating ? "not-allowed" : "pointer",
+                              opacity: disabled ? 0.45 : 1,
+                              outline: selected ? "2px solid var(--mantine-color-blue-6)" : "none",
+                              outlineOffset: "-2px",
+                              borderRadius: "var(--mantine-radius-sm)",
+                            }}
+                            onClick={() => {
+                              if (disabled || posterGenerating) return;
+                              togglePosterInputImage(url);
+                            }}
+                          >
+                            <Image
+                              src={candidate.thumbnail_url || url}
+                              alt={candidate.title || "참조 이미지 후보"}
+                              h={72}
+                              w="100%"
+                              fit="cover"
+                              radius="xs"
+                            />
+                          </Paper>
+                        </Tooltip>
+                      );
+                    })}
+                  </SimpleGrid>
+                ) : (
+                  <Text size="xs" c="dimmed" fs="italic">
+                    이 상품에서 이미지 후보를 찾지 못했습니다. 필요한 경우 직접 URL을 입력하세요.
+                  </Text>
+                )}
+                <Group gap="xs" align="flex-end">
+                  <TextInput
+                    label="이미지 URL 직접 입력"
+                    placeholder="https://example.com/image.jpg"
+                    value={posterImageUrlInput}
+                    onChange={(event) => setPosterImageUrlInput(event.currentTarget.value)}
+                    disabled={posterGenerating || posterInputImages.length >= 3}
+                    style={{ flex: 1 }}
+                    size="xs"
+                  />
+                  <Button
+                    size="xs"
+                    variant="light"
+                    disabled={
+                      posterGenerating ||
+                      !posterImageUrlInput.trim() ||
+                      posterInputImages.length >= 3
+                    }
+                    onClick={addPosterInputImage}
+                  >
+                    추가
+                  </Button>
+                </Group>
+                {posterInputImages.length > 0 ? (
+                  <Stack gap={4}>
+                    <Text size="xs" fw={600}>선택된 이미지 ({posterInputImages.length}/3)</Text>
+                    {posterInputImages.map((url) => (
+                      <Group key={url} gap="xs" wrap="nowrap">
+                        <Text size="xs" c="dimmed" lineClamp={1} style={{ flex: 1, wordBreak: "break-all" }}>
+                          {url}
+                        </Text>
+                        <ActionIcon
+                          size="xs"
+                          variant="subtle"
+                          color="red"
+                          aria-label="선택 이미지 제거"
+                          disabled={posterGenerating}
+                          onClick={() =>
+                            setPosterInputImages((current) => current.filter((item) => item !== url))
+                          }
+                        >
+                          <IconTrash size={12} />
+                        </ActionIcon>
+                      </Group>
+                    ))}
+                  </Stack>
+                ) : null}
               </Stack>
 
               <Select
@@ -2965,6 +3097,7 @@ function PosterDraftCard({
         </Group>
         <Text size="xs" c="dimmed" lineClamp={2}>
           옵션: {includedSections || "선택 없음"}
+          {poster.input_images.length > 0 ? ` · 참조 이미지 ${poster.input_images.length}개` : ""}
         </Text>
         <Text size="xs" c="dimmed">{formatKstDateTime(poster.created_at)}</Text>
         <Text size="xs" c="dimmed">cost≈{formatPosterCost(poster, usdKrwRate)}</Text>
