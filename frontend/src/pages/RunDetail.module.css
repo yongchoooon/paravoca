@@ -30,6 +30,34 @@
   min-width: 0;
 }
 
+.posterPreviewSummary {
+  min-width: 0;
+}
+
+.posterDraftCard {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.posterDraftFrame {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border: 1px solid var(--mantine-color-gray-3);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--mantine-color-gray-0);
+}
+
+.posterImageButton {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
 .requestPrompt {
   border: 1px solid var(--mantine-color-gray-3);
   border-radius: 8px;

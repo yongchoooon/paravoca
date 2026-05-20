@@ -3,6 +3,7 @@ import { AppShellLayout } from "./components/AppShellLayout/AppShellLayout";
 import type { AppSection } from "./components/AppShellLayout/AppShellLayout";
 import { Dashboard } from "./pages/Dashboard";
 import { EvaluationDashboard } from "./pages/EvaluationDashboard/EvaluationDashboard";
+import { PosterStudio } from "./pages/PosterStudio";
 
 const APP_SECTIONS = new Set<AppSection>([
   "dashboard",
@@ -55,6 +56,8 @@ export function App() {
     <AppShellLayout activeSection={activeSection} onSectionChange={changeSection}>
       {activeSection === "evaluation" ? (
         <EvaluationDashboard />
+      ) : activeSection === "poster-studio" ? (
+        <PosterStudio />
       ) : (
         <Dashboard activeSection={activeSection} />
       )}

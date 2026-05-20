@@ -27,7 +27,7 @@ const navItems = [
   { id: "data-sources", label: "Data Sources", icon: IconDatabase },
   { id: "evaluation", label: "Evaluation", icon: IconAdjustments },
   { id: "costs", label: "Costs", icon: IconCoins, planned: true },
-  { id: "poster-studio", label: "Poster Studio", icon: IconBrush, planned: true },
+  { id: "poster-studio", label: "Poster Studio", icon: IconBrush },
   { id: "settings", label: "Settings", icon: IconSettings, planned: true },
 ] satisfies Array<{
   id: AppSection;

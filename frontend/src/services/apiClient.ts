@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
 
 type ApiEnvelope<T> = {
   data: T;
@@ -53,6 +53,13 @@ export async function apiPost<T>(path: string, payload: unknown): Promise<T> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+  });
+  return parseResponse<T>(response);
+}
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "DELETE",
   });
   return parseResponse<T>(response);
 }

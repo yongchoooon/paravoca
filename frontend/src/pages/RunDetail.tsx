@@ -17,6 +17,7 @@ import {
   NumberInput,
   Paper,
   ScrollArea,
+  Select,
   SimpleGrid,
   Stack,
   Table,
@@ -30,12 +31,15 @@ import {
 import { notifications } from "@mantine/notifications";
 import {
   IconCheck,
+  IconAlertCircle,
   IconDownload,
   IconEdit,
   IconEye,
   IconGitBranch,
   IconPlayerStop,
+  IconPhotoPlus,
   IconRefresh,
+  IconTrash,
   IconX,
 } from "@tabler/icons-react";
 import { StatusBadge } from "../components/StatusBadge";
@@ -68,6 +72,24 @@ import {
   WorkflowRun,
   WorkflowEnrichmentSummary,
 } from "../services/runsApi";
+import {
+  DEFAULT_POSTER_INCLUDED_SECTIONS,
+  DEFAULT_POSTER_STYLE,
+  POSTER_SECTION_LABELS,
+  PosterAsset,
+  PosterIncludedSection,
+  PosterOptions,
+  PosterStylePresetId,
+  createPoster,
+  deletePoster,
+  formatPosterCost,
+  getPosterOptions,
+  isActivePosterStatus,
+  isCountedPosterStatus,
+  listRunPosters,
+  posterDownloadUrl,
+  posterImageSrc,
+} from "../services/postersApi";
 import { formatKstDateTime } from "../utils/datetime";
 import { RunLogs } from "./RunLogs";
 import classes from "./RunDetail.module.css";
@@ -112,6 +134,8 @@ type RunDetailProps = {
   relatedRuns?: WorkflowRun[];
   onSelectRun?: (runId: string) => void;
 };
+
+const POSTER_SECTION_ORDER = Object.keys(POSTER_SECTION_LABELS) as PosterIncludedSection[];
 
 const actionConfig: Record<ApprovalAction, Omit<NonNullable<ApprovalModalState>, "action">> = {
   approve: {
@@ -170,6 +194,18 @@ export function RunDetail({
   const [qaIssueDeleting, setQaIssueDeleting] = useState(false);
   const [activeTab, setActiveTab] = useState<RunDetailTab>("review");
   const [stoppingRun, setStoppingRun] = useState(false);
+  const [posters, setPosters] = useState<PosterAsset[]>([]);
+  const [posterOptions, setPosterOptions] = useState<PosterOptions | null>(null);
+  const [posterModalProduct, setPosterModalProduct] = useState<ProductIdea | null>(null);
+  const [posterIncludedSections, setPosterIncludedSections] = useState<PosterIncludedSection[]>(
+    DEFAULT_POSTER_INCLUDED_SECTIONS
+  );
+  const [posterStylePreset, setPosterStylePreset] = useState<PosterStylePresetId>(DEFAULT_POSTER_STYLE);
+  const [posterGenerating, setPosterGenerating] = useState(false);
+  const [posterError, setPosterError] = useState<string | null>(null);
+  const [posterResult, setPosterResult] = useState<PosterAsset | null>(null);
+  const [previewPoster, setPreviewPoster] = useState<PosterAsset | null>(null);
+  const [deletingPosterIds, setDeletingPosterIds] = useState<string[]>([]);
 
   async function loadRunDetail(options: { silent?: boolean } = {}) {
     try {
@@ -185,6 +221,8 @@ export function RunDetail({
         enrichmentResponse,
         llmCallsResponse,
         approvalsResponse,
+        postersResponse,
+        posterOptionsResponse,
       ] =
         await Promise.allSettled([
           getWorkflowRunResult(runId),
@@ -193,6 +231,8 @@ export function RunDetail({
           getWorkflowRunEnrichment(runId),
           listRunLlmCalls(runId),
           listRunApprovals(runId),
+          listRunPosters(runId),
+          getPosterOptions(),
         ]);
       setRun(nextRun);
       const nextSteps = stepsResponse.status === "fulfilled" ? stepsResponse.value : [];
@@ -200,11 +240,16 @@ export function RunDetail({
       const nextEnrichment = enrichmentResponse.status === "fulfilled" ? enrichmentResponse.value : null;
       const nextLlmCalls = llmCallsResponse.status === "fulfilled" ? llmCallsResponse.value : [];
       const nextApprovals = approvalsResponse.status === "fulfilled" ? approvalsResponse.value : [];
+      const nextPosters = postersResponse.status === "fulfilled" ? postersResponse.value : [];
+      const nextPosterOptions =
+        posterOptionsResponse.status === "fulfilled" ? posterOptionsResponse.value : null;
       setSteps(nextSteps);
       setToolCalls(nextToolCalls);
       setEnrichment(nextEnrichment);
       setLlmCalls(nextLlmCalls);
       setApprovals(nextApprovals);
+      setPosters(nextPosters);
+      setPosterOptions(nextPosterOptions);
       if (resultResponse.status === "fulfilled") {
         const normalizedResult = normalizeWorkflowResult(resultResponse.value);
         setResult(normalizedResult);
@@ -244,6 +289,19 @@ export function RunDetail({
     }, 2500);
     return () => window.clearInterval(timer);
   }, [isActiveRun, runId]);
+
+  const hasActivePosters = useMemo(
+    () => posters.some((poster) => isActivePosterStatus(poster.status)),
+    [posters]
+  );
+
+  useEffect(() => {
+    if (!hasActivePosters || isActiveRun) return;
+    const timer = window.setInterval(() => {
+      void loadRunDetail({ silent: true });
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [hasActivePosters, isActiveRun, runId]);
 
   const selectedProduct = useMemo(() => {
     if (!result?.products.length) return null;
@@ -288,6 +346,26 @@ export function RunDetail({
   const productTitleById = useMemo(() => {
     return new Map((result?.products ?? []).map((product) => [product.id, product.title]));
   }, [result]);
+
+  const postersByProduct = useMemo(() => {
+    const map = new Map<string, PosterAsset[]>();
+    posters
+      .slice()
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .forEach((poster) => {
+        map.set(poster.product_id, [...(map.get(poster.product_id) ?? []), poster]);
+      });
+    return map;
+  }, [posters]);
+
+  const modalPoster =
+    posterResult ?? (posterModalProduct ? postersByProduct.get(posterModalProduct.id)?.[0] ?? null : null);
+  const modalProductPosters = posterModalProduct ? postersByProduct.get(posterModalProduct.id) ?? [] : [];
+  const maxPostersPerProduct = posterOptions?.max_posters_per_product ?? 3;
+  const modalCountedPosterCount = modalProductPosters.filter((poster) =>
+    isCountedPosterStatus(poster.status)
+  ).length;
+  const modalProductAtLimit = modalCountedPosterCount >= maxPostersPerProduct;
 
   const selectedQaIssues = useMemo(() => {
     if (!result) return [];
@@ -483,6 +561,84 @@ export function RunDetail({
       });
     } finally {
       setStoppingRun(false);
+    }
+  }
+
+  function openPosterModal(product: ProductIdea) {
+    setPosterModalProduct(product);
+    setPosterIncludedSections(
+      posterOptions?.default_included_sections.length
+        ? posterOptions.default_included_sections
+        : DEFAULT_POSTER_INCLUDED_SECTIONS
+    );
+    setPosterStylePreset(posterOptions?.style_presets[0]?.id ?? DEFAULT_POSTER_STYLE);
+    setPosterError(null);
+    setPosterResult(postersByProduct.get(product.id)?.[0] ?? null);
+  }
+
+  function togglePosterSection(section: PosterIncludedSection, checked: boolean) {
+    setPosterIncludedSections((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(section);
+      } else {
+        next.delete(section);
+      }
+      return POSTER_SECTION_ORDER.filter((item) => next.has(item));
+    });
+  }
+
+  async function submitPosterGeneration() {
+    if (!run || !posterModalProduct) return;
+    try {
+      setPosterGenerating(true);
+      setPosterError(null);
+      const poster = await createPoster(run.id, posterModalProduct.id, {
+        style_preset: posterStylePreset,
+        included_sections: posterIncludedSections,
+      });
+      setPosterResult(poster);
+      setPosters((current) => [poster, ...current.filter((item) => item.id !== poster.id)]);
+      notifications.show({
+        title: "포스터 생성 시작",
+        message: "백그라운드에서 포스터 초안 이미지를 생성합니다. Run Detail과 Poster Studio에서 진행 상태를 확인할 수 있습니다.",
+        color: "blue",
+      });
+      setPosterModalProduct(null);
+      setPosterResult(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "포스터 생성에 실패했습니다.";
+      setPosterError(message);
+      notifications.show({ title: "포스터 생성 실패", message, color: "red" });
+      try {
+        setPosters(await listRunPosters(run.id));
+      } catch {
+        // Keep the original generation error visible.
+      }
+    } finally {
+      setPosterGenerating(false);
+    }
+  }
+
+  async function deleteRunDetailPoster(poster: PosterAsset) {
+    try {
+      setDeletingPosterIds((current) => [...current, poster.id]);
+      await deletePoster(poster.id);
+      setPosters((current) => current.filter((item) => item.id !== poster.id));
+      setPreviewPoster((current) => (current?.id === poster.id ? null : current));
+      notifications.show({
+        title: "포스터 삭제",
+        message: "저장된 포스터 초안 기록을 삭제했습니다.",
+        color: "gray",
+      });
+    } catch (err) {
+      notifications.show({
+        title: "포스터 삭제 실패",
+        message: err instanceof Error ? err.message : "포스터를 삭제하지 못했습니다.",
+        color: "red",
+      });
+    } finally {
+      setDeletingPosterIds((current) => current.filter((id) => id !== poster.id));
     }
   }
 
@@ -846,6 +1002,12 @@ export function RunDetail({
                       product={selectedProduct}
                       marketing={selectedMarketing}
                       evidenceDocuments={result.retrieved_documents}
+                      posters={postersByProduct.get(selectedProduct.id) ?? []}
+                      posterOptions={posterOptions}
+                      onCreatePoster={() => openPosterModal(selectedProduct)}
+                      onDeletePoster={deleteRunDetailPoster}
+                      deletingPosterIds={deletingPosterIds}
+                      onPreviewPoster={setPreviewPoster}
                     />
                   ) : (
                     <Text c="dimmed">생성된 상품이 없습니다.</Text>
@@ -993,6 +1155,190 @@ export function RunDetail({
           </Stack>
         ) : null}
       </Drawer>
+
+      <Modal
+        opened={posterModalProduct !== null}
+        onClose={() => {
+          setPosterModalProduct(null);
+          setPosterError(null);
+        }}
+        title="포스터 만들기"
+        size="xl"
+      >
+        <Stack gap="md">
+          {posterModalProduct ? (
+            <Alert color="gray">
+              <Text fw={700}>{posterModalProduct.title}</Text>
+              <Text size="sm" c="dimmed">
+                생성되는 이미지는 포스터 초안입니다. 현재는 정해진 스타일로만 생성할 수 있으며, 자유 커스터마이즈는 후속 단계에서 제공 예정입니다.
+              </Text>
+            </Alert>
+          ) : null}
+
+          <SimpleGrid cols={{ base: 1, md: 2 }}>
+            <Stack gap="sm">
+              <Stack gap={6}>
+                <Text fw={700} size="sm">포함할 내용</Text>
+                {POSTER_SECTION_ORDER.map((section) => (
+                  <Checkbox
+                    key={section}
+                    label={POSTER_SECTION_LABELS[section]}
+                    checked={posterIncludedSections.includes(section)}
+                    onChange={(event) => togglePosterSection(section, event.currentTarget.checked)}
+                    disabled={posterGenerating}
+                  />
+                ))}
+              </Stack>
+
+              <Select
+                label="스타일"
+                data={(posterOptions?.style_presets ?? []).map((preset) => ({
+                  value: preset.id,
+                  label: preset.label,
+                }))}
+                value={posterStylePreset}
+                onChange={(value) =>
+                  setPosterStylePreset((value as PosterStylePresetId) ?? DEFAULT_POSTER_STYLE)
+                }
+                disabled={!posterOptions || posterGenerating}
+              />
+              {posterOptions?.style_presets.find((preset) => preset.id === posterStylePreset)?.description ? (
+                <Text size="xs" c="dimmed">
+                  {posterOptions.style_presets.find((preset) => preset.id === posterStylePreset)?.description}
+                </Text>
+              ) : null}
+
+              <Alert color="blue" variant="light">
+                포스터 초안 이미지는 상품 1개당 최대 {maxPostersPerProduct}개까지 저장됩니다. 이 상품은 현재 {modalCountedPosterCount}개를 사용 중입니다.
+                크기는 {posterOptions?.image_size ?? "1024x1536"} portrait로 고정되어 있습니다.
+              </Alert>
+
+              {posterError ? (
+                <Alert color="red" icon={<IconAlertCircle size={16} />}>
+                  {posterError}
+                </Alert>
+              ) : null}
+
+              <Button
+                leftSection={posterGenerating ? <Loader size={16} /> : <IconPhotoPlus size={16} />}
+                onClick={() => void submitPosterGeneration()}
+                disabled={
+                  !posterModalProduct ||
+                  posterIncludedSections.length === 0 ||
+                  posterGenerating ||
+                  modalProductAtLimit
+                }
+              >
+                {posterGenerating ? "포스터 생성 요청 중" : "포스터 생성"}
+              </Button>
+              {modalProductAtLimit ? (
+                <Text size="sm" c="dimmed">
+                  이 상품은 포스터 초안 {maxPostersPerProduct}개를 모두 사용 중입니다. 기존 포스터를 삭제하면 하나 더 만들 수 있습니다.
+                </Text>
+              ) : null}
+              {posterGenerating ? (
+                <Text size="sm" c="dimmed">
+                  생성 작업을 등록하고 있습니다. 등록 후에는 이 창을 닫거나 화면을 이동해도 백그라운드에서 계속 진행됩니다.
+                </Text>
+              ) : null}
+            </Stack>
+
+            <Paper withBorder p="sm">
+              {posterGenerating ? (
+                <Stack h={360} align="center" justify="center">
+                  <Loader />
+                  <Text size="sm" c="dimmed">포스터 생성 작업을 등록하는 중입니다.</Text>
+                </Stack>
+              ) : modalPoster?.status === "succeeded" ? (
+                <Stack gap="sm">
+                  <Image
+                    src={posterImageSrc(modalPoster)}
+                    alt={modalPoster.product_title}
+                    radius="sm"
+                    fit="contain"
+                    h={420}
+                  />
+                  <Group justify="space-between">
+                    <Badge variant="light" color="green">생성된 포스터 초안</Badge>
+                    <Button
+                      component="a"
+                      href={posterDownloadUrl(modalPoster.id)}
+                      leftSection={<IconDownload size={16} />}
+                    >
+                      다운로드
+                    </Button>
+                  </Group>
+                  <Accordion variant="contained">
+                    <Accordion.Item value="metadata">
+                      <Accordion.Control>Developer metadata</Accordion.Control>
+                      <Accordion.Panel>
+                        <Stack gap="xs">
+                          <Text size="xs" c="dimmed">
+                            model={modalPoster.image_model}, latency={modalPoster.latency_ms ?? "-"}ms,
+                            cost≈{formatPosterCost(modalPoster, posterOptions?.usd_krw_rate)}
+                          </Text>
+                          <Code block>{JSON.stringify(modalPoster.provider_response_summary, null, 2)}</Code>
+                        </Stack>
+                      </Accordion.Panel>
+                    </Accordion.Item>
+                  </Accordion>
+                </Stack>
+              ) : modalPoster?.status === "failed" ? (
+                <Alert color="red" title="마지막 포스터 생성 실패">
+                  <Stack gap="xs">
+                    <Text size="sm">{modalPoster.error?.message ?? "포스터 생성에 실패했습니다."}</Text>
+                    <Accordion variant="contained">
+                      <Accordion.Item value="error">
+                        <Accordion.Control>Developer error</Accordion.Control>
+                        <Accordion.Panel>
+                          <Code block>{JSON.stringify(modalPoster.error, null, 2)}</Code>
+                        </Accordion.Panel>
+                      </Accordion.Item>
+                    </Accordion>
+                  </Stack>
+                </Alert>
+              ) : modalPoster && isActivePosterStatus(modalPoster.status) ? (
+                <Stack h={360} align="center" justify="center">
+                  <Loader />
+                  <Text size="sm" c="dimmed">
+                    최근 포스터 초안 이미지가 백그라운드에서 생성 중입니다.
+                  </Text>
+                  <Badge variant="light" color="gray">{modalPoster.style_preset}</Badge>
+                </Stack>
+              ) : (
+                <Stack h={360} justify="center" align="center">
+                  <Text fw={700}>아직 생성된 포스터가 없습니다.</Text>
+                  <Text size="sm" c="dimmed" ta="center">
+                    포함할 내용과 스타일을 선택한 뒤 포스터를 생성하세요.
+                  </Text>
+                </Stack>
+              )}
+            </Paper>
+          </SimpleGrid>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={previewPoster !== null}
+        onClose={() => setPreviewPoster(null)}
+        title={previewPoster?.product_title ?? "포스터 초안 이미지"}
+        size="xl"
+      >
+        {previewPoster ? (
+          <Stack gap="sm">
+            <Group gap="xs">
+              <Badge variant="light" color="gray">{previewPoster.style_preset}</Badge>
+              <Badge variant="light" color="blue">포스터 초안 이미지</Badge>
+            </Group>
+            <Image
+              src={posterImageSrc(previewPoster)}
+              alt={previewPoster.product_title}
+              fit="contain"
+              mah="75vh"
+            />
+          </Stack>
+        ) : null}
+      </Modal>
 
       <Modal
         opened={approvalModal !== null}
@@ -2325,10 +2671,22 @@ function ProductDetail({
   product,
   marketing,
   evidenceDocuments,
+  posters,
+  posterOptions,
+  onCreatePoster,
+  onDeletePoster,
+  deletingPosterIds,
+  onPreviewPoster,
 }: {
   product: ProductIdea;
   marketing: MarketingAsset | null;
   evidenceDocuments: EvidenceDocument[];
+  posters: PosterAsset[];
+  posterOptions: PosterOptions | null;
+  onCreatePoster: () => void;
+  onDeletePoster: (poster: PosterAsset) => void;
+  deletingPosterIds: string[];
+  onPreviewPoster: (poster: PosterAsset) => void;
 }) {
   const needsReview = stringListFromUnknown(product.needs_review);
   const claimLimits = stringListFromUnknown(product.claim_limits);
@@ -2342,18 +2700,61 @@ function ProductDetail({
     typeof marketing?.evidence_disclaimer === "string" ? marketing.evidence_disclaimer : "";
   const sourceIds = stringListFromUnknown(product.source_ids);
   const visualCandidates = productVisualCandidates(product, evidenceDocuments);
+  const maxPostersPerProduct = posterOptions?.max_posters_per_product ?? 3;
+  const countedPosterCount = posters.filter((item) => isCountedPosterStatus(item.status)).length;
+  const atPosterLimit = countedPosterCount >= maxPostersPerProduct;
+  const activePosterCount = posters.filter((item) => isActivePosterStatus(item.status)).length;
 
   return (
     <Stack gap="md">
-      <div>
-        <Title order={4}>{product.title}</Title>
-        <Text size="sm" c="dimmed">{product.one_liner}</Text>
-      </div>
+      <Group justify="space-between" align="flex-start">
+        <div>
+          <Title order={4}>{product.title}</Title>
+          <Text size="sm" c="dimmed">{product.one_liner}</Text>
+        </div>
+        <Button
+          size="sm"
+          variant="light"
+          leftSection={<IconPhotoPlus size={16} />}
+          onClick={onCreatePoster}
+          disabled={atPosterLimit}
+        >
+          포스터 만들기
+        </Button>
+      </Group>
       <Group gap="xs">
         {product.core_value.map((value) => (
           <Badge key={value} variant="light">{value}</Badge>
         ))}
       </Group>
+      <Alert color={activePosterCount > 0 ? "blue" : "gray"} variant="light">
+        <Text size="sm">
+          이 상품의 포스터 초안 이미지는 최대 {maxPostersPerProduct}개까지 저장됩니다. 현재 {countedPosterCount}개를 사용 중입니다.
+          {activePosterCount > 0 ? " 생성 중인 포스터가 백그라운드에서 진행되고 있습니다." : ""}
+        </Text>
+      </Alert>
+      {posters.length > 0 ? (
+        <Paper withBorder p="sm">
+          <Stack gap="sm">
+            <Group justify="space-between">
+              <Text fw={700} size="sm">저장된 포스터 초안</Text>
+              <Badge variant="light" color="opsBlue">{countedPosterCount} / {maxPostersPerProduct}</Badge>
+            </Group>
+            <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
+              {posters.map((item) => (
+                <PosterDraftCard
+                  key={item.id}
+                  poster={item}
+                  usdKrwRate={posterOptions?.usd_krw_rate}
+                  deleting={deletingPosterIds.includes(item.id)}
+                  onDelete={() => onDeletePoster(item)}
+                  onPreview={() => onPreviewPoster(item)}
+                />
+              ))}
+            </SimpleGrid>
+          </Stack>
+        </Paper>
+      ) : null}
       <SimpleGrid cols={{ base: 1, sm: 3 }}>
         <Metric label="Target" value={product.target_customer} />
         <Metric label="Duration" value={product.estimated_duration} />
@@ -2507,6 +2908,93 @@ function ProductDetail({
         </Tabs.Panel>
       </Tabs>
     </Stack>
+  );
+}
+
+function PosterDraftCard({
+  poster,
+  usdKrwRate,
+  deleting,
+  onDelete,
+  onPreview,
+}: {
+  poster: PosterAsset;
+  usdKrwRate?: number;
+  deleting: boolean;
+  onDelete: () => void;
+  onPreview: () => void;
+}) {
+  const imageSrc = posterImageSrc(poster);
+  const includedSections = poster.included_sections
+    .map((section) => POSTER_SECTION_LABELS[section] ?? section)
+    .join(", ");
+  const statusColor =
+    poster.status === "succeeded" ? "green" : poster.status === "failed" ? "red" : "blue";
+
+  return (
+    <Paper withBorder p="xs" className={classes.posterDraftCard}>
+      <Stack gap="xs">
+        <div className={classes.posterDraftFrame}>
+          {poster.status === "succeeded" && imageSrc ? (
+            <button
+              type="button"
+              className={classes.posterImageButton}
+              onClick={onPreview}
+              aria-label={`${poster.product_title} 포스터 크게 보기`}
+            >
+              <Image src={imageSrc} alt={poster.product_title} w="100%" h="100%" fit="cover" />
+            </button>
+          ) : poster.status === "failed" ? (
+            <Stack h="100%" align="center" justify="center" p="sm">
+              <Badge color="red" variant="light">failed</Badge>
+              <Text size="xs" ta="center" c="dimmed" lineClamp={4}>
+                {poster.error?.message ?? "포스터 생성 실패"}
+              </Text>
+            </Stack>
+          ) : (
+            <Stack h="100%" align="center" justify="center">
+              <Loader size="sm" />
+              <Text size="xs" c="dimmed">백그라운드 생성 중</Text>
+            </Stack>
+          )}
+        </div>
+        <Group gap={6}>
+          <Badge size="xs" variant="light" color={statusColor}>{poster.status}</Badge>
+          <Badge size="xs" variant="light" color="gray">{poster.style_preset}</Badge>
+          <Badge size="xs" variant="light" color="blue">초안</Badge>
+        </Group>
+        <Text size="xs" c="dimmed" lineClamp={2}>
+          옵션: {includedSections || "선택 없음"}
+        </Text>
+        <Text size="xs" c="dimmed">{formatKstDateTime(poster.created_at)}</Text>
+        <Text size="xs" c="dimmed">cost≈{formatPosterCost(poster, usdKrwRate)}</Text>
+        <Group gap="xs">
+          <Button
+            size="xs"
+            variant="light"
+            component="a"
+            href={posterDownloadUrl(poster.id)}
+            leftSection={<IconDownload size={14} />}
+            disabled={poster.status !== "succeeded"}
+          >
+            다운로드
+          </Button>
+          <Tooltip label={isActivePosterStatus(poster.status) ? "생성 중인 포스터는 완료 후 삭제할 수 있습니다." : "삭제"}>
+            <ActionIcon
+              size="sm"
+              variant="light"
+              color="red"
+              aria-label="포스터 삭제"
+              loading={deleting}
+              disabled={isActivePosterStatus(poster.status)}
+              onClick={onDelete}
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+      </Stack>
+    </Paper>
   );
 }
 
