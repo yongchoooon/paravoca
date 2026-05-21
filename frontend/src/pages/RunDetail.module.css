@@ -58,6 +58,146 @@
   cursor: zoom-in;
 }
 
+.posterCreationGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 640px) 260px;
+  gap: 16px;
+  align-items: start;
+}
+
+.posterPreviewPanel {
+  width: 260px;
+  min-width: 0;
+}
+
+.modalPosterPreviewButton {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.modalPosterPreviewImage {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.posterSectionOption {
+  min-width: 0;
+}
+
+.posterSectionOptionBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.posterSectionPreviewText,
+.posterSectionPreviewExpanded {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.posterSectionPreviewCollapsed {
+  max-height: 2.7em;
+  overflow: hidden;
+}
+
+.posterReferenceImageCard {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.posterReferenceImageButton {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.zoomPreviewFrame {
+  position: relative;
+  width: fit-content;
+  max-width: calc(100vw - 96px);
+  max-height: calc(100dvh - 96px);
+  overflow: visible;
+  background: transparent;
+}
+
+.zoomPreviewButton {
+  position: relative;
+  display: block;
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  overflow: visible;
+  transform-origin: center center;
+  transition: transform 160ms ease;
+}
+
+.zoomPreviewButton.zoomed {
+  cursor: grab;
+}
+
+.zoomPreviewButton.zoomed:active {
+  cursor: grabbing;
+}
+
+.zoomPreviewImage {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: calc(100vw - 96px);
+  max-height: calc(100dvh - 96px);
+  object-fit: contain;
+}
+
+.zoomPreviewButton.zoomed .zoomPreviewImage {
+  transform: none;
+}
+
+.zoomIcon {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: white;
+  background: rgb(0 0 0 / 62%);
+  border-radius: 999px;
+}
+
+.zoomPreviewButton.zoomed .zoomIcon {
+  transform: scale(0.67);
+}
+
+@media (max-width: 980px) {
+  .posterCreationGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .posterPreviewPanel {
+    width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .zoomPreviewFrame,
+  .zoomPreviewImage {
+    max-width: calc(100vw - 32px);
+    max-height: calc(100dvh - 32px);
+  }
+}
+
 .requestPrompt {
   border: 1px solid var(--mantine-color-gray-3);
   border-radius: 8px;

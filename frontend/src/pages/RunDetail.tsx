@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent } from "react";
 import {
   ActionIcon,
   Accordion,
@@ -32,6 +33,8 @@ import { notifications } from "@mantine/notifications";
 import {
   IconCheck,
   IconAlertCircle,
+  IconChevronDown,
+  IconChevronUp,
   IconDownload,
   IconEdit,
   IconEye,
@@ -40,6 +43,8 @@ import {
   IconPhotoPlus,
   IconRefresh,
   IconTrash,
+  IconZoomIn,
+  IconZoomOut,
   IconX,
 } from "@tabler/icons-react";
 import { StatusBadge } from "../components/StatusBadge";
@@ -82,7 +87,6 @@ import {
   PosterStylePresetId,
   createPoster,
   deletePoster,
-  formatPosterCost,
   getPosterOptions,
   isActivePosterStatus,
   isCountedPosterStatus,
@@ -136,6 +140,7 @@ type RunDetailProps = {
 };
 
 const POSTER_SECTION_ORDER = Object.keys(POSTER_SECTION_LABELS) as PosterIncludedSection[];
+const POSTER_IMAGE_CANDIDATE_PAGE_SIZE = 6;
 
 const actionConfig: Record<ApprovalAction, Omit<NonNullable<ApprovalModalState>, "action">> = {
   approve: {
@@ -207,7 +212,11 @@ export function RunDetail({
   const [previewPoster, setPreviewPoster] = useState<PosterAsset | null>(null);
   const [deletingPosterIds, setDeletingPosterIds] = useState<string[]>([]);
   const [posterInputImages, setPosterInputImages] = useState<string[]>([]);
-  const [posterImageUrlInput, setPosterImageUrlInput] = useState("");
+  const [posterInputImagePreview, setPosterInputImagePreview] = useState<EvidenceImageCandidate | null>(null);
+  const [posterImageCandidateLimit, setPosterImageCandidateLimit] = useState(POSTER_IMAGE_CANDIDATE_PAGE_SIZE);
+  const [previewPosterZoomed, setPreviewPosterZoomed] = useState(false);
+  const [posterInputImagePreviewZoomed, setPosterInputImagePreviewZoomed] = useState(false);
+  const [posterExpandedSections, setPosterExpandedSections] = useState<PosterIncludedSection[]>([]);
 
   async function loadRunDetail(options: { silent?: boolean } = {}) {
     try {
@@ -371,6 +380,10 @@ export function RunDetail({
   const modalImageCandidates = useMemo(() => {
     if (!posterModalProduct || !result) return [];
     return productVisualCandidates(posterModalProduct, result.retrieved_documents);
+  }, [posterModalProduct, result]);
+  const modalMarketing = useMemo(() => {
+    if (!posterModalProduct || !result) return null;
+    return result.marketing_assets.find((asset) => asset.product_id === posterModalProduct.id) ?? null;
   }, [posterModalProduct, result]);
 
   const selectedQaIssues = useMemo(() => {
@@ -581,7 +594,8 @@ export function RunDetail({
     setPosterError(null);
     setPosterResult(postersByProduct.get(product.id)?.[0] ?? null);
     setPosterInputImages([]);
-    setPosterImageUrlInput("");
+    setPosterImageCandidateLimit(POSTER_IMAGE_CANDIDATE_PAGE_SIZE);
+    setPosterExpandedSections([]);
   }
 
   function togglePosterSection(section: PosterIncludedSection, checked: boolean) {
@@ -608,11 +622,12 @@ export function RunDetail({
     });
   }
 
-  function addPosterInputImage() {
-    const url = posterImageUrlInput.trim();
-    if (!url || posterInputImages.includes(url) || posterInputImages.length >= 3) return;
-    setPosterInputImages((current) => [...current, url]);
-    setPosterImageUrlInput("");
+  function togglePosterExpandedSection(section: PosterIncludedSection) {
+    setPosterExpandedSections((current) =>
+      current.includes(section)
+        ? current.filter((item) => item !== section)
+        : [...current, section]
+    );
   }
 
   async function submitPosterGeneration() {
@@ -629,13 +644,14 @@ export function RunDetail({
       setPosters((current) => [poster, ...current.filter((item) => item.id !== poster.id)]);
       notifications.show({
         title: "포스터 생성 시작",
-        message: "백그라운드에서 포스터 초안 이미지를 생성합니다. Run Detail과 Poster Studio에서 진행 상태를 확인할 수 있습니다.",
+        message: "포스터 이미지를 생성 중입니다. Run Detail과 Poster Studio에서 진행 상태를 확인할 수 있습니다.",
         color: "blue",
       });
       setPosterModalProduct(null);
       setPosterResult(null);
       setPosterInputImages([]);
-      setPosterImageUrlInput("");
+      setPosterImageCandidateLimit(POSTER_IMAGE_CANDIDATE_PAGE_SIZE);
+      setPosterExpandedSections([]);
     } catch (err) {
       const message = err instanceof Error ? err.message : "포스터 생성에 실패했습니다.";
       setPosterError(message);
@@ -658,7 +674,7 @@ export function RunDetail({
       setPreviewPoster((current) => (current?.id === poster.id ? null : current));
       notifications.show({
         title: "포스터 삭제",
-        message: "저장된 포스터 초안 기록을 삭제했습니다.",
+        message: "저장된 포스터 기록을 삭제했습니다.",
         color: "gray",
       });
     } catch (err) {
@@ -1192,32 +1208,37 @@ export function RunDetail({
           setPosterModalProduct(null);
           setPosterError(null);
           setPosterInputImages([]);
-          setPosterImageUrlInput("");
+          setPosterImageCandidateLimit(POSTER_IMAGE_CANDIDATE_PAGE_SIZE);
+          setPosterExpandedSections([]);
         }}
         title="포스터 만들기"
-        size="xl"
+        size="62rem"
+        closeOnEscape={posterInputImagePreview === null && previewPoster === null}
       >
         <Stack gap="md">
           {posterModalProduct ? (
             <Alert color="gray">
               <Text fw={700}>{posterModalProduct.title}</Text>
               <Text size="sm" c="dimmed">
-                생성되는 이미지는 포스터 초안입니다. 현재는 정해진 스타일로만 생성할 수 있으며, 자유 커스터마이즈는 후속 단계에서 제공 예정입니다.
+                생성 이미지는 검토용 이미지입니다. 현재는 정해진 스타일로만 생성할 수 있으며, 자유 커스터마이즈는 후속 단계에서 제공 예정입니다.
               </Text>
             </Alert>
           ) : null}
 
-          <SimpleGrid cols={{ base: 1, md: 2 }}>
+          <div className={classes.posterCreationGrid}>
             <Stack gap="sm">
               <Stack gap={6}>
                 <Text fw={700} size="sm">포함할 내용</Text>
                 {POSTER_SECTION_ORDER.map((section) => (
-                  <Checkbox
+                  <PosterSectionOption
                     key={section}
-                    label={POSTER_SECTION_LABELS[section]}
+                    section={section}
                     checked={posterIncludedSections.includes(section)}
-                    onChange={(event) => togglePosterSection(section, event.currentTarget.checked)}
+                    expanded={posterExpandedSections.includes(section)}
+                    preview={posterSectionPreview(section, posterModalProduct, modalMarketing)}
                     disabled={posterGenerating}
+                    onToggleChecked={(checked) => togglePosterSection(section, checked)}
+                    onToggleExpanded={() => togglePosterExpandedSection(section)}
                   />
                 ))}
               </Stack>
@@ -1225,99 +1246,109 @@ export function RunDetail({
               <Stack gap={6}>
                 <Text fw={700} size="sm">참조 이미지 선택 (최대 3개)</Text>
                 <Text size="xs" c="dimmed">
-                  상품 근거 데이터의 이미지 후보를 선택하거나 직접 URL을 입력할 수 있습니다. 선택한 이미지는 포스터 초안의 시각 참고로 함께 전달됩니다.
+                  상품 근거 데이터와 연결된 이미지 후보를 관련성이 높은 순서로 보여줍니다. 이미지를 누르면 크게 확인할 수 있습니다.
                 </Text>
                 {modalImageCandidates.length > 0 ? (
-                  <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="xs">
-                    {modalImageCandidates.map((candidate) => {
-                      const url = candidate.image_url;
-                      const selected = posterInputImages.includes(url);
-                      const disabled = !selected && posterInputImages.length >= 3;
-                      return (
-                        <Tooltip
-                          key={url}
-                          label={disabled ? "최대 3개까지 선택 가능" : candidate.title || url}
-                          multiline
-                          w={240}
-                        >
+                  <Stack gap="xs">
+                    <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }} spacing="xs">
+                      {modalImageCandidates.slice(0, posterImageCandidateLimit).map((candidate) => {
+                        const url = candidate.image_url;
+                        const selected = posterInputImages.includes(url);
+                        const disabled = !selected && posterInputImages.length >= 3;
+                        return (
                           <Paper
+                            key={url}
                             withBorder
-                            p={2}
+                            p="xs"
+                            className={classes.posterReferenceImageCard}
                             style={{
-                              cursor: disabled || posterGenerating ? "not-allowed" : "pointer",
-                              opacity: disabled ? 0.45 : 1,
+                              opacity: disabled ? 0.5 : 1,
                               outline: selected ? "2px solid var(--mantine-color-blue-6)" : "none",
                               outlineOffset: "-2px",
-                              borderRadius: "var(--mantine-radius-sm)",
-                            }}
-                            onClick={() => {
-                              if (disabled || posterGenerating) return;
-                              togglePosterInputImage(url);
                             }}
                           >
-                            <Image
-                              src={candidate.thumbnail_url || url}
-                              alt={candidate.title || "참조 이미지 후보"}
-                              h={72}
-                              w="100%"
-                              fit="cover"
-                              radius="xs"
-                            />
+                            <Stack gap={6}>
+                              <button
+                                type="button"
+                                className={classes.posterReferenceImageButton}
+                                onClick={() => setPosterInputImagePreview(candidate)}
+                                aria-label={`${candidate.title || "참조 이미지 후보"} 크게 보기`}
+                              >
+                                <Image
+                                  src={candidate.thumbnail_url || url}
+                                  alt={candidate.title || "참조 이미지 후보"}
+                                  h={118}
+                                  w="100%"
+                                  fit="cover"
+                                  radius="xs"
+                                />
+                              </button>
+                              <Text size="xs" fw={700} lineClamp={2}>
+                                {candidate.title || "이미지 후보"}
+                              </Text>
+                              <Button
+                                size="xs"
+                                variant={selected ? "filled" : "light"}
+                                disabled={disabled || posterGenerating}
+                                onClick={() => togglePosterInputImage(url)}
+                              >
+                                {selected ? "선택 해제" : "선택"}
+                              </Button>
+                            </Stack>
                           </Paper>
-                        </Tooltip>
-                      );
-                    })}
-                  </SimpleGrid>
+                        );
+                      })}
+                    </SimpleGrid>
+                    {modalImageCandidates.length > posterImageCandidateLimit ? (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        onClick={() =>
+                          setPosterImageCandidateLimit((current) => current + POSTER_IMAGE_CANDIDATE_PAGE_SIZE)
+                        }
+                      >
+                        더 보기 ({Math.min(modalImageCandidates.length, posterImageCandidateLimit + POSTER_IMAGE_CANDIDATE_PAGE_SIZE)} / {modalImageCandidates.length})
+                      </Button>
+                    ) : modalImageCandidates.length > POSTER_IMAGE_CANDIDATE_PAGE_SIZE ? (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        onClick={() => setPosterImageCandidateLimit(POSTER_IMAGE_CANDIDATE_PAGE_SIZE)}
+                      >
+                        접기
+                      </Button>
+                    ) : null}
+                  </Stack>
                 ) : (
                   <Text size="xs" c="dimmed" fs="italic">
-                    이 상품에서 이미지 후보를 찾지 못했습니다. 필요한 경우 직접 URL을 입력하세요.
+                    이 상품에 연결된 이미지 후보를 찾지 못했습니다.
                   </Text>
                 )}
-                <Group gap="xs" align="flex-end">
-                  <TextInput
-                    label="이미지 URL 직접 입력"
-                    placeholder="https://example.com/image.jpg"
-                    value={posterImageUrlInput}
-                    onChange={(event) => setPosterImageUrlInput(event.currentTarget.value)}
-                    disabled={posterGenerating || posterInputImages.length >= 3}
-                    style={{ flex: 1 }}
-                    size="xs"
-                  />
-                  <Button
-                    size="xs"
-                    variant="light"
-                    disabled={
-                      posterGenerating ||
-                      !posterImageUrlInput.trim() ||
-                      posterInputImages.length >= 3
-                    }
-                    onClick={addPosterInputImage}
-                  >
-                    추가
-                  </Button>
-                </Group>
                 {posterInputImages.length > 0 ? (
                   <Stack gap={4}>
                     <Text size="xs" fw={600}>선택된 이미지 ({posterInputImages.length}/3)</Text>
-                    {posterInputImages.map((url) => (
-                      <Group key={url} gap="xs" wrap="nowrap">
-                        <Text size="xs" c="dimmed" lineClamp={1} style={{ flex: 1, wordBreak: "break-all" }}>
-                          {url}
-                        </Text>
-                        <ActionIcon
-                          size="xs"
-                          variant="subtle"
-                          color="red"
-                          aria-label="선택 이미지 제거"
-                          disabled={posterGenerating}
-                          onClick={() =>
-                            setPosterInputImages((current) => current.filter((item) => item !== url))
-                          }
-                        >
-                          <IconTrash size={12} />
-                        </ActionIcon>
-                      </Group>
-                    ))}
+                    {posterInputImages.map((url) => {
+                      const candidate = modalImageCandidates.find((item) => item.image_url === url);
+                      return (
+                        <Group key={url} gap="xs" wrap="nowrap">
+                          <Text size="xs" c="dimmed" lineClamp={1} style={{ flex: 1 }}>
+                            {candidate?.title || "선택된 이미지"}
+                          </Text>
+                          <ActionIcon
+                            size="xs"
+                            variant="subtle"
+                            color="red"
+                            aria-label="선택 이미지 제거"
+                            disabled={posterGenerating}
+                            onClick={() =>
+                              setPosterInputImages((current) => current.filter((item) => item !== url))
+                            }
+                          >
+                            <IconTrash size={12} />
+                          </ActionIcon>
+                        </Group>
+                      );
+                    })}
                   </Stack>
                 ) : null}
               </Stack>
@@ -1341,8 +1372,11 @@ export function RunDetail({
               ) : null}
 
               <Alert color="blue" variant="light">
-                포스터 초안 이미지는 상품 1개당 최대 {maxPostersPerProduct}개까지 저장됩니다. 이 상품은 현재 {modalCountedPosterCount}개를 사용 중입니다.
-                크기는 {posterOptions?.image_size ?? "1024x1536"} portrait로 고정되어 있습니다.
+                <Stack gap={2}>
+                  <Text size="sm">- 상품 1개당 최대 {maxPostersPerProduct}개까지 저장됩니다.</Text>
+                  <Text size="sm">- 이 상품은 현재 {modalCountedPosterCount}개를 사용 중입니다.</Text>
+                  <Text size="sm">- 크기는 {posterOptions?.image_size ?? "1024x1536"} portrait로 고정되어 있습니다.</Text>
+                </Stack>
               </Alert>
 
               {posterError ? (
@@ -1365,17 +1399,17 @@ export function RunDetail({
               </Button>
               {modalProductAtLimit ? (
                 <Text size="sm" c="dimmed">
-                  이 상품은 포스터 초안 {maxPostersPerProduct}개를 모두 사용 중입니다. 기존 포스터를 삭제하면 하나 더 만들 수 있습니다.
+                  이 상품은 포스터 {maxPostersPerProduct}개를 모두 사용 중입니다. 기존 포스터를 삭제하면 하나 더 만들 수 있습니다.
                 </Text>
               ) : null}
               {posterGenerating ? (
                 <Text size="sm" c="dimmed">
-                  생성 작업을 등록하고 있습니다. 등록 후에는 이 창을 닫거나 화면을 이동해도 백그라운드에서 계속 진행됩니다.
+                  생성 작업을 등록하고 있습니다. 등록 후에는 이 창을 닫거나 화면을 이동해도 계속 진행됩니다.
                 </Text>
               ) : null}
             </Stack>
 
-            <Paper withBorder p="sm">
+            <Paper withBorder p="xs" className={classes.posterPreviewPanel}>
               {posterGenerating ? (
                 <Stack h={360} align="center" justify="center">
                   <Loader />
@@ -1383,15 +1417,21 @@ export function RunDetail({
                 </Stack>
               ) : modalPoster?.status === "succeeded" ? (
                 <Stack gap="sm">
-                  <Image
-                    src={posterImageSrc(modalPoster)}
-                    alt={modalPoster.product_title}
-                    radius="sm"
-                    fit="contain"
-                    h={420}
-                  />
+                  <button
+                    type="button"
+                    className={classes.modalPosterPreviewButton}
+                    onClick={() => setPreviewPoster(modalPoster)}
+                    aria-label={`${modalPoster.product_title} 포스터 크게 보기`}
+                  >
+                    <Image
+                      src={posterImageSrc(modalPoster)}
+                      alt={modalPoster.product_title}
+                      radius="sm"
+                      fit="contain"
+                      className={classes.modalPosterPreviewImage}
+                    />
+                  </button>
                   <Group justify="space-between">
-                    <Badge variant="light" color="green">생성된 포스터 초안</Badge>
                     <Button
                       component="a"
                       href={posterDownloadUrl(modalPoster.id)}
@@ -1400,42 +1440,20 @@ export function RunDetail({
                       다운로드
                     </Button>
                   </Group>
-                  <Accordion variant="contained">
-                    <Accordion.Item value="metadata">
-                      <Accordion.Control>Developer metadata</Accordion.Control>
-                      <Accordion.Panel>
-                        <Stack gap="xs">
-                          <Text size="xs" c="dimmed">
-                            model={modalPoster.image_model}, latency={modalPoster.latency_ms ?? "-"}ms,
-                            cost≈{formatPosterCost(modalPoster, posterOptions?.usd_krw_rate)}
-                          </Text>
-                          <Code block>{JSON.stringify(modalPoster.provider_response_summary, null, 2)}</Code>
-                        </Stack>
-                      </Accordion.Panel>
-                    </Accordion.Item>
-                  </Accordion>
                 </Stack>
               ) : modalPoster?.status === "failed" ? (
                 <Alert color="red" title="마지막 포스터 생성 실패">
                   <Stack gap="xs">
                     <Text size="sm">{modalPoster.error?.message ?? "포스터 생성에 실패했습니다."}</Text>
-                    <Accordion variant="contained">
-                      <Accordion.Item value="error">
-                        <Accordion.Control>Developer error</Accordion.Control>
-                        <Accordion.Panel>
-                          <Code block>{JSON.stringify(modalPoster.error, null, 2)}</Code>
-                        </Accordion.Panel>
-                      </Accordion.Item>
-                    </Accordion>
                   </Stack>
                 </Alert>
               ) : modalPoster && isActivePosterStatus(modalPoster.status) ? (
                 <Stack h={360} align="center" justify="center">
                   <Loader />
                   <Text size="sm" c="dimmed">
-                    최근 포스터 초안 이미지가 백그라운드에서 생성 중입니다.
+                    최근 포스터 이미지를 생성 중입니다.
                   </Text>
-                  <Badge variant="light" color="gray">{modalPoster.style_preset}</Badge>
+                  <Badge variant="light" color="gray">{posterStyleLabel(modalPoster.style_preset, posterOptions)}</Badge>
                 </Stack>
               ) : (
                 <Stack h={360} justify="center" align="center">
@@ -1446,29 +1464,57 @@ export function RunDetail({
                 </Stack>
               )}
             </Paper>
-          </SimpleGrid>
+          </div>
         </Stack>
       </Modal>
 
       <Modal
         opened={previewPoster !== null}
-        onClose={() => setPreviewPoster(null)}
-        title={previewPoster?.product_title ?? "포스터 초안 이미지"}
-        size="xl"
+        onClose={() => {
+          setPreviewPoster(null);
+          setPreviewPosterZoomed(false);
+        }}
+        withCloseButton={false}
+        padding={0}
+        size="auto"
+        centered
+        styles={{
+          content: { background: "transparent", boxShadow: "none", maxHeight: "none", overflow: "visible" },
+          body: { padding: 0, overflow: "visible" },
+        }}
       >
         {previewPoster ? (
-          <Stack gap="sm">
-            <Group gap="xs">
-              <Badge variant="light" color="gray">{previewPoster.style_preset}</Badge>
-              <Badge variant="light" color="blue">포스터 초안 이미지</Badge>
-            </Group>
-            <Image
-              src={posterImageSrc(previewPoster)}
-              alt={previewPoster.product_title}
-              fit="contain"
-              mah="75vh"
-            />
-          </Stack>
+          <ZoomImage
+            src={posterImageSrc(previewPoster)}
+            alt={previewPoster.product_title}
+            zoomed={previewPosterZoomed}
+            onToggleZoom={() => setPreviewPosterZoomed((value) => !value)}
+          />
+        ) : null}
+      </Modal>
+
+      <Modal
+        opened={posterInputImagePreview !== null}
+        onClose={() => {
+          setPosterInputImagePreview(null);
+          setPosterInputImagePreviewZoomed(false);
+        }}
+        withCloseButton={false}
+        padding={0}
+        size="auto"
+        centered
+        styles={{
+          content: { background: "transparent", boxShadow: "none", maxHeight: "none", overflow: "visible" },
+          body: { padding: 0, overflow: "visible" },
+        }}
+      >
+        {posterInputImagePreview ? (
+          <ZoomImage
+            src={posterInputImagePreview.image_url}
+            alt={posterInputImagePreview.title || "참조 이미지 후보"}
+            zoomed={posterInputImagePreviewZoomed}
+            onToggleZoom={() => setPosterInputImagePreviewZoomed((value) => !value)}
+          />
         ) : null}
       </Modal>
 
@@ -2861,15 +2907,15 @@ function ProductDetail({
       </Group>
       <Alert color={activePosterCount > 0 ? "blue" : "gray"} variant="light">
         <Text size="sm">
-          이 상품의 포스터 초안 이미지는 최대 {maxPostersPerProduct}개까지 저장됩니다. 현재 {countedPosterCount}개를 사용 중입니다.
-          {activePosterCount > 0 ? " 생성 중인 포스터가 백그라운드에서 진행되고 있습니다." : ""}
+          이 상품의 포스터 이미지는 최대 {maxPostersPerProduct}개까지 저장됩니다. 현재 {countedPosterCount}개를 사용 중입니다.
+          {activePosterCount > 0 ? " 생성 중인 포스터가 있습니다." : ""}
         </Text>
       </Alert>
       {posters.length > 0 ? (
         <Paper withBorder p="sm">
           <Stack gap="sm">
             <Group justify="space-between">
-              <Text fw={700} size="sm">저장된 포스터 초안</Text>
+              <Text fw={700} size="sm">저장된 포스터</Text>
               <Badge variant="light" color="opsBlue">{countedPosterCount} / {maxPostersPerProduct}</Badge>
             </Group>
             <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
@@ -2877,7 +2923,7 @@ function ProductDetail({
                 <PosterDraftCard
                   key={item.id}
                   poster={item}
-                  usdKrwRate={posterOptions?.usd_krw_rate}
+                  styleLabel={posterStyleLabel(item.style_preset, posterOptions)}
                   deleting={deletingPosterIds.includes(item.id)}
                   onDelete={() => onDeletePoster(item)}
                   onPreview={() => onPreviewPoster(item)}
@@ -3045,13 +3091,13 @@ function ProductDetail({
 
 function PosterDraftCard({
   poster,
-  usdKrwRate,
+  styleLabel,
   deleting,
   onDelete,
   onPreview,
 }: {
   poster: PosterAsset;
-  usdKrwRate?: number;
+  styleLabel: string;
   deleting: boolean;
   onDelete: () => void;
   onPreview: () => void;
@@ -3060,8 +3106,6 @@ function PosterDraftCard({
   const includedSections = poster.included_sections
     .map((section) => POSTER_SECTION_LABELS[section] ?? section)
     .join(", ");
-  const statusColor =
-    poster.status === "succeeded" ? "green" : poster.status === "failed" ? "red" : "blue";
 
   return (
     <Paper withBorder p="xs" className={classes.posterDraftCard}>
@@ -3086,21 +3130,19 @@ function PosterDraftCard({
           ) : (
             <Stack h="100%" align="center" justify="center">
               <Loader size="sm" />
-              <Text size="xs" c="dimmed">백그라운드 생성 중</Text>
+              <Text size="xs" c="dimmed">생성 중</Text>
             </Stack>
           )}
         </div>
         <Group gap={6}>
-          <Badge size="xs" variant="light" color={statusColor}>{poster.status}</Badge>
-          <Badge size="xs" variant="light" color="gray">{poster.style_preset}</Badge>
-          <Badge size="xs" variant="light" color="blue">초안</Badge>
+          {poster.status === "failed" ? <Badge size="xs" variant="light" color="red">failed</Badge> : null}
+          <Badge size="xs" variant="light" color="gray">{styleLabel}</Badge>
         </Group>
         <Text size="xs" c="dimmed" lineClamp={2}>
           옵션: {includedSections || "선택 없음"}
           {poster.input_images.length > 0 ? ` · 참조 이미지 ${poster.input_images.length}개` : ""}
         </Text>
         <Text size="xs" c="dimmed">{formatKstDateTime(poster.created_at)}</Text>
-        <Text size="xs" c="dimmed">cost≈{formatPosterCost(poster, usdKrwRate)}</Text>
         <Group gap="xs">
           <Button
             size="xs"
@@ -3129,6 +3171,210 @@ function PosterDraftCard({
       </Stack>
     </Paper>
   );
+}
+
+function PosterSectionOption({
+  section,
+  checked,
+  expanded,
+  preview,
+  disabled,
+  onToggleChecked,
+  onToggleExpanded,
+}: {
+  section: PosterIncludedSection;
+  checked: boolean;
+  expanded: boolean;
+  preview: string;
+  disabled: boolean;
+  onToggleChecked: (checked: boolean) => void;
+  onToggleExpanded: () => void;
+}) {
+  return (
+    <Paper withBorder p="xs" className={classes.posterSectionOption}>
+      <Group align="flex-start" wrap="nowrap" gap="xs">
+        <Checkbox
+          checked={checked}
+          onChange={(event) => onToggleChecked(event.currentTarget.checked)}
+          disabled={disabled}
+          aria-label={POSTER_SECTION_LABELS[section]}
+        />
+        <Stack gap={3} className={classes.posterSectionOptionBody}>
+          <Group justify="space-between" wrap="nowrap" gap="xs">
+            <Text size="sm" fw={600}>{POSTER_SECTION_LABELS[section]}</Text>
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              color="gray"
+              onClick={onToggleExpanded}
+              aria-label={expanded ? "내용 접기" : "내용 펼치기"}
+            >
+              {expanded ? <IconChevronUp size={15} /> : <IconChevronDown size={15} />}
+            </ActionIcon>
+          </Group>
+          <Text
+            size="xs"
+            c="dimmed"
+            className={
+              expanded
+                ? classes.posterSectionPreviewExpanded
+                : `${classes.posterSectionPreviewText} ${classes.posterSectionPreviewCollapsed}`
+            }
+          >
+            {preview}
+          </Text>
+        </Stack>
+      </Group>
+    </Paper>
+  );
+}
+
+function ZoomImage({
+  src,
+  alt,
+  zoomed,
+  onToggleZoom,
+}: {
+  src: string;
+  alt: string;
+  zoomed: boolean;
+  onToggleZoom: () => void;
+}) {
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const dragStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null);
+  const draggedRef = useRef(false);
+
+  useEffect(() => {
+    setOffset({ x: 0, y: 0 });
+    dragStartRef.current = null;
+    draggedRef.current = false;
+  }, [src, zoomed]);
+
+  function handleClick() {
+    if (draggedRef.current) {
+      draggedRef.current = false;
+      return;
+    }
+    if (zoomed) {
+      setOffset({ x: 0, y: 0 });
+    }
+    onToggleZoom();
+  }
+
+  function handlePointerDown(event: PointerEvent<HTMLButtonElement>) {
+    if (!zoomed) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      offsetX: offset.x,
+      offsetY: offset.y,
+    };
+    draggedRef.current = false;
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLButtonElement>) {
+    if (!zoomed || !dragStartRef.current) return;
+    event.preventDefault();
+    const dx = event.clientX - dragStartRef.current.x;
+    const dy = event.clientY - dragStartRef.current.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) {
+      draggedRef.current = true;
+    }
+    setOffset({
+      x: dragStartRef.current.offsetX + dx,
+      y: dragStartRef.current.offsetY + dy,
+    });
+  }
+
+  function handlePointerEnd(event: PointerEvent<HTMLButtonElement>) {
+    if (!dragStartRef.current) return;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+    dragStartRef.current = null;
+  }
+
+  const transform = zoomed ? `translate3d(${offset.x}px, ${offset.y}px, 0) scale(1.5)` : undefined;
+
+  return (
+    <div className={classes.zoomPreviewFrame} onClick={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        className={`${classes.zoomPreviewButton} ${zoomed ? classes.zoomed : ""}`}
+        style={{ transform }}
+        onClick={handleClick}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        aria-label={zoomed ? "이미지 축소" : "이미지 확대"}
+      >
+        <img src={src} alt={alt} className={classes.zoomPreviewImage} />
+        <span className={classes.zoomIcon}>
+          {zoomed ? <IconZoomOut size={22} /> : <IconZoomIn size={22} />}
+        </span>
+      </button>
+    </div>
+  );
+}
+
+const POSTER_STYLE_LABEL_FALLBACK: Record<string, string> = {
+  editorial_travel: "프리미엄 여행 매거진",
+  night_city: "야간 도시 시네마틱",
+  minimal_event: "미니멀 홍보 포스터",
+};
+
+function posterStyleLabel(styleId: string, options: PosterOptions | null) {
+  return (
+    options?.style_presets.find((preset) => preset.id === styleId)?.label ??
+    POSTER_STYLE_LABEL_FALLBACK[styleId] ??
+    styleId
+  );
+}
+
+function posterSectionPreview(
+  section: PosterIncludedSection,
+  product: ProductIdea | null,
+  marketing: MarketingAsset | null
+) {
+  if (!product) return "상품을 선택하면 이 항목에 들어갈 실제 내용이 표시됩니다.";
+  if (section === "product_summary") {
+    return [product.title, product.one_liner, product.core_value.join(", ")]
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+      .join(" / ") || "상품 요약 없음";
+  }
+  if (section === "itinerary") {
+    const items = arrayOfRecords(product.itinerary)
+      .map((item) => String(item.name || item.title || item.place || item.activity || item.description || "").trim())
+      .filter(Boolean);
+    return items.join(" → ") || "일정/경험 요소 없음";
+  }
+  if (section === "marketing_copy") {
+    return [marketing?.sales_copy.headline, marketing?.sales_copy.subheadline]
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+      .join(" / ") || "마케팅 문구 없음";
+  }
+  if (section === "sns_copy") {
+    return marketing?.sns_posts[0] || "SNS 문구 없음";
+  }
+  if (section === "evidence_summary") {
+    return product.evidence_summary?.trim() || "근거 요약 없음";
+  }
+  if (section === "claim_limits") {
+    const limits = [
+      ...stringListFromUnknown(product.claim_limits),
+      ...stringListFromUnknown(product.not_to_claim),
+      ...stringListFromUnknown(product.needs_review),
+    ];
+    return limits.join(" / ") || "제한/주의사항 없음";
+  }
+  return "선택한 데이터가 포스터 프롬프트에 반영됩니다.";
 }
 
 function EvidenceStateList({
@@ -3502,6 +3748,8 @@ type EvidenceImageCandidate = {
   title?: string;
   usage_status?: string;
   source?: string;
+  relevance_label?: string;
+  relevance_rank?: number;
 };
 
 function EvidenceDetailBadge({ row }: { row: EvidenceDocument }) {
@@ -3660,7 +3908,9 @@ function productVisualCandidates(
   product: ProductIdea,
   evidenceDocuments: EvidenceDocument[],
 ): EvidenceImageCandidate[] {
-  const sourceIds = new Set(stringListFromUnknown(product.source_ids));
+  const productSourceIds = stringListFromUnknown(product.source_ids);
+  const sourceIds = new Set(productSourceIds);
+  const sourceOrder = new Map(productSourceIds.map((sourceId, index) => [sourceId, index]));
   if (sourceIds.size === 0) return [];
   const linkedContentIds = new Set(
     evidenceDocuments
@@ -3669,22 +3919,34 @@ function productVisualCandidates(
       .filter(Boolean)
   );
   const candidates: EvidenceImageCandidate[] = [];
-  evidenceDocuments.forEach((document) => {
+  evidenceDocuments.forEach((document, index) => {
     const contentId = String(document.metadata.content_id ?? "").trim();
-    if (!sourceIds.has(document.doc_id) && (!contentId || !linkedContentIds.has(contentId))) return;
+    const isDirect = sourceIds.has(document.doc_id);
+    const isLinked = Boolean(contentId && linkedContentIds.has(contentId));
+    if (!isDirect && !isLinked) return;
+    const relevanceLabel = isDirect ? "상품 직접 근거" : "같은 장소 후보";
+    const relevanceRank = isDirect ? sourceOrder.get(document.doc_id) ?? index : 100 + index;
     evidenceImageCandidates(document).forEach((candidate) => {
       candidates.push({
         ...candidate,
         source: candidate.source ? sourceFamilyLabel(candidate.source) : "이미지 후보",
+        relevance_label: relevanceLabel,
+        relevance_rank: relevanceRank,
       });
     });
   });
   const seen = new Set<string>();
-  return candidates.filter((candidate) => {
-    if (seen.has(candidate.image_url)) return false;
-    seen.add(candidate.image_url);
-    return true;
-  });
+  return candidates
+    .filter((candidate) => {
+      if (seen.has(candidate.image_url)) return false;
+      seen.add(candidate.image_url);
+      return true;
+    })
+    .sort(
+      (a, b) =>
+        (a.relevance_rank ?? 99) - (b.relevance_rank ?? 99) ||
+        String(a.title ?? "").localeCompare(String(b.title ?? ""))
+    );
 }
 
 function parseMetadataJson(value: unknown): unknown {

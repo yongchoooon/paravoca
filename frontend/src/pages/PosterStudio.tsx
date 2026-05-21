@@ -1,32 +1,38 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent } from "react";
 import {
-  Accordion,
   ActionIcon,
   Alert,
   Badge,
   Button,
   Checkbox,
+  Drawer,
   Group,
   Image,
   Loader,
   Modal,
   Paper,
+  ScrollArea,
   Select,
   SimpleGrid,
   Skeleton,
   Stack,
+  Table,
   Text,
-  TextInput,
   Title,
   Tooltip,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import {
   IconAlertCircle,
+  IconChevronDown,
+  IconChevronUp,
   IconDownload,
   IconPhotoPlus,
   IconRefresh,
   IconTrash,
+  IconZoomIn,
+  IconZoomOut,
 } from "@tabler/icons-react";
 import { WorkflowRun, listWorkflowRuns } from "../services/runsApi";
 import {
@@ -43,11 +49,12 @@ import {
   isActivePosterStatus,
   isCountedPosterStatus,
   listPosters,
-  formatPosterCost,
   posterDownloadUrl,
   posterImageSrc,
 } from "../services/postersApi";
+import { StatusBadge } from "../components/StatusBadge";
 import { formatKstDateTime } from "../utils/datetime";
+import { RunDetail } from "./RunDetail";
 import classes from "./PosterStudio.module.css";
 
 type ProductOption = {
@@ -56,7 +63,17 @@ type ProductOption = {
   one_liner?: string;
 };
 
+type PosterImageCandidate = {
+  image_url: string;
+  thumbnail_url?: string;
+  title: string;
+  source: string;
+  relevance_label: string;
+  relevance_rank: number;
+};
+
 const SECTION_ORDER = Object.keys(POSTER_SECTION_LABELS) as PosterIncludedSection[];
+const IMAGE_CANDIDATE_PAGE_SIZE = 6;
 
 export function PosterStudio() {
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
@@ -73,9 +90,14 @@ export function PosterStudio() {
   const [error, setError] = useState<string | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [previewPoster, setPreviewPoster] = useState<PosterAsset | null>(null);
+  const [previewInputImage, setPreviewInputImage] = useState<PosterImageCandidate | null>(null);
+  const [previewPosterZoomed, setPreviewPosterZoomed] = useState(false);
+  const [previewInputImageZoomed, setPreviewInputImageZoomed] = useState(false);
+  const [detailRunId, setDetailRunId] = useState<string | null>(null);
   const [deletingPosterIds, setDeletingPosterIds] = useState<string[]>([]);
   const [selectedInputImages, setSelectedInputImages] = useState<string[]>([]);
-  const [imageUrlInput, setImageUrlInput] = useState("");
+  const [imageCandidateLimit, setImageCandidateLimit] = useState(IMAGE_CANDIDATE_PAGE_SIZE);
+  const [expandedSections, setExpandedSections] = useState<PosterIncludedSection[]>([]);
 
   async function loadData(options: { silent?: boolean } = {}) {
     try {
@@ -142,10 +164,22 @@ export function PosterStudio() {
   // Reset image selection when product changes
   useEffect(() => {
     setSelectedInputImages([]);
-    setImageUrlInput("");
+    setImageCandidateLimit(IMAGE_CANDIDATE_PAGE_SIZE);
   }, [selectedProductId, selectedRunId]);
 
   const selectedProduct = productOptions.find((product) => product.id === selectedProductId) ?? null;
+  const selectedProductRecord = useMemo(() => {
+    if (!selectedRun?.final_output || !selectedProductId) return null;
+    return recordsFromUnknown(selectedRun.final_output["products"]).find(
+      (product) => String(product.id ?? "") === selectedProductId
+    ) ?? null;
+  }, [selectedRun, selectedProductId]);
+  const selectedMarketingRecord = useMemo(() => {
+    if (!selectedRun?.final_output || !selectedProductId) return null;
+    return recordsFromUnknown(selectedRun.final_output["marketing_assets"]).find(
+      (asset) => String(asset.product_id ?? "") === selectedProductId
+    ) ?? null;
+  }, [selectedRun, selectedProductId]);
   const maxPostersPerProduct = options?.max_posters_per_product ?? 3;
   const selectedProductPosters = useMemo(
     () =>
@@ -196,7 +230,7 @@ export function PosterStudio() {
       setPosters((current) => [poster, ...current.filter((item) => item.id !== poster.id)]);
       notifications.show({
         title: "포스터 생성 시작",
-        message: "백그라운드에서 포스터 초안 이미지를 생성합니다. 완료되면 목록에 이미지가 표시됩니다.",
+        message: "포스터 이미지를 생성 중입니다. 완료되면 목록에 이미지가 표시됩니다.",
         color: "blue",
       });
     } catch (err) {
@@ -217,7 +251,7 @@ export function PosterStudio() {
       setPreviewPoster((current) => (current?.id === poster.id ? null : current));
       notifications.show({
         title: "포스터 삭제",
-        message: "저장된 포스터 초안 기록을 삭제했습니다.",
+        message: "저장된 포스터 기록을 삭제했습니다.",
         color: "gray",
       });
     } catch (err) {
@@ -252,13 +286,21 @@ export function PosterStudio() {
     });
   }
 
+  function toggleExpandedSection(section: PosterIncludedSection) {
+    setExpandedSections((current) =>
+      current.includes(section)
+        ? current.filter((item) => item !== section)
+        : [...current, section]
+    );
+  }
+
   return (
     <Stack gap="md">
       <Group justify="space-between" align="flex-start">
         <div>
           <Title order={2}>Poster Studio</Title>
           <Text size="sm" c="dimmed">
-            run과 product에 연결된 생성 포스터 초안을 관리합니다.
+            생성 이미지는 검토용 이미지입니다. 현재는 정해진 스타일로만 생성할 수 있으며, 자유 커스터마이즈는 후속 단계에서 제공 예정입니다.
           </Text>
         </div>
         <Button
@@ -270,10 +312,6 @@ export function PosterStudio() {
           새로고침
         </Button>
       </Group>
-
-      <Alert color="gray">
-        생성되는 이미지는 포스터 초안입니다. 현재는 정해진 스타일로만 생성할 수 있으며, 자유 커스터마이즈는 후속 단계에서 제공 예정입니다.
-      </Alert>
 
       {error ? (
         <Alert color="red" icon={<IconAlertCircle size={16} />}>
@@ -292,207 +330,186 @@ export function PosterStudio() {
                 </Badge>
               ) : null}
             </Group>
-            <Select
-              label="Run 선택"
-              placeholder="포스터를 만들 run"
-              data={runsWithProducts(runs).map((run) => ({
-                value: run.id,
-                label: runLabel(run),
-              }))}
-              value={selectedRunId}
-              onChange={setSelectedRunId}
-              searchable
-              nothingFoundMessage="상품이 있는 run이 없습니다."
-              disabled={loading || generating}
-            />
-            <Select
-              label="Product 선택"
-              placeholder="상품 선택"
-              data={productOptions.map((product) => ({
-                value: product.id,
-                label: product.title,
-              }))}
-              value={selectedProductId}
-              onChange={setSelectedProductId}
-              searchable
-              nothingFoundMessage="선택한 run에 상품이 없습니다."
-              disabled={!selectedRunId || loading || generating}
-            />
+            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+              <RunSelectionTable
+                runs={runsWithProducts(runs)}
+                selectedRunId={selectedRunId}
+                disabled={loading || generating}
+                onSelectRun={setSelectedRunId}
+              />
+              <ProductSelectionTable
+                products={productOptions}
+                selectedProductId={selectedProductId}
+                disabled={!selectedRunId || loading || generating}
+                onSelectProduct={setSelectedProductId}
+              />
+            </SimpleGrid>
             {selectedProduct ? (
               <Text size="sm" c="dimmed" lineClamp={2}>
                 {selectedProduct.one_liner || selectedProduct.title}
               </Text>
             ) : null}
-
-            <Stack gap={6}>
-              <Text fw={700} size="sm">포함할 내용</Text>
-              {SECTION_ORDER.map((section) => (
-                <Checkbox
-                  key={section}
-                  label={POSTER_SECTION_LABELS[section]}
-                  checked={includedSections.includes(section)}
-                  onChange={(event) => toggleSection(section, event.currentTarget.checked)}
-                  disabled={generating}
-                />
-              ))}
-            </Stack>
-
-            <Select
-              label="스타일"
-              data={(options?.style_presets ?? []).map((preset) => ({
-                value: preset.id,
-                label: preset.label,
-              }))}
-              value={stylePreset}
-              onChange={(value) => setStylePreset((value as PosterStylePresetId) ?? DEFAULT_POSTER_STYLE)}
-              disabled={!options || generating}
-            />
-            {options?.style_presets.find((preset) => preset.id === stylePreset)?.description ? (
-              <Text size="xs" c="dimmed">
-                {options.style_presets.find((preset) => preset.id === stylePreset)?.description}
-              </Text>
-            ) : null}
-
-            {/* --- Image selection section --- */}
-            <Stack gap={6}>
-              <Text fw={700} size="sm">참조 이미지 선택 (최대 3개)</Text>
-              <Text size="xs" c="dimmed">
-                수집된 데이터에서 발견된 이미지를 선택하거나, 직접 URL을 입력할 수 있습니다.
-              </Text>
-
-              {imageCandidates.length > 0 ? (
-                <SimpleGrid cols={{ base: 3, sm: 4 }} spacing="xs">
-                  {imageCandidates.map((url) => {
-                    const isSelected = selectedInputImages.includes(url);
-                    const isDisabled = !isSelected && selectedInputImages.length >= 3;
-                    return (
-                      <Tooltip key={url} label={isDisabled ? "최대 3개까지 선택 가능" : url} multiline w={240}>
-                        <Paper
-                          withBorder
-                          p={2}
-                          style={{
-                            cursor: isDisabled ? "not-allowed" : "pointer",
-                            opacity: isDisabled ? 0.4 : 1,
-                            outline: isSelected ? "2px solid var(--mantine-color-blue-6)" : "none",
-                            outlineOffset: "-2px",
-                            borderRadius: "var(--mantine-radius-sm)",
-                          }}
-                          onClick={() => {
-                            if (isDisabled) return;
-                            setSelectedInputImages((prev) =>
-                              isSelected
-                                ? prev.filter((u) => u !== url)
-                                : [...prev, url]
-                            );
-                          }}
-                        >
-                          <Image
-                            src={url}
-                            alt="후보 이미지"
-                            h={64}
-                            w="100%"
-                            fit="cover"
-                            radius="xs"
-                            fallbackSrc="data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect fill='%23ddd' width='64' height='64'/%3E%3C/svg%3E"
-                          />
-                        </Paper>
-                      </Tooltip>
-                    );
-                  })}
-                </SimpleGrid>
-              ) : (
-                <Text size="xs" c="dimmed" fs="italic">
-                  선택한 run에서 이미지 후보를 찾지 못했습니다. 아래에서 직접 URL을 입력할 수 있습니다.
-                </Text>
-              )}
-
-              <Group gap="xs" align="flex-end">
-                <TextInput
-                  label="이미지 URL 직접 입력"
-                  placeholder="https://example.com/image.jpg"
-                  value={imageUrlInput}
-                  onChange={(e) => setImageUrlInput(e.currentTarget.value)}
-                  disabled={selectedInputImages.length >= 3}
-                  style={{ flex: 1 }}
-                  size="xs"
-                />
-                <Button
-                  size="xs"
-                  variant="light"
-                  disabled={!imageUrlInput.trim() || selectedInputImages.length >= 3}
-                  onClick={() => {
-                    const url = imageUrlInput.trim();
-                    if (url && !selectedInputImages.includes(url) && selectedInputImages.length < 3) {
-                      setSelectedInputImages((prev) => [...prev, url]);
-                      setImageUrlInput("");
-                    }
-                  }}
-                >
-                  추가
-                </Button>
-              </Group>
-
-              {selectedInputImages.length > 0 ? (
-                <Stack gap={4}>
-                  <Text size="xs" fw={600}>선택된 이미지 ({selectedInputImages.length}/3):</Text>
-                  {selectedInputImages.map((url, idx) => (
-                    <Group key={idx} gap="xs" wrap="nowrap">
-                      <Text size="xs" lineClamp={1} style={{ flex: 1, wordBreak: "break-all" }}>
-                        {url}
-                      </Text>
-                      <ActionIcon
-                        size="xs"
-                        variant="subtle"
-                        color="red"
-                        onClick={() => setSelectedInputImages((prev) => prev.filter((u) => u !== url))}
-                      >
-                        <IconTrash size={12} />
-                      </ActionIcon>
-                    </Group>
-                  ))}
-                </Stack>
-              ) : null}
-            </Stack>
-
-            <Alert color="blue" variant="light">
-              포스터 초안 이미지는 상품 1개당 최대 {maxPostersPerProduct}개까지 저장됩니다. 현재 선택한 상품은 {selectedProductPosterCount}개를 사용 중입니다.
-              크기는 {options?.image_size ?? "1024x1536"} portrait로 고정되어 있습니다.
-            </Alert>
-
-            {generationError ? (
-              <Alert color="red" icon={<IconAlertCircle size={16} />}>
-                {generationError}
-              </Alert>
-            ) : null}
-
-            <Button
-              leftSection={generating ? <Loader size={16} /> : <IconPhotoPlus size={16} />}
-              onClick={handleGenerate}
-              disabled={
-                !selectedRunId ||
-                !selectedProductId ||
-                includedSections.length === 0 ||
-                generating ||
-                selectedProductAtLimit
-              }
-            >
-              {generating ? "포스터 생성 요청 중" : "포스터 생성"}
-            </Button>
-            {selectedProductAtLimit ? (
-              <Text size="sm" c="dimmed">
-                이 상품은 포스터 초안 {maxPostersPerProduct}개를 모두 사용 중입니다. 기존 포스터를 삭제하면 하나 더 만들 수 있습니다.
-              </Text>
-            ) : null}
-            {generating ? (
-              <Text size="sm" c="dimmed">
-                생성 작업을 등록하고 있습니다. 등록 후에는 이 화면을 이동하거나 새로고침해도 백그라운드에서 계속 진행됩니다.
-              </Text>
-            ) : null}
           </Stack>
         </Paper>
 
-        <Stack gap="md">
-          <Group justify="space-between">
+        <div className={classes.studioContentGrid}>
+          <Paper withBorder p="md" className={classes.creationSettingsPanel}>
+            <Stack gap="md">
+              <Stack gap={6}>
+                <Text fw={700} size="sm">포함할 내용</Text>
+                {SECTION_ORDER.map((section) => (
+                  <SectionOption
+                    key={section}
+                    section={section}
+                    checked={includedSections.includes(section)}
+                    expanded={expandedSections.includes(section)}
+                    preview={posterSectionPreview(section, selectedProductRecord, selectedMarketingRecord)}
+                    disabled={generating}
+                    onToggleChecked={(checked) => toggleSection(section, checked)}
+                    onToggleExpanded={() => toggleExpandedSection(section)}
+                  />
+                ))}
+              </Stack>
+
+              <Stack gap="sm">
+                <Select
+                  label="스타일"
+                  data={(options?.style_presets ?? []).map((preset) => ({
+                    value: preset.id,
+                    label: preset.label,
+                  }))}
+                  value={stylePreset}
+                  onChange={(value) => setStylePreset((value as PosterStylePresetId) ?? DEFAULT_POSTER_STYLE)}
+                  disabled={!options || generating}
+                />
+                {options?.style_presets.find((preset) => preset.id === stylePreset)?.description ? (
+                  <Text size="xs" c="dimmed">
+                    {options.style_presets.find((preset) => preset.id === stylePreset)?.description}
+                  </Text>
+                ) : null}
+
+                <Alert color="blue" variant="light">
+                  <Stack gap={2}>
+                    <Text size="sm">- 상품 1개당 최대 {maxPostersPerProduct}개까지 저장됩니다.</Text>
+                    <Text size="sm">- 현재 선택한 상품은 {selectedProductPosterCount}개를 사용 중입니다.</Text>
+                    <Text size="sm">- 크기는 {options?.image_size ?? "1024x1536"} portrait로 고정되어 있습니다.</Text>
+                  </Stack>
+                </Alert>
+
+                {generationError ? (
+                  <Alert color="red" icon={<IconAlertCircle size={16} />}>
+                    {generationError}
+                  </Alert>
+                ) : null}
+
+                <Button
+                  leftSection={generating ? <Loader size={16} /> : <IconPhotoPlus size={16} />}
+                  onClick={handleGenerate}
+                  disabled={
+                    !selectedRunId ||
+                    !selectedProductId ||
+                    includedSections.length === 0 ||
+                    generating ||
+                    selectedProductAtLimit
+                  }
+                >
+                  {generating ? "포스터 생성 요청 중" : "포스터 생성"}
+                </Button>
+                {selectedProductAtLimit ? (
+                  <Text size="sm" c="dimmed">
+                    이 상품은 포스터 {maxPostersPerProduct}개를 모두 사용 중입니다. 기존 포스터를 삭제하면 하나 더 만들 수 있습니다.
+                  </Text>
+                ) : null}
+                {generating ? (
+                  <Text size="sm" c="dimmed">
+                    생성 작업을 등록하고 있습니다. 등록 후에는 이 화면을 이동하거나 새로고침해도 계속 진행됩니다.
+                  </Text>
+                ) : null}
+              </Stack>
+
+              <Stack gap={6}>
+                <Text fw={700} size="sm">참조 이미지 선택 (최대 3개)</Text>
+                <Text size="xs" c="dimmed">
+                  선택한 상품과 직접 연결된 근거 이미지를 우선 보여줍니다. 이미지를 누르면 크게 확인할 수 있습니다.
+                </Text>
+
+                {imageCandidates.length > 0 ? (
+                  <Stack gap="xs">
+                    <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+                      {imageCandidates.slice(0, imageCandidateLimit).map((candidate) => {
+                        const url = candidate.image_url;
+                        const isSelected = selectedInputImages.includes(candidate.image_url);
+                        const isDisabled = !isSelected && selectedInputImages.length >= 3;
+                        return (
+                          <ReferenceImageCard
+                            key={url}
+                            candidate={candidate}
+                            selected={isSelected}
+                            disabled={isDisabled || generating}
+                            onPreview={() => setPreviewInputImage(candidate)}
+                            onToggle={() => {
+                              if (isDisabled) return;
+                              setSelectedInputImages((prev) =>
+                                isSelected ? prev.filter((u) => u !== url) : [...prev, url]
+                              );
+                            }}
+                          />
+                        );
+                      })}
+                    </SimpleGrid>
+                    {imageCandidates.length > imageCandidateLimit ? (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        onClick={() => setImageCandidateLimit((current) => current + IMAGE_CANDIDATE_PAGE_SIZE)}
+                      >
+                        더 보기 ({Math.min(imageCandidates.length, imageCandidateLimit + IMAGE_CANDIDATE_PAGE_SIZE)} / {imageCandidates.length})
+                      </Button>
+                    ) : imageCandidates.length > IMAGE_CANDIDATE_PAGE_SIZE ? (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        onClick={() => setImageCandidateLimit(IMAGE_CANDIDATE_PAGE_SIZE)}
+                      >
+                        접기
+                      </Button>
+                    ) : null}
+                  </Stack>
+                ) : (
+                  <Text size="xs" c="dimmed" fs="italic">
+                    선택한 상품에 연결된 이미지 후보를 찾지 못했습니다.
+                  </Text>
+                )}
+
+                {selectedInputImages.length > 0 ? (
+                  <Stack gap={4}>
+                    <Text size="xs" fw={600}>선택된 이미지 ({selectedInputImages.length}/3)</Text>
+                    {selectedInputImages.map((url) => {
+                      const candidate = imageCandidates.find((item) => item.image_url === url);
+                      return (
+                        <Group key={url} gap="xs" wrap="nowrap">
+                          <Text size="xs" lineClamp={1} style={{ flex: 1 }}>
+                            {candidate?.title ?? "선택된 이미지"}
+                          </Text>
+                          <ActionIcon
+                            size="xs"
+                            variant="subtle"
+                            color="red"
+                            onClick={() => setSelectedInputImages((prev) => prev.filter((u) => u !== url))}
+                          >
+                            <IconTrash size={12} />
+                          </ActionIcon>
+                        </Group>
+                      );
+                    })}
+                  </Stack>
+                ) : null}
+              </Stack>
+            </Stack>
+          </Paper>
+
+          <Stack gap="md" className={classes.posterListColumn}>
+            <Group justify="space-between">
             <div>
               <Text fw={700}>최근 포스터</Text>
               <Text size="sm" c="dimmed">
@@ -514,7 +531,7 @@ export function PosterStudio() {
             <Paper withBorder p="lg">
               <Text fw={700}>생성된 포스터가 없습니다.</Text>
               <Text size="sm" c="dimmed">
-                왼쪽 패널에서 run과 product를 선택한 뒤 포스터를 생성하세요.
+                상단 생성 영역에서 run과 product를 선택한 뒤 포스터를 생성하세요.
               </Text>
             </Paper>
           ) : (
@@ -523,54 +540,104 @@ export function PosterStudio() {
                 <PosterCard
                   key={poster.id}
                   poster={poster}
-                  usdKrwRate={options?.usd_krw_rate}
                   deleting={deletingPosterIds.includes(poster.id)}
                   onDelete={() => void handleDeletePoster(poster)}
                   onPreview={() => setPreviewPoster(poster)}
+                  onOpenRun={() => setDetailRunId(poster.run_id)}
+                  styleLabel={posterStyleLabel(poster.style_preset, options)}
                 />
               ))}
             </div>
           )}
-        </Stack>
+          </Stack>
+        </div>
       </div>
 
       <Modal
         opened={previewPoster !== null}
-        onClose={() => setPreviewPoster(null)}
-        title={previewPoster?.product_title ?? "포스터 초안 이미지"}
-        size="xl"
+        onClose={() => {
+          setPreviewPoster(null);
+          setPreviewPosterZoomed(false);
+        }}
+        withCloseButton={false}
+        padding={0}
+        size="auto"
+        centered
+        styles={{
+          content: { background: "transparent", boxShadow: "none", maxHeight: "none", overflow: "visible" },
+          body: { padding: 0, overflow: "visible" },
+        }}
       >
         {previewPoster ? (
-          <Stack gap="sm">
-            <Group gap="xs">
-              <Badge variant="light" color="gray">{previewPoster.style_preset}</Badge>
-              <Badge variant="light" color="blue">포스터 초안 이미지</Badge>
-            </Group>
-            <Image
-              src={posterImageSrc(previewPoster)}
-              alt={previewPoster.product_title}
-              fit="contain"
-              mah="75vh"
-            />
-          </Stack>
+          <ZoomImage
+            src={posterImageSrc(previewPoster)}
+            alt={previewPoster.product_title}
+            zoomed={previewPosterZoomed}
+            onToggleZoom={() => setPreviewPosterZoomed((value) => !value)}
+          />
         ) : null}
       </Modal>
+
+      <Modal
+        opened={previewInputImage !== null}
+        onClose={() => {
+          setPreviewInputImage(null);
+          setPreviewInputImageZoomed(false);
+        }}
+        withCloseButton={false}
+        padding={0}
+        size="auto"
+        centered
+        styles={{
+          content: { background: "transparent", boxShadow: "none", maxHeight: "none", overflow: "visible" },
+          body: { padding: 0, overflow: "visible" },
+        }}
+      >
+        {previewInputImage ? (
+          <ZoomImage
+            src={previewInputImage.image_url}
+            alt={previewInputImage.title}
+            zoomed={previewInputImageZoomed}
+            onToggleZoom={() => setPreviewInputImageZoomed((value) => !value)}
+          />
+        ) : null}
+      </Modal>
+
+      <Drawer
+        opened={detailRunId !== null}
+        onClose={() => setDetailRunId(null)}
+        position="right"
+        size="90%"
+        title="Run Detail"
+        closeOnEscape={false}
+      >
+        {detailRunId ? (
+          <RunDetail
+            runId={detailRunId}
+            onStatusChanged={() => loadData({ silent: true })}
+            relatedRuns={runs}
+            onSelectRun={setDetailRunId}
+          />
+        ) : null}
+      </Drawer>
     </Stack>
   );
 }
 
 function PosterCard({
   poster,
-  usdKrwRate,
   deleting,
   onDelete,
   onPreview,
+  onOpenRun,
+  styleLabel,
 }: {
   poster: PosterAsset;
-  usdKrwRate?: number;
   deleting: boolean;
   onDelete: () => void;
   onPreview: () => void;
+  onOpenRun: () => void;
+  styleLabel: string;
 }) {
   const imageSrc = posterImageSrc(poster);
   const failedMessage = poster.error?.message ?? "포스터 생성에 실패했습니다.";
@@ -608,11 +675,8 @@ function PosterCard({
 
         <div className={classes.posterMeta}>
           <Group gap="xs" mb={4}>
-            <Badge variant="light" color={poster.status === "succeeded" ? "green" : poster.status === "failed" ? "red" : "blue"}>
-              {poster.status}
-            </Badge>
-            <Badge variant="light" color="gray">{poster.style_preset}</Badge>
-            <Badge variant="light" color="blue">포스터 초안</Badge>
+            {poster.status === "failed" ? <Badge variant="light" color="red">failed</Badge> : null}
+            <Badge variant="light" color="gray">{styleLabel}</Badge>
           </Group>
           <Text fw={700} lineClamp={2}>{poster.product_title}</Text>
           <Text size="xs" c="dimmed" lineClamp={2}>
@@ -627,7 +691,10 @@ function PosterCard({
           </Text>
         </div>
 
-        <Group gap="xs">
+        <Group gap="xs" wrap="nowrap">
+          <Button size="xs" variant="subtle" onClick={onOpenRun}>
+            Run Detail
+          </Button>
           <Button
             size="xs"
             variant="light"
@@ -651,29 +718,301 @@ function PosterCard({
             </ActionIcon>
           </Tooltip>
         </Group>
-
-        <Accordion variant="contained">
-          <Accordion.Item value="metadata">
-            <Accordion.Control>Developer metadata</Accordion.Control>
-            <Accordion.Panel>
-              <Stack gap="xs">
-                <Text size="xs" c="dimmed">
-                  model={poster.image_model}, latency={poster.latency_ms ?? "-"}ms, cost≈{formatPosterCost(poster, usdKrwRate)}
-                </Text>
-                {poster.error ? (
-                  <Text size="xs" c="red" className={classes.monoBlock}>
-                    {JSON.stringify(poster.error, null, 2)}
-                  </Text>
-                ) : null}
-                <Text size="xs" className={classes.monoBlock}>
-                  {JSON.stringify(poster.provider_response_summary, null, 2)}
-                </Text>
-              </Stack>
-            </Accordion.Panel>
-          </Accordion.Item>
-        </Accordion>
       </Stack>
     </Paper>
+  );
+}
+
+function SectionOption({
+  section,
+  checked,
+  expanded,
+  preview,
+  disabled,
+  onToggleChecked,
+  onToggleExpanded,
+}: {
+  section: PosterIncludedSection;
+  checked: boolean;
+  expanded: boolean;
+  preview: string;
+  disabled: boolean;
+  onToggleChecked: (checked: boolean) => void;
+  onToggleExpanded: () => void;
+}) {
+  return (
+    <Paper withBorder p="xs" className={classes.sectionOption}>
+      <Group align="flex-start" wrap="nowrap" gap="xs">
+        <Checkbox
+          checked={checked}
+          onChange={(event) => onToggleChecked(event.currentTarget.checked)}
+          disabled={disabled}
+          aria-label={POSTER_SECTION_LABELS[section]}
+        />
+        <Stack gap={3} className={classes.sectionOptionBody}>
+          <Group justify="space-between" wrap="nowrap" gap="xs">
+            <Text size="sm" fw={600}>{POSTER_SECTION_LABELS[section]}</Text>
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              color="gray"
+              onClick={onToggleExpanded}
+              aria-label={expanded ? "내용 접기" : "내용 펼치기"}
+            >
+              {expanded ? <IconChevronUp size={15} /> : <IconChevronDown size={15} />}
+            </ActionIcon>
+          </Group>
+          <Text
+            size="xs"
+            c="dimmed"
+            className={
+              expanded
+                ? classes.sectionPreviewExpanded
+                : `${classes.sectionPreviewText} ${classes.sectionPreviewCollapsed}`
+            }
+          >
+            {preview}
+          </Text>
+        </Stack>
+      </Group>
+    </Paper>
+  );
+}
+
+function ReferenceImageCard({
+  candidate,
+  selected,
+  disabled,
+  onPreview,
+  onToggle,
+}: {
+  candidate: PosterImageCandidate;
+  selected: boolean;
+  disabled: boolean;
+  onPreview: () => void;
+  onToggle: () => void;
+}) {
+  return (
+    <Paper
+      withBorder
+      p="xs"
+      className={`${classes.referenceImageCard} ${selected ? classes.selectedReferenceImageCard : ""}`}
+      style={{ opacity: disabled ? 0.5 : 1 }}
+    >
+      <Stack gap={6}>
+        <button
+          type="button"
+          className={classes.referenceImageButton}
+          onClick={onPreview}
+          aria-label={`${candidate.title || "참조 이미지 후보"} 크게 보기`}
+        >
+          <Image
+            src={candidate.thumbnail_url || candidate.image_url}
+            alt={candidate.title || "참조 이미지 후보"}
+            h={118}
+            w="100%"
+            fit="cover"
+            radius="xs"
+          />
+        </button>
+        <Text size="xs" fw={700} lineClamp={2}>
+          {candidate.title || "이미지 후보"}
+        </Text>
+        <Button size="xs" variant={selected ? "filled" : "light"} disabled={disabled} onClick={onToggle}>
+          {selected ? "선택 해제" : "선택"}
+        </Button>
+      </Stack>
+    </Paper>
+  );
+}
+
+function RunSelectionTable({
+  runs,
+  selectedRunId,
+  disabled,
+  onSelectRun,
+}: {
+  runs: WorkflowRun[];
+  selectedRunId: string | null;
+  disabled: boolean;
+  onSelectRun: (runId: string) => void;
+}) {
+  return (
+    <Stack gap={6}>
+      <Text size="sm" fw={700}>Run 선택</Text>
+      <Paper withBorder className={classes.selectionPanel}>
+        <ScrollArea h={210}>
+          <Table highlightOnHover verticalSpacing="xs" className={classes.selectionTable}>
+            <Table.Tbody>
+              {runs.length > 0 ? runs.map((run) => (
+                <Table.Tr
+                  key={run.id}
+                  className={run.id === selectedRunId ? classes.selectedSelectionRow : classes.selectionRow}
+                  onClick={disabled ? undefined : () => onSelectRun(run.id)}
+                >
+                  <Table.Td>
+                    <Text fw={700} size="sm" lineClamp={1}>{getRunTitle(run)}</Text>
+                    <Text ff="monospace" size="xs" c="dimmed" lineClamp={1}>{run.id}</Text>
+                  </Table.Td>
+                  <Table.Td className={classes.selectionStatusCell}>
+                    <StatusBadge status={run.status} />
+                  </Table.Td>
+                  <Table.Td className={classes.selectionCountCell}>
+                    <Text size="xs" c="dimmed">{productOptionsForRun(run).length}개</Text>
+                  </Table.Td>
+                </Table.Tr>
+              )) : (
+                <Table.Tr>
+                  <Table.Td>
+                    <Text size="sm" c="dimmed">상품이 있는 run이 없습니다.</Text>
+                  </Table.Td>
+                </Table.Tr>
+              )}
+            </Table.Tbody>
+          </Table>
+        </ScrollArea>
+      </Paper>
+    </Stack>
+  );
+}
+
+function ProductSelectionTable({
+  products,
+  selectedProductId,
+  disabled,
+  onSelectProduct,
+}: {
+  products: ProductOption[];
+  selectedProductId: string | null;
+  disabled: boolean;
+  onSelectProduct: (productId: string) => void;
+}) {
+  return (
+    <Stack gap={6}>
+      <Text size="sm" fw={700}>Product 선택</Text>
+      <Paper withBorder className={classes.selectionPanel}>
+        <ScrollArea h={210}>
+          <Table highlightOnHover verticalSpacing="xs" className={classes.selectionTable}>
+            <Table.Tbody>
+              {products.length > 0 ? products.map((product, index) => (
+                <Table.Tr
+                  key={product.id}
+                  className={product.id === selectedProductId ? classes.selectedSelectionRow : classes.selectionRow}
+                  onClick={disabled ? undefined : () => onSelectProduct(product.id)}
+                >
+                  <Table.Td className={classes.selectionIndexCell}>
+                    <Badge size="xs" variant="light" color="gray">{index + 1}</Badge>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text fw={700} size="sm" lineClamp={1}>{product.title}</Text>
+                    <Text size="xs" c="dimmed" lineClamp={1}>{product.one_liner || product.id}</Text>
+                  </Table.Td>
+                </Table.Tr>
+              )) : (
+                <Table.Tr>
+                  <Table.Td>
+                    <Text size="sm" c="dimmed">선택한 run에 상품이 없습니다.</Text>
+                  </Table.Td>
+                </Table.Tr>
+              )}
+            </Table.Tbody>
+          </Table>
+        </ScrollArea>
+      </Paper>
+    </Stack>
+  );
+}
+
+function ZoomImage({
+  src,
+  alt,
+  zoomed,
+  onToggleZoom,
+}: {
+  src: string;
+  alt: string;
+  zoomed: boolean;
+  onToggleZoom: () => void;
+}) {
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const dragStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null);
+  const draggedRef = useRef(false);
+
+  useEffect(() => {
+    setOffset({ x: 0, y: 0 });
+    dragStartRef.current = null;
+    draggedRef.current = false;
+  }, [src, zoomed]);
+
+  function handleClick() {
+    if (draggedRef.current) {
+      draggedRef.current = false;
+      return;
+    }
+    if (zoomed) {
+      setOffset({ x: 0, y: 0 });
+    }
+    onToggleZoom();
+  }
+
+  function handlePointerDown(event: PointerEvent<HTMLButtonElement>) {
+    if (!zoomed) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      offsetX: offset.x,
+      offsetY: offset.y,
+    };
+    draggedRef.current = false;
+  }
+
+  function handlePointerMove(event: PointerEvent<HTMLButtonElement>) {
+    if (!zoomed || !dragStartRef.current) return;
+    event.preventDefault();
+    const dx = event.clientX - dragStartRef.current.x;
+    const dy = event.clientY - dragStartRef.current.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) {
+      draggedRef.current = true;
+    }
+    setOffset({
+      x: dragStartRef.current.offsetX + dx,
+      y: dragStartRef.current.offsetY + dy,
+    });
+  }
+
+  function handlePointerEnd(event: PointerEvent<HTMLButtonElement>) {
+    if (!dragStartRef.current) return;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+    dragStartRef.current = null;
+  }
+
+  const transform = zoomed ? `translate3d(${offset.x}px, ${offset.y}px, 0) scale(1.5)` : undefined;
+
+  return (
+    <div className={classes.zoomPreviewFrame} onClick={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        className={`${classes.zoomPreviewButton} ${zoomed ? classes.zoomed : ""}`}
+        style={{ transform }}
+        onClick={handleClick}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        aria-label={zoomed ? "이미지 축소" : "이미지 확대"}
+      >
+        <img src={src} alt={alt} className={classes.zoomPreviewImage} />
+        <span className={classes.zoomIcon}>
+          {zoomed ? <IconZoomOut size={22} /> : <IconZoomIn size={22} />}
+        </span>
+      </button>
+    </div>
   );
 }
 
@@ -681,7 +1020,7 @@ function runsWithProducts(runs: WorkflowRun[]) {
   return runs.filter((run) => productOptionsForRun(run).length > 0);
 }
 
-function productImageCandidatesForRun(run: WorkflowRun, productId: string): string[] {
+function productImageCandidatesForRun(run: WorkflowRun, productId: string): PosterImageCandidate[] {
   const finalOutput = run.final_output;
   if (!finalOutput) return [];
 
@@ -689,7 +1028,9 @@ function productImageCandidatesForRun(run: WorkflowRun, productId: string): stri
   const product = products.find((item) => String(item.id ?? "") === productId);
   if (!product) return [];
 
-  const sourceIds = new Set(stringListFromUnknown(product.source_ids));
+  const productSourceIds = stringListFromUnknown(product.source_ids);
+  const sourceIds = new Set(productSourceIds);
+  const sourceOrder = new Map(productSourceIds.map((sourceId, index) => [sourceId, index]));
   const docs = recordsFromUnknown(finalOutput["retrieved_documents"]);
   const linkedContentIds = new Set(
     docs
@@ -699,34 +1040,88 @@ function productImageCandidatesForRun(run: WorkflowRun, productId: string): stri
       .filter(Boolean)
   );
 
-  const candidates: string[] = [];
+  const candidates: PosterImageCandidate[] = [];
   const seen = new Set<string>();
-  const addCandidate = (url: unknown) => {
+  const addCandidate = (
+    url: unknown,
+    {
+      thumbnailUrl,
+      title,
+      source,
+      relevanceLabel,
+      relevanceRank,
+    }: {
+      thumbnailUrl?: unknown;
+      title: string;
+      source: string;
+      relevanceLabel: string;
+      relevanceRank: number;
+    }
+  ) => {
     if (typeof url !== "string") return;
     const normalized = url.trim();
     if (!normalized.startsWith("http") || seen.has(normalized)) return;
     seen.add(normalized);
-    candidates.push(normalized);
+    candidates.push({
+      image_url: normalized,
+      thumbnail_url: typeof thumbnailUrl === "string" && thumbnailUrl.trim() ? thumbnailUrl.trim() : normalized,
+      title,
+      source,
+      relevance_label: relevanceLabel,
+      relevance_rank: relevanceRank,
+    });
   };
 
-  docs.forEach((doc) => {
+  docs.forEach((doc, index) => {
     const metadata = recordFromUnknown(doc.metadata);
+    const docId = String(doc.doc_id ?? "");
     const contentId = String(metadata.content_id ?? "").trim();
-    if (!sourceIds.has(String(doc.doc_id ?? "")) && (!contentId || !linkedContentIds.has(contentId))) {
+    const isDirect = sourceIds.has(docId);
+    const isLinked = Boolean(contentId && linkedContentIds.has(contentId));
+    if (!isDirect && !isLinked) {
       return;
     }
-    addCandidate(doc.image_url);
-    addCandidate(metadata.image_url);
-    addCandidate(metadata.firstimage);
-    addCandidate(metadata.firstimage2);
+    const title = String(doc.title || metadata.title || metadata.name || "이미지 후보");
+    const source = String(metadata.source_family || metadata.source || "근거 이미지");
+    const relevanceLabel = isDirect ? "상품 직접 근거" : "같은 장소 후보";
+    const relevanceRank = isDirect ? sourceOrder.get(docId) ?? index : 100 + index;
+    addCandidate(doc.image_url, {
+      title,
+      source,
+      relevanceLabel,
+      relevanceRank,
+    });
+    addCandidate(metadata.image_url, {
+      title,
+      source,
+      relevanceLabel,
+      relevanceRank,
+    });
+    addCandidate(metadata.firstimage, {
+      title,
+      source,
+      relevanceLabel,
+      relevanceRank,
+    });
+    addCandidate(metadata.firstimage2, {
+      title: `${title} 추가 이미지`,
+      source,
+      relevanceLabel,
+      relevanceRank: relevanceRank + 0.1,
+    });
     const imageCandidates = parseMetadataJson(metadata.image_candidates);
     recordsFromUnknown(imageCandidates).forEach((candidate) => {
-      addCandidate(candidate.image_url);
-      addCandidate(candidate.thumbnail_url);
+      addCandidate(candidate.image_url, {
+        thumbnailUrl: candidate.thumbnail_url,
+        title: String(candidate.title || title),
+        source: String(candidate.source || source),
+        relevanceLabel,
+        relevanceRank: relevanceRank + 0.2,
+      });
     });
   });
 
-  return candidates;
+  return candidates.sort((a, b) => a.relevance_rank - b.relevance_rank || a.title.localeCompare(b.title));
 }
 
 function productOptionsForRun(run: WorkflowRun): ProductOption[] {
@@ -743,9 +1138,71 @@ function productOptionsForRun(run: WorkflowRun): ProductOption[] {
     .filter((product) => product.id);
 }
 
-function runLabel(run: WorkflowRun) {
-  const message = typeof run.input?.message === "string" ? run.input.message : run.id;
-  return `${message.slice(0, 48)} · ${run.id.slice(0, 14)}`;
+function getRunTitle(run: WorkflowRun) {
+  const products = Array.isArray(run.final_output?.products)
+    ? (run.final_output.products as Array<{ title?: unknown }>)
+    : [];
+  const productTitle = products.find((product) => typeof product.title === "string")?.title;
+  if (typeof productTitle === "string" && productTitle.trim()) {
+    return productTitle;
+  }
+  return run.input.message || `${run.input.region ?? "Region"} product planning`;
+}
+
+const POSTER_STYLE_LABEL_FALLBACK: Record<string, string> = {
+  editorial_travel: "프리미엄 여행 매거진",
+  night_city: "야간 도시 시네마틱",
+  minimal_event: "미니멀 홍보 포스터",
+};
+
+function posterStyleLabel(styleId: string, options: PosterOptions | null) {
+  return (
+    options?.style_presets.find((preset) => preset.id === styleId)?.label ??
+    POSTER_STYLE_LABEL_FALLBACK[styleId] ??
+    styleId
+  );
+}
+
+function posterSectionPreview(
+  section: PosterIncludedSection,
+  product: Record<string, unknown> | null,
+  marketing: Record<string, unknown> | null
+) {
+  if (!product) return "상품을 선택하면 이 항목에 들어갈 실제 내용이 표시됩니다.";
+  const salesCopy = recordFromUnknown(marketing?.sales_copy);
+  if (section === "product_summary") {
+    return [product.title, product.one_liner, stringListFromUnknown(product.core_value).join(", ")]
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+      .join(" / ") || "상품 요약 없음";
+  }
+  if (section === "itinerary") {
+    const items = recordsFromUnknown(product.itinerary)
+      .map((item) => String(item.name || item.title || item.place || item.activity || item.description || "").trim())
+      .filter(Boolean);
+    return items.join(" → ") || "일정/경험 요소 없음";
+  }
+  if (section === "marketing_copy") {
+    return [salesCopy.headline, salesCopy.subheadline]
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+      .join(" / ") || "마케팅 문구 없음";
+  }
+  if (section === "sns_copy") {
+    return stringListFromUnknown(marketing?.sns_posts)[0] || "SNS 문구 없음";
+  }
+  if (section === "evidence_summary") {
+    return String(product.evidence_summary || "").trim() || "근거 요약 없음";
+  }
+  if (section === "claim_limits") {
+    const limits = [
+      ...stringListFromUnknown(product.claim_limits),
+      ...stringListFromUnknown(product.not_to_claim),
+      ...stringListFromUnknown(product.needs_review),
+    ];
+    return limits.join(" / ") || "제한/주의사항 없음";
+  }
+  return "선택한 데이터가 포스터 프롬프트에 반영됩니다.";
 }
 
 function recordsFromUnknown(value: unknown): Array<Record<string, unknown>> {

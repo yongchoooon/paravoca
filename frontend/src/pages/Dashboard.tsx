@@ -31,6 +31,7 @@ import {
   listWorkflowTemplates,
   WorkflowRun,
 } from "../services/runsApi";
+import { listPosters, PosterAsset } from "../services/postersApi";
 import { ApiError } from "../services/apiClient";
 import { StatusBadge } from "../components/StatusBadge";
 import { RunDetail } from "./RunDetail";
@@ -690,6 +691,7 @@ function RunTableRow({
   run,
   selectedRunId,
   selectedForDelete,
+  posterCount,
   indent = false,
   revisionCount = 0,
   isExpanded = false,
@@ -701,6 +703,7 @@ function RunTableRow({
   run: WorkflowRun;
   selectedRunId: string | null;
   selectedForDelete: boolean;
+  posterCount: number;
   indent?: boolean;
   revisionCount?: number;
   isExpanded?: boolean;
@@ -742,6 +745,9 @@ function RunTableRow({
       <Table.Td>{getRunGeoLabel(run)}</Table.Td>
       <Table.Td>{getRunProductCount(run)}</Table.Td>
       <Table.Td>
+        {posterCount > 0 ? posterCount : null}
+      </Table.Td>
+      <Table.Td>
         {!indent && revisionCount > 0 ? (
           <Button size="compact-xs" variant="subtle" onClick={onToggleRevisions}>
             {isExpanded ? "Hide" : "Show"} {revisionCount}
@@ -771,6 +777,7 @@ function RunTableRow({
 
 export function Dashboard({ activeSection }: { activeSection: AppSection }) {
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
+  const [posters, setPosters] = useState<PosterAsset[]>([]);
   const [templateCount, setTemplateCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -811,11 +818,13 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
         setLoading(true);
         setError(null);
       }
-      const [nextRuns, templates] = await Promise.all([
+      const [nextRuns, templates, nextPosters] = await Promise.all([
         listWorkflowRuns(),
         listWorkflowTemplates(),
+        listPosters(),
       ]);
       setRuns(nextRuns);
+      setPosters(nextPosters);
       setTemplateCount(templates.length);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard");
@@ -858,6 +867,15 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
     });
     return grouped;
   }, [runs]);
+
+  const posterCountByRunId = useMemo(() => {
+    const counts = new Map<string, number>();
+    posters.forEach((poster) => {
+      if (poster.status === "failed") return;
+      counts.set(poster.run_id, (counts.get(poster.run_id) ?? 0) + 1);
+    });
+    return counts;
+  }, [posters]);
 
   const runById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
 
@@ -1091,6 +1109,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
           run={run}
           selectedRunId={selectedRunId}
           selectedForDelete={selectedDeleteRunIds.includes(run.id)}
+          posterCount={posterCountByRunId.get(run.id) ?? 0}
           canSelectForDelete={canSelectRunForDelete(run)}
           revisionCount={revisions.length}
           isExpanded={isExpanded}
@@ -1105,6 +1124,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
                 run={revision}
                 selectedRunId={selectedRunId}
                 selectedForDelete={selectedDeleteRunIds.includes(revision.id)}
+                posterCount={posterCountByRunId.get(revision.id) ?? 0}
                 canSelectForDelete={canSelectRunForDelete(revision)}
                 indent
                 onSelectRun={setSelectedRunId}
@@ -1262,6 +1282,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
               <Table.Th className={classes.statusColumn}>Status</Table.Th>
               <Table.Th className={classes.regionColumn}>Geo</Table.Th>
               <Table.Th className={classes.productsColumn}>Products</Table.Th>
+              <Table.Th className={classes.postersColumn}>Posters</Table.Th>
               <Table.Th className={classes.revisionsColumn}>Revisions</Table.Th>
               <Table.Th className={classes.createdColumn}>Created</Table.Th>
               <Table.Th className={classes.actionColumn}>Action</Table.Th>
@@ -1270,7 +1291,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
           <Table.Tbody>
             {rows.length > 0 ? rows : (
               <Table.Tr>
-                <Table.Td colSpan={8}>
+                <Table.Td colSpan={9}>
                   <Text c="dimmed" ta="center" py="lg">
                     No workflow runs yet.
                   </Text>
@@ -1369,7 +1390,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
     "poster-studio": {
       phase: "Phase 13 이후 또는 별도 후속 단계",
       items: [
-        "승인된 상품의 포스터 초안",
+        "승인된 상품의 포스터 이미지",
         "이미지 asset과 홍보 문구 조합",
         "채널별 홍보 소재 변형",
       ],
@@ -1436,6 +1457,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
         position="right"
         size="90%"
         padding="md"
+        closeOnEscape={false}
       >
         {selectedRunId ? (
           <RunDetail

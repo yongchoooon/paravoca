@@ -8,7 +8,7 @@
 
 .runsTable {
   table-layout: fixed;
-  min-width: 1040px;
+  min-width: 1100px;
 }
 
 .selectColumn {
@@ -28,6 +28,10 @@
 }
 
 .productsColumn {
+  width: 72px;
+}
+
+.postersColumn {
   width: 72px;
 }
 

@@ -1,18 +1,32 @@
 .studioGrid {
   display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
 .createPanel {
-  position: sticky;
-  top: 72px;
+  position: static;
+}
+
+.studioContentGrid {
+  display: grid;
+  grid-template-columns: minmax(420px, 520px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.creationSettingsPanel {
+  min-width: 0;
+}
+
+.posterListColumn {
+  min-width: 0;
 }
 
 .posterGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -44,6 +58,79 @@
   min-width: 0;
 }
 
+.selectionPanel {
+  overflow: hidden;
+}
+
+.selectionTable {
+  table-layout: fixed;
+}
+
+.selectionRow,
+.selectedSelectionRow {
+  cursor: pointer;
+}
+
+.selectedSelectionRow td {
+  background: var(--mantine-color-blue-0);
+}
+
+.selectionStatusCell {
+  width: 82px;
+}
+
+.selectionCountCell {
+  width: 44px;
+  text-align: right;
+}
+
+.selectionIndexCell {
+  width: 38px;
+}
+
+.creationOptionsGrid {
+  align-items: start;
+}
+
+.sectionOption {
+  min-width: 0;
+}
+
+.sectionOptionBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.sectionPreviewText,
+.sectionPreviewExpanded {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sectionPreviewCollapsed {
+  max-height: 2.7em;
+  overflow: hidden;
+}
+
+.referenceImageCard {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.selectedReferenceImageCard {
+  outline: 2px solid var(--mantine-color-blue-6);
+  outline-offset: -2px;
+}
+
+.referenceImageButton {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
 .monoBlock {
   max-height: 240px;
   overflow: auto;
@@ -51,17 +138,89 @@
   word-break: break-word;
 }
 
+.zoomPreviewFrame {
+  position: relative;
+  width: fit-content;
+  max-width: calc(100vw - 96px);
+  max-height: calc(100dvh - 96px);
+  overflow: visible;
+  background: transparent;
+}
+
+.zoomPreviewButton {
+  position: relative;
+  display: block;
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  overflow: visible;
+  transform-origin: center center;
+  transition: transform 160ms ease;
+}
+
+.zoomPreviewButton.zoomed {
+  cursor: grab;
+}
+
+.zoomPreviewButton.zoomed:active {
+  cursor: grabbing;
+}
+
+.zoomPreviewImage {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: calc(100vw - 96px);
+  max-height: calc(100dvh - 96px);
+  object-fit: contain;
+}
+
+.zoomPreviewButton.zoomed .zoomPreviewImage {
+  transform: none;
+}
+
+.zoomIcon {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: white;
+  background: rgb(0 0 0 / 62%);
+  border-radius: 999px;
+}
+
+.zoomPreviewButton.zoomed .zoomIcon {
+  transform: scale(0.67);
+}
+
 .skeletonFrame {
   width: 100%;
   aspect-ratio: 2 / 3;
 }
 
-@media (max-width: 900px) {
-  .studioGrid {
+@media (max-width: 980px) {
+  .studioContentGrid {
     grid-template-columns: 1fr;
   }
 
-  .createPanel {
-    position: static;
+  .posterGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .posterGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .zoomPreviewFrame,
+  .zoomPreviewImage {
+    max-width: calc(100vw - 32px);
+    max-height: calc(100dvh - 32px);
   }
 }
