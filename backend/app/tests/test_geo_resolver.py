@@ -364,13 +364,39 @@ def test_geo_resolver_does_not_treat_pet_theme_as_unknown_subregion_without_llm_
 
 
 def test_geo_resolver_blocks_foreign_destination():
+    llm_hints = {
+        "locations": [
+            {"text": "도쿄", "normalized_text": "도쿄", "role": "primary", "is_foreign": True}
+        ],
+        "resolved_locations": [],
+        "unsupported_locations": ["도쿄"],
+        "excluded_locations": [],
+        "allow_nationwide": False,
+    }
     with SessionLocal() as db:
-        scope = resolve_geo_scope(db, message="도쿄에서 외국인 대상 액티비티 상품을 만들어줘")
+        scope = resolve_geo_scope(
+            db,
+            message="도쿄에서 외국인 대상 액티비티 상품을 만들어줘",
+            llm_hints=llm_hints,
+        )
 
     assert scope["status"] == "unsupported"
     assert scope["mode"] == "unsupported_region"
     assert scope["allow_nationwide"] is False
     assert "도쿄" in scope["unsupported_locations"]
+    assert scope["resolution_strategy"] == "llm_foreign_destination_detected"
+
+
+def test_geo_resolver_does_not_compact_cross_word_foreign_destination():
+    with SessionLocal() as db:
+        scope = resolve_geo_scope(
+            db,
+            message="이번 달 포항에서 외국인 대상 해변 여행 상품, 생태관광 상품을 2개 기획해줘",
+        )
+
+    assert scope["status"] == "resolved"
+    assert scope["locations"][0]["name"] == "경상북도 포항시"
+    assert scope.get("unsupported_locations", []) == []
 
 
 def test_geo_resolver_keeps_fuzzy_candidates_for_typo_without_forced_selection():

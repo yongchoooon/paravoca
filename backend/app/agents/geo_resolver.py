@@ -20,68 +20,6 @@ EXPLICIT_NATIONWIDE_TERMS = {
     "전지역",
 }
 
-FOREIGN_DESTINATION_TERMS = {
-    "해외",
-    "일본",
-    "도쿄",
-    "동경",
-    "오사카",
-    "교토",
-    "후쿠오카",
-    "삿포로",
-    "중국",
-    "상하이",
-    "상해",
-    "베이징",
-    "북경",
-    "홍콩",
-    "대만",
-    "타이베이",
-    "태국",
-    "방콕",
-    "베트남",
-    "다낭",
-    "하노이",
-    "호치민",
-    "싱가포르",
-    "말레이시아",
-    "쿠알라룸푸르",
-    "필리핀",
-    "세부",
-    "보라카이",
-    "인도네시아",
-    "발리",
-    "미국",
-    "뉴욕",
-    "로스앤젤레스",
-    "LA",
-    "하와이",
-    "괌",
-    "사이판",
-    "프랑스",
-    "파리",
-    "영국",
-    "런던",
-    "이탈리아",
-    "로마",
-    "스페인",
-    "바르셀로나",
-    "독일",
-    "베를린",
-    "호주",
-    "시드니",
-    "캐나다",
-    "밴쿠버",
-}
-
-FOREIGN_CONTEXT_EXCEPTIONS = {
-    "해외 관광객",
-    "해외 고객",
-    "해외 방문객",
-    "외국인",
-    "인바운드",
-}
-
 EXCLUSION_MARKERS = ("제외", "빼고", "빼줘", "제외하고")
 
 REGION_SUFFIXES = (
@@ -164,7 +102,7 @@ def resolve_geo_scope(
 ) -> dict[str, Any]:
     input_text = _combined_input(message=message, region=region)
     hint_locations = _llm_location_hints(llm_hints, input_text)
-    foreign_terms = _dedupe_strings([*_foreign_destination_terms(input_text), *_llm_foreign_terms(llm_hints)])
+    foreign_terms = _llm_foreign_terms(llm_hints)
     if foreign_terms:
         return {
             "mode": "unsupported_region",
@@ -180,7 +118,7 @@ def resolve_geo_scope(
             "unsupported_reason": "PARAVOCA는 현재 국내 관광 데이터만 지원합니다.",
             "keywords": [],
             "allow_nationwide": False,
-            "resolution_strategy": "foreign_destination_detected",
+            "resolution_strategy": "llm_foreign_destination_detected",
             "candidates": [],
             "llm_hints": llm_hints or {},
         }
@@ -1209,20 +1147,6 @@ def _geo_like_tokens(text: str) -> list[str]:
         if len(token) >= 2 and token not in blocked:
             cleaned.append(token)
     return cleaned
-
-
-def _foreign_destination_terms(text: str) -> list[str]:
-    if not text:
-        return []
-    compact = re.sub(r"\s+", "", text)
-    foreign_terms: list[str] = []
-    domestic_context_exists = any(term in text for term in FOREIGN_CONTEXT_EXCEPTIONS)
-    for term in FOREIGN_DESTINATION_TERMS:
-        if term == "해외" and domestic_context_exists:
-            continue
-        if term in text or term in compact:
-            foreign_terms.append(term)
-    return sorted(set(foreign_terms), key=len, reverse=True)
 
 
 def _combined_input(*, message: str | None, region: str | None) -> str:

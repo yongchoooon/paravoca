@@ -287,7 +287,7 @@ def _ensure_product_poster_limit(db: Session, *, run_id: str, product_id: str) -
     if count >= MAX_POSTERS_PER_PRODUCT:
         raise HTTPException(
             status_code=409,
-            detail=f"상품 1개당 포스터 초안은 최대 {MAX_POSTERS_PER_PRODUCT}개까지 만들 수 있습니다. 기존 포스터를 삭제한 뒤 다시 생성해 주세요.",
+            detail=f"상품 1개당 포스터는 최대 {MAX_POSTERS_PER_PRODUCT}개까지 만들 수 있습니다. 기존 포스터를 삭제한 뒤 다시 생성해 주세요.",
         )
 
 

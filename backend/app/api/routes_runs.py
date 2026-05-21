@@ -237,7 +237,7 @@ def create_workflow_run(
         step_type="workflow_created",
         status="succeeded",
         input=payload.input.model_dump(),
-        output={"message": "워크플로우 실행 요청이 생성되었습니다. 백그라운드 실행을 시작합니다."},
+        output={"message": "워크플로우 실행 요청이 생성되었습니다. 실행을 시작합니다."},
         latency_ms=0,
     )
     db.add(initial_step)
@@ -616,7 +616,7 @@ def create_workflow_revision(
             "revision_mode": payload.revision_mode,
             "revision_number": next_revision_number,
         },
-        output={"message": "Revision run이 생성되었습니다. 백그라운드 실행을 시작합니다."},
+        output={"message": "Revision run이 생성되었습니다. 실행을 시작합니다."},
         latency_ms=0,
     )
     db.add(initial_step)

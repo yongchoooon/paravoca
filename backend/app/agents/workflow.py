@@ -754,7 +754,8 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
                 f"{geo_scope.get('clarification_question') or geo_scope.get('unresolved_locations')}"
             )
 
-        locations = _locations_for_tourapi_search(geo_scope)
+        search_geo_scope = _geo_scope_with_tourapi_child_locations(db, geo_scope)
+        locations = _locations_for_tourapi_search(search_geo_scope)
         if not locations and not geo_scope.get("allow_nationwide"):
             raise RuntimeError("Geo scope was not resolved. Nationwide fallback is disabled.")
 
@@ -769,29 +770,43 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
             "vector_search_filter": {},
             "vector_search_result_count": 0,
             "post_geo_filter_result_count": 0,
+            "tourapi_expanded_locations": [
+                {
+                    "name": location.get("name"),
+                    "ldong_regn_cd": location.get("ldong_regn_cd"),
+                    "ldong_signgu_cd": location.get("ldong_signgu_cd"),
+                    "expanded_from": location.get("expanded_from_name"),
+                }
+                for location in locations
+                if location.get("expanded_from_name")
+            ],
         }
-        primary_keyword = _keyword_for_geo_scope(normalized, geo_scope)
+        primary_keyword = _keyword_for_geo_scope(normalized, search_geo_scope)
         for location in locations:
             geo_kwargs = _tourapi_geo_kwargs(location)
-            keyword = _keyword_for_geo_scope(normalized, geo_scope, location)
+            keyword_queries = _tourapi_keyword_queries(normalized, search_geo_scope, location)
             arguments_base = {
                 **geo_kwargs,
                 "geo_role": location.get("role") if location else None,
                 "location_name": location.get("name") if location else "nationwide",
             }
-            attractions = log_tool_call(
-                db=db,
-                run_id=run_id,
-                step_id=step.id,
-                tool_name="tourapi_search_keyword",
-                arguments={**arguments_base, "query": keyword, "limit": 20},
-                source=provider_source,
-                call=lambda keyword=keyword, geo_kwargs=geo_kwargs: provider.search_keyword(
-                    query=keyword,
-                    limit=20,
-                    **geo_kwargs,
-                ),
-            )
+            attractions: list[Any] = []
+            for keyword in keyword_queries:
+                attractions.extend(
+                    log_tool_call(
+                        db=db,
+                        run_id=run_id,
+                        step_id=step.id,
+                        tool_name="tourapi_search_keyword",
+                        arguments={**arguments_base, "query": keyword, "limit": 20},
+                        source=provider_source,
+                        call=lambda keyword=keyword, geo_kwargs=geo_kwargs: provider.search_keyword(
+                            query=keyword,
+                            limit=20,
+                            **geo_kwargs,
+                        ),
+                    )
+                )
             area_attractions = log_tool_call(
                 db=db,
                 run_id=run_id,
@@ -851,7 +866,7 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
         diagnostics["tourapi_raw_collected_count"] = len(all_items)
         items = _dedupe_items(all_items)
         diagnostics["tourapi_deduped_item_count"] = len(items)
-        items = _filter_items_by_geo_scope(items, geo_scope=geo_scope, run_id=run_id)
+        items = _filter_items_by_geo_scope(items, geo_scope=search_geo_scope, run_id=run_id)
         diagnostics["geo_filtered_item_count"] = len(items)
         if not items:
             diagnostics["reason"] = "tourapi_empty_for_resolved_geo_scope"
@@ -875,7 +890,7 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
         diagnostics["source_document_upsert_count"] = len(source_documents)
         indexed_count = index_source_documents(db, source_documents)
         diagnostics["indexed_document_count"] = indexed_count
-        vector_filters = _vector_filters_for_geo_scope(geo_scope, source=provider_source)
+        vector_filters = _vector_filters_for_geo_scope(search_geo_scope, source=provider_source)
         diagnostics["vector_search_filter"] = vector_filters
         retrieved = log_tool_call(
             db=db,
@@ -897,7 +912,7 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
         diagnostics["vector_search_result_count"] = len(retrieved)
         retrieved = _filter_retrieved_documents_by_geo_scope(
             retrieved,
-            geo_scope=geo_scope,
+            geo_scope=search_geo_scope,
             run_id=run_id,
         )
         diagnostics["post_geo_filter_result_count"] = len(retrieved)
@@ -1514,12 +1529,88 @@ LEGACY_AREA_TO_LDONG_REGN = {
     "39": "50",
 }
 
+PROVINCE_NAME_TERMS = {
+    "서울특별시",
+    "부산광역시",
+    "대구광역시",
+    "인천광역시",
+    "광주광역시",
+    "대전광역시",
+    "울산광역시",
+    "세종특별자치시",
+    "경기도",
+    "강원특별자치도",
+    "충청북도",
+    "충청남도",
+    "전북특별자치도",
+    "전라북도",
+    "전라남도",
+    "경상북도",
+    "경상남도",
+    "제주특별자치도",
+}
+
 
 def _locations_for_tourapi_search(geo_scope: dict[str, Any]) -> list[dict[str, Any]]:
     if geo_scope.get("allow_nationwide"):
         return [{}]
     locations = geo_scope.get("locations")
     return locations if isinstance(locations, list) else []
+
+
+def _geo_scope_with_tourapi_child_locations(db: Session, geo_scope: dict[str, Any]) -> dict[str, Any]:
+    if geo_scope.get("allow_nationwide"):
+        return geo_scope
+    locations = _locations_for_tourapi_search(geo_scope)
+    expanded_locations = _expand_locations_to_tourapi_child_signgus(db, locations)
+    if expanded_locations == locations:
+        return geo_scope
+    return {**geo_scope, "locations": expanded_locations}
+
+
+def _expand_locations_to_tourapi_child_signgus(
+    db: Session,
+    locations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    changed = False
+    for location in locations:
+        child_locations = _tourapi_child_signgu_locations(db, location)
+        if child_locations:
+            expanded.extend(child_locations)
+            changed = True
+        else:
+            expanded.append(location)
+    return expanded if changed else locations
+
+
+def _tourapi_child_signgu_locations(db: Session, location: dict[str, Any]) -> list[dict[str, Any]]:
+    regn_cd = str(location.get("ldong_regn_cd") or "").strip()
+    signgu_cd = str(location.get("ldong_signgu_cd") or "").strip()
+    full_name = str(location.get("base_name") or location.get("name") or "").strip()
+    if not regn_cd or not signgu_cd or not full_name:
+        return []
+    rows = (
+        db.query(models.TourApiLdongCode)
+        .filter(models.TourApiLdongCode.ldong_regn_cd == regn_cd)
+        .filter(models.TourApiLdongCode.ldong_signgu_cd.isnot(None))
+        .filter(models.TourApiLdongCode.ldong_signgu_cd != signgu_cd)
+        .filter(models.TourApiLdongCode.full_name.like(f"{full_name} %"))
+        .order_by(models.TourApiLdongCode.ldong_signgu_cd)
+        .all()
+    )
+    return [
+        {
+            **location,
+            "name": row.full_name,
+            "ldong_signgu_cd": row.ldong_signgu_cd,
+            "ldong_signgu_nm": row.ldong_signgu_nm,
+            "expanded_from_name": location.get("name") or full_name,
+            "expanded_from_ldong_signgu_cd": signgu_cd,
+        }
+        for row in rows
+        if row.ldong_signgu_cd
+    ]
 
 
 def _tourapi_geo_kwargs(location: dict[str, Any]) -> dict[str, Any]:
@@ -1558,6 +1649,80 @@ def _keyword_for_geo_scope(
         "액티비티",
     ]
     return " ".join(part for part in parts if part).strip()
+
+
+def _tourapi_keyword_queries(
+    normalized: dict[str, Any],
+    geo_scope: dict[str, Any],
+    location: dict[str, Any] | None = None,
+) -> list[str]:
+    location_terms = _tourapi_location_keyword_terms(geo_scope, location)
+    themes = [
+        _clean_keyword_term(term)
+        for term in (normalized.get("preferred_themes") if isinstance(normalized.get("preferred_themes"), list) else [])
+    ]
+    themes = [term for term in themes if term]
+    queries: list[str] = []
+    primary_location = location_terms[0] if location_terms else ""
+    if primary_location:
+        queries.append(primary_location)
+    queries.extend(themes[:4])
+    if primary_location:
+        queries.extend(f"{primary_location} {theme}" for theme in themes[:4])
+    if not queries:
+        fallback = _clean_keyword_term(_keyword_for_geo_scope(normalized, geo_scope, location))
+        if fallback:
+            queries.append(fallback)
+    return _dedupe_texts(queries)[:8]
+
+
+def _tourapi_location_keyword_terms(
+    geo_scope: dict[str, Any],
+    location: dict[str, Any] | None = None,
+) -> list[str]:
+    terms: list[str] = []
+    candidate_locations = [location] if location else []
+    if not candidate_locations:
+        locations = geo_scope.get("locations") if isinstance(geo_scope.get("locations"), list) else []
+        candidate_locations = locations
+    for item in candidate_locations:
+        if not isinstance(item, dict):
+            continue
+        terms.extend(
+            [
+                item.get("keyword"),
+                item.get("matched_text"),
+                item.get("expanded_from_name"),
+                item.get("base_name"),
+                item.get("name"),
+            ]
+        )
+    cleaned: list[str] = []
+    for term in terms:
+        keyword = _clean_location_keyword_term(term)
+        if keyword:
+            cleaned.append(keyword)
+    return _dedupe_texts(cleaned)
+
+
+def _clean_location_keyword_term(value: Any) -> str:
+    term = _clean_keyword_term(value)
+    if not term:
+        return ""
+    parts = term.split()
+    if len(parts) >= 2:
+        compact_parts = [part for part in parts if part not in PROVINCE_NAME_TERMS]
+        if compact_parts:
+            term = " ".join(compact_parts)
+    term = re.sub(r"(특별자치시|특별자치도|특별시|광역시|자치도)$", "", term).strip()
+    return term
+
+
+def _clean_keyword_term(value: Any) -> str:
+    term = str(value or "").strip()
+    term = re.sub(r"\s+", " ", term)
+    term = re.sub(r"[^\w가-힣\s·.-]", "", term)
+    return term.strip()
 
 
 def _vector_filters_for_geo_scope(geo_scope: dict[str, Any], *, source: str | list[str]) -> dict[str, Any]:
@@ -3021,7 +3186,14 @@ def _evidence_based_qa_issues(
         asset = assets_by_product_id.get(product_id)
         if asset:
             public_text = f"{public_text}\n{_public_marketing_text(asset)}"
-        issues.extend(_unsupported_claim_issues(product_id, public_text, unresolved_types))
+        issues.extend(
+            _unsupported_claim_issues(
+                product_id,
+                public_text,
+                unresolved_types,
+                segments=_public_text_segments(product, asset),
+            )
+        )
         for avoid in avoid_rules:
             if avoid and avoid in public_text:
                 issues.append(
@@ -3042,13 +3214,14 @@ def _qa_issue(
     issue_type: str,
     message: str,
     suggested_fix: str,
+    field_path: str = "",
 ) -> dict[str, Any]:
     return {
         "product_id": product_id,
         "severity": severity,
         "type": issue_type,
         "message": message,
-        "field_path": "",
+        "field_path": field_path,
         "suggested_fix": suggested_fix,
     }
 
@@ -3088,7 +3261,53 @@ def _public_marketing_text(asset: dict[str, Any]) -> str:
     return "\n".join(values)
 
 
-def _unsupported_claim_issues(product_id: str, public_text: str, unresolved_types: set[str]) -> list[dict[str, Any]]:
+def _public_text_segments(product: dict[str, Any], asset: dict[str, Any] | None) -> list[dict[str, str]]:
+    segments: list[dict[str, str]] = []
+
+    def add(label: str, field_path: str, value: Any) -> None:
+        text = str(value or "").strip()
+        if text:
+            segments.append({"label": label, "field_path": field_path, "text": text})
+
+    add("상품 제목", "title", product.get("title"))
+    add("한 줄 설명", "one_liner", product.get("one_liner"))
+    for index, value in enumerate(_string_list(product.get("core_value"))):
+        add("핵심 가치", f"core_value[{index}]", value)
+    itinerary = product.get("itinerary") if isinstance(product.get("itinerary"), list) else []
+    for index, item in enumerate(itinerary):
+        if isinstance(item, dict):
+            add("일정 항목", f"itinerary[{index}].name", item.get("name"))
+            add("일정 설명", f"itinerary[{index}].description", item.get("description"))
+    add("예상 소요 시간", "estimated_duration", product.get("estimated_duration"))
+    add("운영 난이도", "operation_difficulty", product.get("operation_difficulty"))
+
+    if not isinstance(asset, dict):
+        return segments
+    sales_copy = asset.get("sales_copy") if isinstance(asset.get("sales_copy"), dict) else {}
+    add("홍보 제목", "sales_copy.headline", sales_copy.get("headline"))
+    add("홍보 부제목", "sales_copy.subheadline", sales_copy.get("subheadline"))
+    sections = sales_copy.get("sections") if isinstance(sales_copy.get("sections"), list) else []
+    for index, section in enumerate(sections):
+        if isinstance(section, dict):
+            add("상세 설명 제목", f"sales_copy.sections[{index}].title", section.get("title"))
+            add("상세 설명", f"sales_copy.sections[{index}].body", section.get("body"))
+    faq = asset.get("faq") if isinstance(asset.get("faq"), list) else []
+    for index, item in enumerate(faq):
+        if isinstance(item, dict):
+            add("FAQ 질문", f"faq[{index}].question", item.get("question"))
+            add("FAQ 답변", f"faq[{index}].answer", item.get("answer"))
+    for index, value in enumerate(_string_list(asset.get("sns_posts"))):
+        add("SNS 문구", f"sns_posts[{index}]", value)
+    return segments
+
+
+def _unsupported_claim_issues(
+    product_id: str,
+    public_text: str,
+    unresolved_types: set[str],
+    *,
+    segments: list[dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     checks = [
         (
@@ -3123,21 +3342,68 @@ def _unsupported_claim_issues(product_id: str, public_text: str, unresolved_type
     for gap_type, issue_type, patterns, message, suggested_fix in checks:
         if gap_type not in unresolved_types:
             continue
-        if any(re.search(pattern, public_text) for pattern in patterns):
-            issues.append(_qa_issue(product_id, "high", issue_type, message, suggested_fix))
+        match = _first_public_text_match(patterns, public_text, segments or [])
+        if match:
+            issues.append(
+                _qa_issue(
+                    product_id,
+                    "high",
+                    issue_type,
+                    f"{match['label']}에 문제 문구 '{match['quote']}'가 있습니다. {message}",
+                    suggested_fix,
+                    field_path=match["field_path"],
+                )
+            )
 
     absolute_safety_patterns = [r"100%\s*안전", r"완전 안전", r"안전(?:을)? 보장"]
-    if any(re.search(pattern, public_text) for pattern in absolute_safety_patterns):
+    safety_match = _first_public_text_match(absolute_safety_patterns, public_text, segments or [])
+    if safety_match:
         issues.append(
             _qa_issue(
                 product_id,
                 "high",
                 "safety_claim",
-                "절대적 안전 보장처럼 보이는 표현이 포함되어 있습니다.",
+                f"{safety_match['label']}에 문제 문구 '{safety_match['quote']}'가 있습니다. 절대적 안전 보장처럼 보이는 표현이 포함되어 있습니다.",
                 "안전 관련 표현은 현장 조건과 운영자 확인 기준으로 완화하세요.",
+                field_path=safety_match["field_path"],
             )
         )
     return issues
+
+
+def _first_public_text_match(
+    patterns: list[str],
+    public_text: str,
+    segments: list[dict[str, str]],
+) -> dict[str, str] | None:
+    for segment in segments:
+        text = segment.get("text") or ""
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return {
+                    "label": segment.get("label") or "고객 노출 문구",
+                    "field_path": segment.get("field_path") or "",
+                    "quote": _qa_problem_quote(text, match),
+                }
+    for pattern in patterns:
+        match = re.search(pattern, public_text)
+        if match:
+            return {
+                "label": "고객 노출 문구",
+                "field_path": "",
+                "quote": _qa_problem_quote(public_text, match),
+            }
+    return None
+
+
+def _qa_problem_quote(text: str, match: re.Match[str]) -> str:
+    matched = match.group(0).strip()
+    if matched:
+        return matched[:80]
+    start = max(0, match.start() - 24)
+    end = min(len(text), match.end() + 24)
+    return text[start:end].strip()[:80]
 
 
 def apply_revision_patch(
@@ -3686,6 +3952,7 @@ def _geo_resolution_prompt(
             "resolved_locations.reason에는 왜 그 코드가 맞는지 짧게 쓰세요.",
             "전국, 국내 전체처럼 사용자가 명시한 경우에만 allow_nationwide=true로 쓰세요.",
             "도쿄, 오사카, 파리처럼 해외 목적지를 요청하면 unsupported_locations에 넣고 해당 location의 is_foreign=true로 표시하세요.",
+            "해외 목적지는 원문에 등장한 장소 span 기준으로만 판단하세요. 서로 다른 단어가 붙어서 생긴 부분 문자열은 장소로 보지 마세요.",
             "외국인, 해외 관광객, 인바운드처럼 고객 대상을 뜻하는 표현은 해외 목적지로 취급하지 마세요.",
             "장소가 애매해도 억지로 특정 행정구역을 선택하지 마세요.",
         ],
@@ -3907,6 +4174,8 @@ def _qa_prompt(
             "각 issue.product_id는 문제가 있는 상품_목록의 id를 그대로 넣으세요. 전체 공통 문제가 아니면 null로 두지 마세요.",
             "issue.field_path는 문제가 있는 고객 노출 필드를 간단히 넣으세요. 예: title, sales_copy.sections[0].body, faq[2].answer",
             "issue.message와 issue.suggested_fix에는 disclaimer, not_to_claim, sales_copy 같은 내부 필드명을 직접 쓰지 마세요. '유의 문구', '운영 주의사항', '상세 설명', 'FAQ 답변'처럼 사람이 이해하는 이름을 쓰세요.",
+            "issue.message에는 반드시 문제가 되는 고객 노출 문구를 짧게 직접 인용하세요. 예: 상세 설명에 문제 문구 '상시 운영'이 있습니다. 운영시간이나 상시 운영 여부를 단정하고 있습니다.",
+            "문제가 되는 정확한 문구를 인용할 수 없으면 issue를 만들지 마세요.",
             "issues 배열의 모든 issue는 message를 빈 문자열로 두지 말고 구체적인 한국어 문장으로 작성하세요.",
             "issue.message에는 문제 위치와 문제 원인만 작성하세요. 수정 권장 문장이나 대체 문구는 쓰지 마세요.",
             "issue.suggested_fix에는 수정 제안만 작성하세요. message와 같은 내용을 반복하지 마세요.",

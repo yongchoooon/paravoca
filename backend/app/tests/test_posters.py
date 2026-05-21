@@ -104,12 +104,19 @@ def test_poster_prompt_builder_separates_visible_text_and_constraints():
     assert "Subject:" in prompt.prompt
     assert "Key details:" in prompt.prompt
     assert "Included text:" in prompt.prompt
-    assert "Style:" in prompt.prompt
+    assert "Composition:" in prompt.prompt
+    assert "Style summary:" in prompt.prompt
     assert "=== CONSTRAINTS ===" in prompt.prompt
+    assert "=== NO REFERENCE IMAGE GUIDANCE ===" in prompt.prompt
+    assert "Do not substitute a generic famous landmark" in prompt.prompt
     assert '"광안리 야경 로컬 워크"' in prompt.prompt
     assert any("가격, 할인율" in item for item in prompt.constraints)
     assert "Avoid claiming: 가격, 할인율" in prompt.prompt
     assert all("가격, 할인율" not in item for item in prompt.visible_text)
+    assert "근거 기반 초안" not in prompt.prompt
+    assert result["products"][0]["evidence_summary"] not in prompt.visible_text
+    assert result["products"][0]["evidence_summary"] in prompt.prompt
+    assert "광안리 야경 로컬 워크" in prompt.source_summary["specific_place_hints"]
 
 
 def test_poster_cost_estimate_uses_gpt_image_2_pricing():

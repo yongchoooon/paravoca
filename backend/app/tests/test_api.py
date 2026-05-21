@@ -8,6 +8,8 @@ from sqlalchemy import inspect
 from app.agents.workflow import (
     _filter_items_by_geo_scope,
     _filter_retrieved_documents_by_geo_scope,
+    _geo_scope_with_tourapi_child_locations,
+    _tourapi_keyword_queries,
     validate_qa_report,
 )
 from app.core.config import Settings, get_settings
@@ -15,6 +17,7 @@ from app.db import models
 from app.db.session import SessionLocal, engine, init_db
 from app.llm.gemini_gateway import (
     GeminiGatewayError,
+    GeminiJsonResult,
     call_gemini_json,
     _is_retryable_response,
     _parse_json,
@@ -37,6 +40,20 @@ def unwrap(response):
 def require_tourapi_key():
     if not get_settings().tourapi_service_key:
         pytest.skip("TOURAPI_SERVICE_KEY is required for workflow tests")
+
+
+def fake_gemini_result(data: dict) -> GeminiJsonResult:
+    return GeminiJsonResult(
+        data=data,
+        model="gemini-test",
+        prompt_tokens=10,
+        completion_tokens=20,
+        total_tokens=30,
+        cost_usd=0.0,
+        paid_tier_equivalent_cost_usd=0.0,
+        latency_ms=1,
+        raw_text="{}",
+    )
 
 
 def test_gemini_schema_validation_allows_null_for_optional_fields():
@@ -123,6 +140,59 @@ def test_geo_scope_keyword_filters_locality_inside_resolved_signgu():
 
     assert [item.id for item in filtered_items] == ["tourapi:test:daecheong"]
     assert [doc["doc_id"] for doc in filtered_docs] == ["doc:daecheong"]
+
+
+def test_geo_scope_expands_parent_city_to_child_signgus_for_tourapi_search():
+    init_db()
+    with SessionLocal() as db:
+        seed_test_ldong_catalog(db)
+        geo_scope = {
+            "locations": [
+                {
+                    "role": "primary",
+                    "name": "경상북도 포항시",
+                    "base_name": "경상북도 포항시",
+                    "ldong_regn_cd": "47",
+                    "ldong_regn_nm": "경상북도",
+                    "ldong_signgu_cd": "110",
+                    "ldong_signgu_nm": "포항시",
+                }
+            ],
+            "allow_nationwide": False,
+        }
+
+        expanded = _geo_scope_with_tourapi_child_locations(db, geo_scope)
+
+    locations = expanded["locations"]
+    assert [location["ldong_signgu_cd"] for location in locations] == ["111", "113"]
+    assert [location["name"] for location in locations] == ["경상북도 포항시 남구", "경상북도 포항시 북구"]
+    assert all(location["expanded_from_name"] == "경상북도 포항시" for location in locations)
+
+
+def test_tourapi_keyword_queries_use_short_known_terms_without_hallucinated_landmarks():
+    normalized = {
+        "target_customer": "외국인",
+        "preferred_themes": ["생태", "해변"],
+    }
+    geo_scope = {
+        "locations": [
+            {
+                "role": "primary",
+                "name": "경상북도 포항시 북구",
+                "base_name": "경상북도 포항시",
+                "matched_text": "포항",
+                "ldong_regn_cd": "47",
+                "ldong_signgu_cd": "113",
+            }
+        ],
+        "allow_nationwide": False,
+    }
+
+    queries = _tourapi_keyword_queries(normalized, geo_scope, geo_scope["locations"][0])
+
+    assert queries == ["포항", "생태", "해변", "포항 생태", "포항 해변"]
+    assert "경상북도 포항시 외국인 생태 해변 액티비티" not in queries
+    assert all(term not in " ".join(queries) for term in ["영일대", "호미곶"])
 
 
 def test_gemini_prompt_debug_log_writes_full_prompt_and_output(monkeypatch, tmp_path):
@@ -1336,6 +1406,49 @@ def test_workflow_blocks_route_or_multi_region_request_before_tourapi_search(mon
 
 def test_workflow_blocks_foreign_destination_before_tourapi_search(monkeypatch):
     use_test_tourapi_provider(monkeypatch)
+    monkeypatch.setenv("LLM_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    get_settings.cache_clear()
+
+    def fake_call_gemini_json(**kwargs):
+        purpose = kwargs["purpose"]
+        if purpose == "planner":
+            return fake_gemini_result(
+                {
+                    "user_intent": "도쿄에서 외국인 대상 액티비티 상품을 기획합니다.",
+                    "request_type": "tourism_product_generation",
+                    "product_count": 1,
+                    "target_customer": "외국인",
+                    "preferred_themes": ["야간 관광"],
+                    "avoid": [],
+                    "period": "2026-05",
+                    "output_language": "ko",
+                    "product_generation_constraints": ["상품 개수는 최대 20개입니다."],
+                    "evidence_requirements": ["각 상품은 실제 근거 문서와 연결되어야 합니다."],
+                }
+            )
+        if purpose == "geo_resolution":
+            return fake_gemini_result(
+                {
+                    "locations": [
+                        {
+                            "text": "도쿄",
+                            "normalized_text": "도쿄",
+                            "role": "primary",
+                            "is_foreign": True,
+                        }
+                    ],
+                    "resolved_locations": [],
+                    "clarification_candidates": [],
+                    "excluded_locations": [],
+                    "allow_nationwide": False,
+                    "unsupported_locations": ["도쿄"],
+                    "notes": [],
+                }
+            )
+        raise AssertionError(f"unexpected Gemini purpose: {purpose}")
+
+    monkeypatch.setattr("app.agents.workflow.call_gemini_json", fake_call_gemini_json)
     payload = {
         "template_id": "default_product_planning",
         "input": {
@@ -1360,8 +1473,10 @@ def test_workflow_blocks_foreign_destination_before_tourapi_search(monkeypatch):
     assert result["user_message"]["message"] == "PARAVOCA는 현재 국내 관광 데이터만 지원합니다."
     geo_step = next(step for step in steps if step["agent_name"] == "GeoResolverAgent")
     assert geo_step["output"]["geo_scope"]["status"] == "unsupported"
+    assert geo_step["output"]["geo_scope"]["resolution_strategy"] == "llm_foreign_destination_detected"
     assert any(step["step_type"] == "geo_scope_exit" for step in steps)
     assert all(not call["tool_name"].startswith("tourapi_search") for call in tool_calls)
+    get_settings.cache_clear()
 
 
 def test_create_workflow_run_rejects_invalid_period():
@@ -1437,6 +1552,35 @@ def test_validate_qa_report_splits_message_and_suggested_fix():
 
     assert "수정하는 것을 권장" not in report["issues"][0]["message"]
     assert report["issues"][0]["suggested_fix"] == "'가격은 운영자가 최종 확인한 뒤 안내합니다'처럼 완화된 표현으로 수정하세요."
+
+
+def test_validate_qa_report_cites_problem_phrase_for_deterministic_operating_hours_issue():
+    products = [
+        {
+            "id": "product_1",
+            "title": "포항 경상북도수목원 힐링 & 생태 체험",
+            "one_liner": "숲에서 쉬어 가는 생태 체험입니다.",
+            "core_value": [],
+            "itinerary": [],
+            "estimated_duration": "상시 운영",
+            "operation_difficulty": "보통",
+            "source_ids": ["doc_1"],
+        }
+    ]
+    payload = {"overall_status": "pass", "summary": "", "issues": []}
+    report = validate_qa_report(
+        payload,
+        products,
+        docs=[{"doc_id": "doc_1"}],
+        evidence_context={"unresolved_gaps": [{"gap_type": "missing_operating_hours"}]},
+        marketing_assets=[],
+    )
+
+    issue = report["issues"][0]
+    assert issue["type"] == "operating_hours_claim"
+    assert issue["field_path"] == "estimated_duration"
+    assert "예상 소요 시간" in issue["message"]
+    assert "'상시 운영'" in issue["message"]
 
 
 def test_validate_qa_report_filters_source_metadata_noise_and_enriches_title_fix():

@@ -41,6 +41,14 @@ def build_poster_prompt(
     evidence_summary = _clean_text(product.get("evidence_summary"))
     marketing_copy = _marketing_texts(marketing)
     sns_copy = _string_list(_dict(marketing).get("sns_posts"), limit=1)
+    specific_place_hints = _specific_place_hints(
+        product_title=product_title,
+        one_liner=one_liner,
+        itinerary_items=itinerary_items,
+        marketing_copy=marketing_copy,
+        sns_copy=sns_copy,
+        evidence_summary=evidence_summary,
+    )
 
     visible_text: list[str] = []
     if "product_summary" in selected:
@@ -53,8 +61,6 @@ def build_poster_prompt(
         visible_text.extend(marketing_copy[:2])
     if "sns_copy" in selected:
         visible_text.extend(sns_copy[:1])
-    if "evidence_summary" in selected and evidence_summary:
-        visible_text.append(f"근거 기반 초안: {evidence_summary}")
     visible_text = _dedupe([_clean_text(item) for item in visible_text if _clean_text(item)])[:7]
 
     constraints = _constraints(product, marketing, result)
@@ -81,10 +87,17 @@ def build_poster_prompt(
         _bullet_sentence(
             [
                 f"Destination context: {location}" if location else "",
+                (
+                    f"Most specific place and experience cues from the product data: {', '.join(specific_place_hints)}."
+                    if specific_place_hints
+                    else ""
+                ),
+                "Before choosing the background, infer the most specific district, venue type, event type, local culture, or neighborhood implied by the product title, itinerary, marketing copy, and evidence summary.",
                 "Use a real-world Korean travel setting suggested by the product data.",
+                "Do not substitute a generic famous landmark just because the broader city or province is known for it.",
                 "Show atmosphere and place experience, not an abstract background.",
-                "Render the scene with cinematic depth-of-field, letting the background gently blur to draw the viewer's eye to the subject.",
-                "Use soft, diffuse natural lighting that evokes the time of day suggested by the product's theme (golden hour warmth for sunset tours, cool blue-tinted twilight for night walks).",
+                preset.scene_fragment,
+                preset.lighting_fragment,
             ]
         ),
         "",
@@ -104,8 +117,8 @@ def build_poster_prompt(
         "Color palette & mood:",
         _bullet_sentence(
             [
-                f"Draw the color palette from the destination's natural environment and the style preset: {preset.label}.",
-                "Prefer harmonious, slightly desaturated tones that feel premium and editorial rather than oversaturated stock-photo colors.",
+                f"Apply this selected style preset: {preset.label}.",
+                preset.color_fragment,
                 "Maintain a cohesive mood throughout — every visual element should reinforce the same emotional tone.",
             ]
         ),
@@ -122,6 +135,21 @@ def build_poster_prompt(
                 "Do not reproduce the reference images verbatim; instead, use them as stylistic and compositional inspiration to create an original poster.",
             ]
         )
+    else:
+        sections.extend(
+            [
+                "",
+                "=== NO REFERENCE IMAGE GUIDANCE ===",
+                _bullet_sentence(
+                    [
+                        "No reference image is provided. Create the visual background from the product data instead of defaulting to a broad-city landmark.",
+                        "If the broad location is a city or province but the product text implies a more specific district, festival, street, market, cafe culture, waterfront, forest, temple, or local venue, prioritize that specific cue.",
+                        "For example, a coffee festival or cafe-culture product should look like a local coffee festival, roastery street, cafe interior/exterior, or neighborhood waterfront cafe atmosphere, not an unrelated bridge, skyline, or tourist landmark.",
+                        "If the precise venue is uncertain, choose a plausible non-specific local scene that matches the product's experience type and avoid recognizable landmarks that are not supported by the product data.",
+                    ]
+                ),
+            ]
+        )
 
     sections.extend(
         [
@@ -135,14 +163,17 @@ def build_poster_prompt(
             _bullet_sentence(
                 [
                     f"Render the primary headline \"{product_title}\" in bold, artistic typography positioned prominently near the top third of the poster.",
-                    "Use a clean, modern sans-serif or editorial serif typeface that complements the visual style.",
+                    preset.typography_fragment,
                     "Ensure all text is legible against the background — use subtle text shadows, semi-transparent overlays, or contrasting placement as needed.",
                     "Keep text areas sparse and well-spaced; avoid dense paragraphs or cluttered layouts.",
                     "Secondary text lines should be smaller and positioned below or beside the headline with clear visual hierarchy.",
                 ]
             ),
             "",
-            "Style:",
+            "Composition:",
+            _bullet_sentence([preset.composition_fragment]),
+            "",
+            "Style summary:",
             f"- {preset.prompt_fragment}",
             "",
             "=== CONSTRAINTS ===",
@@ -165,6 +196,7 @@ def build_poster_prompt(
             "location": location,
             "target_customer": target_customer,
             "input_image_count": len(resolved_input_images),
+            "specific_place_hints": specific_place_hints,
         },
     )
 
@@ -251,6 +283,26 @@ def _marketing_texts(marketing: dict[str, Any] | None) -> list[str]:
         _clean_text(sales_copy.get("subheadline")),
     ]
     return _dedupe([item for item in texts if item])
+
+
+def _specific_place_hints(
+    *,
+    product_title: str,
+    one_liner: str,
+    itinerary_items: list[str],
+    marketing_copy: list[str],
+    sns_copy: list[str],
+    evidence_summary: str,
+) -> list[str]:
+    candidates = [
+        product_title,
+        one_liner,
+        *itinerary_items,
+        *marketing_copy,
+        *sns_copy,
+        evidence_summary,
+    ]
+    return _dedupe([item for item in (_clean_text(candidate) for candidate in candidates) if item])[:8]
 
 
 def _key_details(
