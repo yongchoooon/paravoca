@@ -26,11 +26,12 @@ Poster Studio는 workflow run 결과를 바탕으로 여행 상품 홍보 포스
 
 1. Run Detail의 상품 카드 또는 AppShell의 Poster Studio 탭에서 포스터 생성을 시작합니다.
 2. 사용자가 포함할 내용 범위와 3개 style preset 중 하나를 선택합니다.
-3. 서버가 상품/마케팅/근거/claim 제한 데이터를 기반으로 영어 프롬프트를 구성합니다.
-4. OpenAI Image API가 `OPENAI_API_KEY`로 포스터 이미지를 생성합니다.
-5. 생성된 포스터는 원본 run, 상품, 프롬프트, 선택 옵션, latency, 추정 비용과 함께 저장됩니다.
-6. UI에서 포스터 초안을 바로 미리보고 다운로드합니다.
-7. 상품 1개당 저장 가능한 포스터 초안은 최대 3개입니다. 기존 포스터를 삭제하면 다시 생성할 수 있습니다.
+3. 선택한 상품의 근거 자료에 연결된 이미지 후보를 관련도 순서로 확인하고, 필요한 경우 최대 3개까지 참조 이미지로 선택합니다. 직접 URL 입력은 제공하지 않습니다.
+4. 서버가 상품/마케팅/근거/claim 제한/선택 이미지 데이터를 기반으로 영어 프롬프트를 구성합니다.
+5. OpenAI Image API가 `OPENAI_API_KEY`로 포스터 이미지를 생성합니다.
+6. 생성된 포스터는 원본 run, 상품, 프롬프트, 선택 옵션, latency, 추정 비용과 함께 저장됩니다.
+7. UI에서 포스터 초안을 바로 미리보고 다운로드합니다.
+8. 상품 1개당 저장 가능한 포스터 초안은 최대 3개입니다. 기존 포스터를 삭제하면 다시 생성할 수 있습니다.
 
 현재 선택 가능한 style preset:
 
@@ -39,6 +40,10 @@ Poster Studio는 workflow run 결과를 바탕으로 여행 상품 홍보 포스
 - `minimal_event`: 정보가 명확한 미니멀 홍보 포스터 스타일
 
 현재는 자유 prompt 입력이나 후보 여러 개 생성 후 선택하는 review flow를 제공하지 않습니다. 자유 커스터마이즈는 후속 단계에서 확장합니다. 기본 이미지 모델은 `gpt-image-2`, 기본 크기는 `1024x1536`, 기본 품질은 `medium`입니다. API key가 없거나 provider/storage 오류가 발생하면 fake poster를 만들지 않고 failed 상태와 에러를 표시합니다. 생성된 이미지는 게시 확정물이 아니라 포스터 초안 이미지입니다.
+
+Run Detail과 Poster Studio의 참조 이미지 선택 UI는 동일한 원칙을 따릅니다. 상품 `source_ids`와 직접 연결된 evidence 이미지를 먼저 보여주고, 같은 `content_id`로 묶이는 후보를 그 다음에 보여줍니다. 후보는 작은 URL 목록이나 API 태그가 아니라 이미지명과 큰 thumbnail 카드로 표시하며, 이미지를 클릭하면 원본 이미지를 확대해서 확인할 수 있습니다.
+
+Poster Studio의 run/product 선택은 텍스트 편집형 dropdown이 아니라 Dashboard table과 비슷한 compact row selector로 표시합니다. Dashboard run table에는 연결된 포스터 수가 있는 run에만 `Posters` 숫자를 표시합니다. 포스터와 참조 이미지 preview modal은 확대/축소를 지원하며, nested modal에서 `Esc`를 눌러도 가장 위의 창만 닫히도록 처리합니다.
 
 비용은 OpenAI Image API 응답의 `usage`가 있으면 text input/image input/image output token별로 계산해 `poster_assets.cost_usd`와 `provider_response_summary.cost_breakdown`에 저장합니다. 응답에 usage가 없으면 prompt 글자 수와 size/quality별 image output token 표를 기준으로 추정합니다. Poster usage file log는 `backend/logs/poster_usage.jsonl`, `poster_usage.csv`, `poster_usage_summary.json`에 저장됩니다. 생성에 사용된 prompt는 사용자 화면에 기본 노출하지 않고 `backend/logs/poster_prompts/<run_id>/<poster_id>.json`과 `.md` 파일로 저장합니다.
 
@@ -708,4 +713,4 @@ Phase 13 Evaluation and Quality Dashboard도 구현 완료되었습니다.
 
 Phase 14 Poster Studio도 구현 완료되었습니다. Run Detail과 Poster Studio 탭에서 상품별 포스터 초안을 생성할 수 있고, 생성 결과는 poster asset DB row와 이미지 파일로 저장됩니다. prompt는 영어 template 기반이며, claim 제한과 확인 필요 항목은 visible copy가 아니라 이미지 생성 constraints로 들어갑니다.
 
-다음 Phase 15에서는 Costs 탭을 구현해 LLM/image 생성 비용과 latency를 운영자가 한 화면에서 볼 수 있게 정리합니다. Phase 16에서는 배포/데모 안정화 단계에서 env, CI, production build, 비용/로그 운영, 실패 run 진단 UX를 정리합니다.
+다음 Phase 15는 Costs 탭이 아니라 Quality Hardening audit입니다. QA issue 설명, Sales copy/FAQ/SNS/Claims 품질, RAG/source document 축적 구조, Evidence selection 원리, 이미지 evidence 관련성, 사용자 화면의 개발자용 문구 제거 대상을 먼저 진단하고 문서화합니다. 이후 Phase 16 QA 고도화, Phase 17 Marketing output 고도화, Phase 18 RAG/Evidence pipeline 고도화, Phase 19 Evidence/Visual Evidence UX 재설계, Phase 20 UI copy/product surface polish를 진행합니다. 기존 Costs 탭은 Phase 21, Deployment/Demo Hardening은 Phase 22로 이동했습니다.
