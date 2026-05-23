@@ -4,6 +4,9 @@ from fastapi.testclient import TestClient
 
 from app.agents.workflow import (
     _product_prompt,
+    _filter_retrieved_documents_by_geo_scope,
+    _merge_retrieved_documents,
+    _source_item_documents,
     marketing_agent,
     validate_marketing_assets,
     validate_products,
@@ -143,6 +146,49 @@ def test_product_prompt_includes_evidence_fusion_context_and_avoid_rules():
     assert "운영시간, 요금, 예약 가능 여부" in prompt
 
 
+def test_product_prompt_prioritizes_evidence_card_document_ids():
+    docs = [
+        {
+            "doc_id": f"doc:tourapi:content:{index}",
+            "title": f"일반 근거 {index}",
+            "snippet": "일반 근거입니다.",
+            "metadata": {"content_id": str(index), "source_family": "kto_tourapi_kor"},
+        }
+        for index in range(20)
+    ]
+    docs.append(
+        {
+            "doc_id": "doc:theme:kto_audio:story",
+            "title": "1. 국립일제강제동원역사관과 기억의 터널",
+            "snippet": "국립일제강제동원역사관 오디오 해설 스토리입니다.",
+            "metadata": {"content_id": "2551424", "source_family": "kto_audio"},
+        }
+    )
+    evidence_context = {
+        "productization_advice": {
+            "candidate_evidence_cards": [
+                {
+                    "content_id": "2551424",
+                    "source_item_id": "tourapi:content:2551424",
+                    "title": "국립일제강제동원역사관",
+                    "evidence_document_ids": ["doc:theme:kto_audio:story"],
+                }
+            ]
+        }
+    }
+
+    prompt = _product_prompt(
+        {"product_count": 3, "target_customer": "외국인"},
+        {"summary": "근거 기반 상품화를 준비합니다."},
+        docs,
+        evidence_context=evidence_context,
+        source_items=[],
+    )
+
+    assert "doc:theme:kto_audio:story" in prompt
+    assert "국립일제강제동원역사관과 기억의 터널" in prompt
+
+
 def test_validate_products_uses_only_real_doc_ids_and_adds_evidence_fields():
     payload = _product_payload(2)
     payload["products"][0]["source_ids"] = ["missing_doc", "doc_1"]
@@ -164,6 +210,307 @@ def test_validate_products_uses_only_real_doc_ids_and_adds_evidence_fields():
     assert "요청 avoid 기준: 무리한 도보" in products[0]["claim_limits"]
 
 
+def test_validate_products_does_not_fallback_to_generic_sources_when_source_ids_are_invalid():
+    payload = _product_payload(1)
+    payload["products"][0]["title"] = "근거 없는 새 상품"
+    payload["products"][0]["one_liner"] = "연결할 수 있는 직접 근거가 없는 상품입니다."
+    payload["products"][0]["core_value"] = ["새 경험"]
+    payload["products"][0]["evidence_summary"] = ""
+    payload["products"][0]["source_ids"] = ["missing_doc"]
+    payload["products"][0]["itinerary"] = [{"order": 1, "name": "근거 없는 일정", "source_id": "missing_doc"}]
+
+    products = validate_products(
+        payload,
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+
+    assert products[0]["source_ids"] == []
+    assert products[0]["itinerary"][0]["source_id"] == ""
+    assert products[0]["evidence_summary"] == "연결된 근거가 부족해 운영자 확인이 필요합니다."
+    assert any("실제 근거 목록에 없는 source id" in item for item in products[0]["needs_review"])
+    assert any("근거 문서가 없어" in item for item in products[0]["needs_review"])
+    assert not any("서버가 사용 가능한 근거를 보정" in item for item in products[0]["needs_review"])
+
+
+def test_validate_products_repairs_source_item_id_to_real_doc_id_without_generic_fallback():
+    docs = [
+        {
+            "doc_id": "doc:tourapi:content:2551424",
+            "title": "국립일제강제동원역사관",
+            "snippet": "일제강제동원 피해 역사를 다루는 역사관입니다.",
+            "metadata": {
+                "content_id": "2551424",
+                "source_item_id": "tourapi:content:2551424",
+                "source_family": "kto_tourapi_kor",
+            },
+        },
+        {
+            "doc_id": "doc:theme:kto_audio:test",
+            "title": "국립일제강제동원역사관과 기억의 터널",
+            "snippet": "국립일제강제동원역사관 오디오 해설입니다.",
+            "metadata": {
+                "content_id": "2551424",
+                "source_item_id": "tourapi:content:2551424",
+                "source_family": "kto_audio",
+            },
+        },
+    ]
+    payload = _product_payload(1)
+    payload["products"][0]["title"] = "부산의 아픈 역사, 국립일제강제동원역사관 탐방"
+    payload["products"][0]["source_ids"] = ["tourapi:content:2551424"]
+
+    products = validate_products(
+        payload,
+        {"product_count": 1, "target_customer": "외국인"},
+        docs,
+        evidence_context={},
+    )
+
+    assert products[0]["source_ids"] == ["doc:tourapi:content:2551424", "doc:theme:kto_audio:test"]
+    assert not any("근거 문서가 없어" in item for item in products[0]["needs_review"])
+
+
+def test_validate_products_adds_directly_linked_supporting_evidence_documents():
+    docs = [
+        {
+            "doc_id": "doc:tourapi:content:2551424",
+            "title": "국립일제강제동원역사관",
+            "snippet": "일제강제동원 피해 역사를 다루는 역사관입니다.",
+            "metadata": {
+                "content_id": "2551424",
+                "source_item_id": "tourapi:content:2551424",
+                "source_family": "kto_tourapi_kor",
+            },
+        },
+        {
+            "doc_id": "doc:theme:kto_audio:story",
+            "title": "1. 국립일제강제동원역사관과 기억의 터널",
+            "snippet": "국립일제강제동원역사관 오디오 해설 스토리입니다.",
+            "metadata": {
+                "content_id": "2551424",
+                "source_item_id": "tourapi:content:2551424",
+                "source_family": "kto_audio",
+            },
+        },
+        {
+            "doc_id": "doc:theme:kto_audio:other",
+            "title": "영도다리 오디오 해설",
+            "snippet": "다른 장소의 오디오 해설입니다.",
+            "metadata": {
+                "content_id": "999999",
+                "source_item_id": "tourapi:content:999999",
+                "source_family": "kto_audio",
+            },
+        },
+    ]
+    payload = _product_payload(1)
+    payload["products"][0]["title"] = "부산의 아픈 역사, 국립일제강제동원역사관 탐방"
+    payload["products"][0]["source_ids"] = ["doc:tourapi:content:2551424"]
+    payload["products"][0]["evidence_summary"] = "국립일제강제동원역사관의 개요를 바탕으로 구성했습니다."
+
+    products = validate_products(
+        payload,
+        {"product_count": 1, "target_customer": "외국인"},
+        docs,
+        evidence_context={},
+    )
+
+    assert products[0]["source_ids"] == [
+        "doc:tourapi:content:2551424",
+        "doc:theme:kto_audio:story",
+    ]
+    assert "국립일제강제동원역사관과 기억의 터널" in products[0]["evidence_summary"]
+    assert "doc:theme:kto_audio:other" not in products[0]["source_ids"]
+
+
+def test_validate_products_strictly_infers_source_id_from_exact_evidence_title():
+    docs = [
+        {
+            "doc_id": "doc:tourapi:content:3303393",
+            "title": "부산 밀 페스티벌",
+            "snippet": "밀을 주제로 세계 식문화를 탐험하는 축제입니다.",
+            "metadata": {"content_id": "3303393", "source_family": "kto_tourapi_kor"},
+        },
+        {
+            "doc_id": "doc:tourapi:content:2818494",
+            "title": "부산가족축제",
+            "snippet": "가족 체험 축제입니다.",
+            "metadata": {"content_id": "2818494", "source_family": "kto_tourapi_kor"},
+        },
+    ]
+    payload = _product_payload(1)
+    payload["products"][0]["title"] = "부산의 맛, 밀 페스티벌에서 세계 식문화를 탐험하다"
+    payload["products"][0]["source_ids"] = []
+
+    products = validate_products(
+        payload,
+        {"product_count": 1, "target_customer": "외국인"},
+        docs,
+        evidence_context={},
+    )
+
+    assert products[0]["source_ids"] == ["doc:tourapi:content:3303393"]
+    assert not any("근거 문서가 없어" in item for item in products[0]["needs_review"])
+
+
+def test_validate_products_does_not_infer_unrelated_regional_source():
+    docs = [
+        {
+            "doc_id": "doc:tourapi:content:2818494",
+            "title": "부산가족축제",
+            "snippet": "가족 체험 축제입니다.",
+            "metadata": {"content_id": "2818494", "source_family": "kto_tourapi_kor"},
+        }
+    ]
+    payload = _product_payload(1)
+    payload["products"][0]["title"] = "부산 역사 스토리텔링 산책"
+    payload["products"][0]["source_ids"] = []
+
+    products = validate_products(
+        payload,
+        {"product_count": 1, "target_customer": "외국인"},
+        docs,
+        evidence_context={},
+    )
+
+    assert products[0]["source_ids"] == []
+    assert any("근거 문서가 없어" in item for item in products[0]["needs_review"])
+
+
+def test_retrieved_theme_documents_without_strong_match_signals_are_excluded():
+    documents = [
+        {
+            "doc_id": "doc:theme:kto_audio:bad",
+            "title": "7코스 안내자 소개",
+            "content": "종로에서 만나는 혁명의 길 이야기",
+            "metadata": {
+                "source_family": "kto_audio",
+                "content_type": "theme",
+                "ldong_regn_cd": "26",
+                "ldong_signgu_cd": "290",
+                "theme_match_signals": "[]",
+                "first_seen_run_id": "run_test_theme_integrity",
+                "last_seen_run_id": "run_test_theme_integrity",
+            },
+        },
+        {
+            "doc_id": "doc:theme:kto_audio:good",
+            "title": "국립일제강제동원역사관 오디오 해설",
+            "content": "국립일제강제동원역사관 전시 해설",
+            "metadata": {
+                "source_family": "kto_audio",
+                "content_type": "theme",
+                "ldong_regn_cd": "26",
+                "ldong_signgu_cd": "290",
+                "theme_match_signals": '["target_title_text_match"]',
+                "first_seen_run_id": "run_test_theme_integrity",
+                "last_seen_run_id": "run_test_theme_integrity",
+            },
+        },
+    ]
+
+    filtered = _filter_retrieved_documents_by_geo_scope(
+        documents,
+        geo_scope={"locations": [{"ldong_regn_cd": "26", "ldong_signgu_cd": "290"}]},
+        run_id="run_test_theme_integrity",
+    )
+
+    assert [document["doc_id"] for document in filtered] == ["doc:theme:kto_audio:good"]
+
+
+def test_retrieved_enrichment_documents_from_previous_runs_are_not_used_as_backfill():
+    documents = [
+        {
+            "doc_id": "doc:theme:kto_audio:old",
+            "title": "영도다리",
+            "content": "영도다리 오디오 해설",
+            "metadata": {
+                "source_family": "kto_audio",
+                "content_type": "theme",
+                "ldong_regn_cd": "26",
+                "ldong_signgu_cd": "320",
+                "theme_match_signals": '["target_title_text_match"]',
+                "first_seen_run_id": "run_old",
+                "last_seen_run_id": "run_old",
+            },
+        },
+        {
+            "doc_id": "doc:theme:kto_audio:current",
+            "title": "국립일제강제동원역사관 오디오 해설",
+            "content": "국립일제강제동원역사관 전시 해설",
+            "metadata": {
+                "source_family": "kto_audio",
+                "content_type": "theme",
+                "ldong_regn_cd": "26",
+                "ldong_signgu_cd": "290",
+                "theme_match_signals": '["target_title_text_match"]',
+                "first_seen_run_id": "run_current",
+                "last_seen_run_id": "run_current",
+            },
+        },
+        {
+            "doc_id": "doc:tourapi:content:2551424",
+            "title": "국립일제강제동원역사관",
+            "content": "기본 TourAPI 근거",
+            "metadata": {
+                "source_family": "kto_tourapi_kor",
+                "source": "tourapi",
+                "content_type": "attraction",
+                "ldong_regn_cd": "26",
+                "ldong_signgu_cd": "290",
+            },
+        },
+    ]
+
+    filtered = _filter_retrieved_documents_by_geo_scope(
+        documents,
+        geo_scope={"locations": [{"ldong_regn_cd": "26", "ldong_signgu_cd": "290"}]},
+        run_id="run_current",
+    )
+
+    assert [document["doc_id"] for document in filtered] == [
+        "doc:theme:kto_audio:current",
+        "doc:tourapi:content:2551424",
+    ]
+
+
+def test_source_item_documents_are_merged_with_rag_results_for_evidence_fusion():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:test:phase17:source-item-doc"
+    with SessionLocal() as db:
+        db.merge(
+            models.SourceDocument(
+                id=f"doc:{item_id}",
+                source="tourapi",
+                source_item_id=item_id,
+                title="글로벌 영도커피페스티벌",
+                content="제목: 글로벌 영도커피페스티벌\n개요: 커피 축제 근거",
+                document_metadata={
+                    "source": "tourapi",
+                    "source_family": "kto_tourapi_kor",
+                    "source_item_id": item_id,
+                    "content_type": "event",
+                    "source_role": "runtime_run_evidence",
+                },
+                embedding_status="indexed",
+            )
+        )
+        db.commit()
+
+        source_item_docs = _source_item_documents(db, [{"id": item_id}])
+        merged = _merge_retrieved_documents(
+            [{"doc_id": "doc:existing", "title": "기존 RAG 근거", "content": "기존 근거", "metadata": {}}],
+            source_item_docs,
+        )
+
+    assert [document["doc_id"] for document in merged] == ["doc:existing", f"doc:{item_id}"]
+    assert merged[1]["title"] == "글로벌 영도커피페스티벌"
+
+
 def test_validate_products_caps_requested_count_at_twenty():
     payload = _product_payload(25)
 
@@ -177,7 +524,7 @@ def test_validate_products_caps_requested_count_at_twenty():
     assert len(products) == 20
 
 
-def test_validate_products_reduces_count_when_evidence_is_short():
+def test_validate_products_keeps_requested_count_when_evidence_is_short():
     payload = _product_payload(20)
 
     products = validate_products(
@@ -187,8 +534,8 @@ def test_validate_products_reduces_count_when_evidence_is_short():
         evidence_context=EVIDENCE_CONTEXT,
     )
 
-    assert len(products) == 2
-    assert any("사용 가능한 근거 데이터가 2개" in note for note in products[0]["coverage_notes"])
+    assert len(products) == 20
+    assert not any("사용 가능한 근거 데이터가" in note for product in products for note in product["coverage_notes"])
 
 
 def test_validate_products_rejects_less_than_effective_count():

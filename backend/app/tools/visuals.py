@@ -12,6 +12,11 @@ from app.core.config import Settings, get_settings
 from app.core.timezone import now_kst_naive
 from app.db import models
 from app.rag.chroma_store import index_source_documents
+from app.rag.source_documents import (
+    SOURCE_ROLE_ENRICHMENT,
+    merge_source_lifecycle_metadata,
+    with_source_lifecycle_metadata,
+)
 from app.tools.tourism_enrichment import upsert_tourism_entity
 
 
@@ -184,6 +189,7 @@ def execute_visual_search(
         db=db,
         target_item=target_item,
         assets=assets,
+        run_id=run_id,
     )
     indexed = index_source_documents(db, documents) if documents else 0
     return {
@@ -268,10 +274,11 @@ def upsert_source_documents_from_visual_assets(
     db: Session,
     target_item: models.TourismItem,
     assets: list[models.TourismVisualAsset],
+    run_id: str | None = None,
 ) -> list[models.SourceDocument]:
     documents: list[models.SourceDocument] = []
     for asset in assets:
-        metadata = _visual_source_metadata(target_item, asset)
+        metadata = _visual_source_metadata(target_item, asset, run_id=run_id)
         payload = {
             "id": f"doc:{asset.id}",
             "source": asset.source_family,
@@ -283,6 +290,13 @@ def upsert_source_documents_from_visual_assets(
         }
         existing = db.get(models.SourceDocument, payload["id"])
         if existing:
+            payload["document_metadata"] = merge_source_lifecycle_metadata(
+                existing.document_metadata if isinstance(existing.document_metadata, dict) else {},
+                payload["document_metadata"],
+                run_id=run_id,
+                source_role=SOURCE_ROLE_ENRICHMENT,
+                ingestion_method="visual_api_enrichment",
+            )
             for key, value in payload.items():
                 setattr(existing, key, value)
             existing.updated_at = models.utcnow()
@@ -347,8 +361,14 @@ def _photo_contest_candidate(raw: dict[str, Any]) -> VisualAssetCandidate:
     )
 
 
-def _visual_source_metadata(target_item: models.TourismItem, asset: models.TourismVisualAsset) -> dict[str, Any]:
-    return {
+def _visual_source_metadata(
+    target_item: models.TourismItem,
+    asset: models.TourismVisualAsset,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    return with_source_lifecycle_metadata(
+        {
         "source": asset.source_family,
         "source_family": asset.source_family,
         "source_item_id": target_item.id,
@@ -391,7 +411,12 @@ def _visual_source_metadata(target_item: models.TourismItem, asset: models.Touri
         "interpretation_notes": ["이미지 후보이며 게시 전 사용권과 출처 표시 조건 확인이 필요합니다."],
         "retrieved_at": (asset.retrieved_at or now_kst_naive()).isoformat(),
         "trust_level": 0.65,
-    }
+        },
+        source_role=SOURCE_ROLE_ENRICHMENT,
+        ingestion_method="visual_api_enrichment",
+        run_id=run_id,
+        detail_enriched=True,
+    )
 
 
 def _visual_source_content(target_item: models.TourismItem, asset: models.TourismVisualAsset) -> str:

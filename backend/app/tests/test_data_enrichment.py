@@ -319,6 +319,59 @@ class FailingThemeProvider(ThemeProvider):
         raise RuntimeError("searchKeyword2 unavailable")
 
 
+class MismatchedAudioThemeProvider(ThemeProvider):
+    def search_audio(self, *, keyword, limit=5):
+        return [
+            ThemeDataCandidate(
+                id="theme-audio-cheorwon",
+                source_family="kto_audio",
+                operation="storySearchList",
+                title="환영인사 및 오디오해설 소개",
+                content_id="4460",
+                address="부산광역시 남구 홍곡로320번길 100",
+                overview="철원에 오신 여러분 환영합니다. 철원의 아름다움을 안내해 드리겠습니다.",
+                image_url="https://example.com/cheorwon.jpg",
+                thumbnail_url="https://example.com/cheorwon-thumb.jpg",
+                theme_attributes={"language": "ko", "audio_url_available": True},
+                needs_review=["오디오 제공 언어와 사용 조건은 확인 필요입니다."],
+                raw={"stid": "4460", "audioTitle": "환영인사 및 오디오해설 소개", "script": "철원 이야기"},
+            )
+        ][:limit]
+
+
+class MatchingAudioThemeProvider(ThemeProvider):
+    def search_audio(self, *, keyword, limit=5):
+        return [
+            ThemeDataCandidate(
+                id="theme-audio-museum",
+                source_family="kto_audio",
+                operation="storySearchList",
+                title="국립일제강제동원역사관 오디오 해설",
+                content_id="2551424-AUDIO",
+                address="부산광역시 남구 홍곡로320번길 100",
+                overview="국립일제강제동원역사관의 전시 맥락을 소개하는 오디오 해설입니다.",
+                image_url="https://example.com/museum-audio.jpg",
+                thumbnail_url="https://example.com/museum-audio-thumb.jpg",
+                theme_attributes={"language": "ko", "audio_url_available": True},
+                needs_review=["오디오 제공 언어와 사용 조건은 확인 필요입니다."],
+                raw={
+                    "stid": "2551424-AUDIO",
+                    "audioTitle": "국립일제강제동원역사관 오디오 해설",
+                    "script": "국립일제강제동원역사관 전시 해설",
+                },
+            )
+        ][:limit]
+
+
+class RecordingMatchingAudioThemeProvider(MatchingAudioThemeProvider):
+    def __init__(self):
+        self.keywords: list[str] = []
+
+    def search_audio(self, *, keyword, limit=5):
+        self.keywords.append(keyword)
+        return super().search_audio(keyword=keyword, limit=limit)
+
+
 def test_gap_profiler_detects_missing_image_and_operating_fields():
     item = {
         "id": "tourapi:test:gap:item",
@@ -1780,6 +1833,204 @@ def test_theme_enrichment_saves_candidates_entities_visuals_source_documents_and
         card = fusion["productization_advice"]["candidate_evidence_cards"][0]
         assert card["theme_candidates"][0]["source_family"] == "kto_pet"
         assert any("반려동물" in claim for claim in card["restricted_claims"])
+
+
+def test_audio_theme_enrichment_rejects_candidate_that_does_not_reference_target_item():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:content:2551424:mismatch"
+    source_item = {
+        **_source_item(item_id=item_id, content_id="2551424"),
+        "title": "국립일제강제동원역사관",
+        "region_code": "6",
+        "sigungu_code": "4",
+        "legacy_area_code": "6",
+        "legacy_sigungu_code": "4",
+        "ldong_regn_cd": "26",
+        "ldong_signgu_cd": "290",
+        "address": "부산광역시 남구 홍곡로320번길 100",
+        "overview": "일제강제동원 피해 역사를 다루는 역사관입니다.",
+    }
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:theme:audio-mismatch",
+                    "source_family": "kto_audio",
+                    "tool_name": "kto_audio_story_search",
+                    "operation": "storySearchList",
+                    "gap_ids": ["gap:missing_story_asset:museum"],
+                    "target_item_id": item_id,
+                    "target_content_id": "2551424",
+                    "reason": "역사관 관련 오디오 스토리 소재를 확인합니다.",
+                    "arguments": {
+                        "item_id": item_id,
+                        "content_id": "2551424",
+                        "query": "국립일제강제동원역사관",
+                        "limit": 2,
+                    },
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report={"gaps": []},
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            theme_provider=MismatchedAudioThemeProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="run_audio_mismatch",
+            step_id=None,
+        )
+
+        assert summary["executed_calls"] == 1
+        assert summary["theme_candidates"] == 0
+        assert summary["theme_candidates_rejected"] == 1
+        assert db.query(models.SourceDocument).filter_by(source="kto_audio", source_item_id=item_id).count() == 0
+        assert db.query(models.TourismVisualAsset).filter_by(source_family="kto_audio", source_item_id=item_id).count() == 0
+        executed_summary = summary["executed"][0]["response_summary"]
+        assert executed_summary["rejected_candidates"][0]["reason"] == "audio_candidate_does_not_reference_target_item"
+        assert executed_summary["rejected_candidates"][0]["weak_signals"] == ["candidate_address_region_match"]
+
+
+def test_audio_theme_enrichment_accepts_candidate_that_references_target_item():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:content:2551424:match"
+    source_item = {
+        **_source_item(item_id=item_id, content_id="2551424"),
+        "title": "국립일제강제동원역사관",
+        "region_code": "6",
+        "sigungu_code": "4",
+        "legacy_area_code": "6",
+        "legacy_sigungu_code": "4",
+        "ldong_regn_cd": "26",
+        "ldong_signgu_cd": "290",
+        "address": "부산광역시 남구 홍곡로320번길 100",
+        "overview": "일제강제동원 피해 역사를 다루는 역사관입니다.",
+    }
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:theme:audio-match",
+                    "source_family": "kto_audio",
+                    "tool_name": "kto_audio_story_search",
+                    "operation": "storySearchList",
+                    "gap_ids": ["gap:missing_story_asset:museum"],
+                    "target_item_id": item_id,
+                    "target_content_id": "2551424",
+                    "reason": "역사관 관련 오디오 스토리 소재를 확인합니다.",
+                    "arguments": {
+                        "item_id": item_id,
+                        "content_id": "2551424",
+                        "query": "국립일제강제동원역사관",
+                        "limit": 2,
+                    },
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report={"gaps": []},
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            theme_provider=MatchingAudioThemeProvider(),
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="run_audio_match",
+            step_id=None,
+        )
+
+        assert summary["executed_calls"] == 1
+        assert summary["theme_candidates"] == 1
+        assert summary["theme_candidates_rejected"] == 0
+        document = db.query(models.SourceDocument).filter_by(source="kto_audio", source_item_id=item_id).one()
+        assert "target_title_text_match" in document.document_metadata["theme_match_signals"]
+
+
+def test_audio_theme_enrichment_replaces_generic_query_with_target_title():
+    with TestClient(app):
+        pass
+
+    item_id = "tourapi:content:2551424:generic-query"
+    source_item = {
+        **_source_item(item_id=item_id, content_id="2551424"),
+        "title": "국립일제강제동원역사관",
+        "region_code": "6",
+        "sigungu_code": "4",
+        "legacy_area_code": "6",
+        "legacy_sigungu_code": "4",
+        "ldong_regn_cd": "26",
+        "ldong_signgu_cd": "290",
+        "address": "부산광역시 남구 홍곡로320번길 100",
+        "overview": "일제강제동원 피해 역사를 다루는 역사관입니다.",
+    }
+    theme_provider = RecordingMatchingAudioThemeProvider()
+    with SessionLocal() as db:
+        db.merge(models.TourismItem(**source_item))
+        db.commit()
+
+        plan = {
+            "planned_calls": [
+                {
+                    "id": "plan:theme:audio-generic-query",
+                    "source_family": "kto_audio",
+                    "tool_name": "kto_audio_story_search",
+                    "operation": "storySearchList",
+                    "gap_ids": ["gap:missing_story_asset:museum"],
+                    "target_item_id": item_id,
+                    "target_content_id": "2551424",
+                    "reason": "역사관 관련 오디오 스토리 소재를 확인합니다.",
+                    "arguments": {
+                        "item_id": item_id,
+                        "content_id": "2551424",
+                        "query": "오디오",
+                        "limit": 2,
+                    },
+                }
+            ],
+            "skipped_calls": [],
+        }
+        enrichment_run = create_enrichment_run(
+            db=db,
+            workflow_run_id="",
+            gap_report={"gaps": []},
+            plan=plan,
+        )
+        summary = execute_enrichment_plan(
+            db=db,
+            provider=DetailProvider(),
+            theme_provider=theme_provider,
+            enrichment_run=enrichment_run,
+            source_items=[source_item],
+            run_id="run_audio_generic_query",
+            step_id=None,
+        )
+
+        assert theme_provider.keywords == ["국립일제강제동원역사관"]
+        assert summary["executed_calls"] == 1
+        assert summary["theme_candidates"] == 1
+        assert summary["theme_candidates_rejected"] == 0
 
 
 def test_theme_api_failure_records_failed_call_without_breaking_workflow():

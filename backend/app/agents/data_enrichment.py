@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.db import models
 from app.rag.chroma_store import index_source_documents
-from app.rag.source_documents import upsert_source_documents_from_items
+from app.rag.source_documents import SOURCE_ROLE_ENRICHMENT, upsert_source_documents_from_items
 from app.tools.kto_capabilities import list_kto_capabilities
 from app.tools.route_signals import (
     RouteSignalProvider,
@@ -1973,6 +1973,7 @@ def execute_enrichment_plan(
     route_asset_count = 0
     signal_record_count = 0
     theme_candidate_count = 0
+    theme_candidate_rejected_count = 0
 
     for plan_call in enrichment_run.plan.get("planned_calls") or []:
         started = time.perf_counter()
@@ -2036,6 +2037,7 @@ def execute_enrichment_plan(
                 indexed_documents += int(summary.get("indexed_documents") or 0)
                 visual_asset_count += int(summary.get("visual_assets") or 0)
                 theme_candidate_count += int(summary.get("theme_entities") or summary.get("theme_candidates_found") or 0)
+                theme_candidate_rejected_count += int(summary.get("theme_candidates_rejected") or 0)
                 enriched_item_ids.add(model_item.id)
             else:
                 result = enrich_items_with_tourapi_details(
@@ -2046,7 +2048,13 @@ def execute_enrichment_plan(
                     step_id=step_id,
                     limit=1,
                 )
-                documents = upsert_source_documents_from_items(db, result["items"])
+                documents = upsert_source_documents_from_items(
+                    db,
+                    result["items"],
+                    run_id=run_id,
+                    source_role=SOURCE_ROLE_ENRICHMENT,
+                    ingestion_method="workflow_detail_enrichment",
+                )
                 indexed_documents += index_source_documents(db, documents)
                 enriched_item_ids.update(item.id for item in result["items"])
                 visual_asset_count += int(result["summary"]["visual_assets"] or 0)
@@ -2097,6 +2105,7 @@ def execute_enrichment_plan(
         "route_assets": route_asset_count,
         "signal_records": signal_record_count,
         "theme_candidates": theme_candidate_count,
+        "theme_candidates_rejected": theme_candidate_rejected_count,
         "executed": executed,
         "skipped": skipped,
         "failed": failed,

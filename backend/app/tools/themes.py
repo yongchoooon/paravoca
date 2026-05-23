@@ -12,6 +12,11 @@ from app.core.config import Settings, get_settings
 from app.core.timezone import now_kst_naive
 from app.db import models
 from app.rag.chroma_store import index_source_documents
+from app.rag.source_documents import (
+    SOURCE_ROLE_ENRICHMENT,
+    merge_source_lifecycle_metadata,
+    with_source_lifecycle_metadata,
+)
 
 
 KTO_WELLNESS_BASE_URL = "https://apis.data.go.kr/B551011/WellnessTursmService"
@@ -273,13 +278,14 @@ def execute_theme_search(
 ) -> dict[str, Any]:
     arguments = plan_call.get("arguments") if isinstance(plan_call.get("arguments"), dict) else {}
     source_family = str(plan_call.get("source_family") or "")
-    keyword = _theme_query(plan_call, target_item)
+    keyword = _theme_query(plan_call, target_item, source_family=source_family)
     limit = int(arguments.get("limit") or arguments.get("numOfRows") or 5)
     ldong_regn_cd = _string_or_none(arguments.get("ldong_regn_cd") or _item_l_dong_regn_cd(target_item))
     ldong_signgu_cd = _string_or_none(arguments.get("ldong_signgu_cd") or _item_l_dong_signgu_cd(target_item))
     area_code = _string_or_none(arguments.get("area_code") or arguments.get("areaCode") or _item_area_cd(target_item))
     sigungu_code = _string_or_none(arguments.get("sigungu_code") or arguments.get("sigunguCode") or _item_signgu_cd(target_item))
     started = time.perf_counter()
+    rejected_candidates: list[dict[str, Any]] = []
 
     if source_family == "kto_wellness":
         candidates = _log_theme_tool_call(
@@ -322,7 +328,7 @@ def execute_theme_search(
             ),
         )
     elif source_family == "kto_audio":
-        candidates = _log_theme_tool_call(
+        raw_candidates = _log_theme_tool_call(
             db=db,
             run_id=run_id,
             step_id=step_id,
@@ -331,6 +337,7 @@ def execute_theme_search(
             arguments={"keyword": keyword, "limit": limit},
             call=lambda: provider.search_audio(keyword=keyword, limit=limit),
         )
+        candidates, rejected_candidates = _filter_theme_candidates_for_target(raw_candidates, target_item)
     elif source_family == "kto_eco":
         candidates = _log_theme_tool_call(
             db=db,
@@ -377,6 +384,7 @@ def execute_theme_search(
         candidates=candidates,
         entities=entities,
         visual_assets=visual_assets,
+        run_id=run_id,
     )
     indexed = index_source_documents(db, documents) if documents else 0
     return {
@@ -384,6 +392,8 @@ def execute_theme_search(
         "operation": plan_call.get("operation"),
         "query": keyword,
         "theme_candidates_found": len(candidates),
+        "theme_candidates_rejected": len(rejected_candidates),
+        "rejected_candidates": rejected_candidates,
         "theme_entities": len(entities),
         "visual_assets": len(visual_assets),
         "source_documents": len(documents),
@@ -393,6 +403,134 @@ def execute_theme_search(
         "expected_ui": plan_call.get("expected_ui"),
         "latency_ms": int((time.perf_counter() - started) * 1000),
     }
+
+
+def _filter_theme_candidates_for_target(
+    candidates: list[ThemeDataCandidate],
+    target_item: models.TourismItem | None,
+) -> tuple[list[ThemeDataCandidate], list[dict[str, Any]]]:
+    if not target_item:
+        return candidates, []
+    accepted: list[ThemeDataCandidate] = []
+    rejected: list[dict[str, Any]] = []
+    for candidate in candidates:
+        signals, weak_signals = _theme_candidate_match_signals(candidate, target_item)
+        if not signals:
+            rejected.append(
+                {
+                    "candidate_id": candidate.id,
+                    "title": candidate.title,
+                    "source_family": candidate.source_family,
+                    "theme_content_id": candidate.content_id,
+                    "reason": (
+                        "audio_candidate_does_not_reference_target_item"
+                        if candidate.source_family == "kto_audio"
+                        else "theme_candidate_does_not_reference_target_item"
+                    ),
+                    "target_item_id": target_item.id,
+                    "target_title": target_item.title,
+                    "weak_signals": weak_signals,
+                }
+            )
+            continue
+        candidate.raw["theme_match_signals"] = signals
+        if weak_signals:
+            candidate.raw["theme_match_weak_signals"] = weak_signals
+        accepted.append(candidate)
+    return accepted, rejected
+
+
+def _theme_candidate_match_signals(
+    candidate: ThemeDataCandidate,
+    target_item: models.TourismItem,
+) -> tuple[list[str], list[str]]:
+    strong_signals: list[str] = []
+    weak_signals: list[str] = []
+    target_content_id = str(target_item.content_id or "").strip()
+    raw_values = [str(value or "").strip() for value in (candidate.raw or {}).values()]
+    raw_text = " ".join(raw_values)
+    candidate_text = _normalize_match_text(
+        " ".join(
+            [
+                candidate.title or "",
+                candidate.address or "",
+                candidate.overview or "",
+                raw_text,
+            ]
+        )
+    )
+    if target_content_id and target_content_id in raw_values:
+        weak_signals.append("cross_family_content_id_seen")
+    target_title = _normalize_match_text(target_item.title)
+    if target_title and target_title in candidate_text:
+        strong_signals.append("target_title_text_match")
+    matched_tokens = [token for token in _target_title_tokens(target_item.title) if token in candidate_text]
+    if len(matched_tokens) >= 2:
+        strong_signals.append("target_title_token_match")
+    elif matched_tokens and len(matched_tokens[0]) >= 6:
+        strong_signals.append(f"distinctive_target_title_token_match:{matched_tokens[0]}")
+    for token in matched_tokens:
+        weak_signals.append(f"target_title_token_seen:{token}")
+    if (
+        candidate.source_family != "kto_audio"
+        and candidate.address
+        and _same_exact_address(candidate.address, target_item.address)
+    ):
+        strong_signals.append("candidate_address_exact_match")
+    if candidate.address and _same_region_text(candidate.address, target_item.address):
+        weak_signals.append("candidate_address_region_match")
+    return _dedupe_texts(strong_signals), _dedupe_texts(weak_signals)
+
+
+_GENERIC_TITLE_TOKENS = {
+    "관광",
+    "여행",
+    "투어",
+    "체험",
+    "축제",
+    "행사",
+    "문화",
+    "역사",
+    "코스",
+    "안내",
+    "소개",
+    "오디오",
+    "해설",
+    "스토리",
+    "테마",
+    "후보",
+    "프로그램",
+}
+
+
+def _target_title_tokens(title: str | None) -> list[str]:
+    separators = str.maketrans({char: " " for char in "·/&,()[]{}<>「」『』‘’“”\"'"})
+    raw_tokens = str(title or "").translate(separators).split()
+    tokens = [_normalize_match_text(token) for token in raw_tokens]
+    return [
+        token
+        for token in tokens
+        if len(token) >= 2 and token not in _GENERIC_TITLE_TOKENS and not token.isdigit()
+    ]
+
+
+def _same_exact_address(candidate_address: str | None, target_address: str | None) -> bool:
+    candidate = _normalize_match_text(candidate_address)
+    target = _normalize_match_text(target_address)
+    return bool(candidate and target and candidate == target)
+
+
+def _same_region_text(candidate_address: str | None, target_address: str | None) -> bool:
+    candidate = _normalize_match_text(candidate_address)
+    target = _normalize_match_text(target_address)
+    if not candidate or not target:
+        return False
+    target_parts = [part for part in str(target_address or "").split()[:2] if len(part) >= 2]
+    return bool(target_parts) and all(_normalize_match_text(part) in candidate for part in target_parts)
+
+
+def _normalize_match_text(value: Any) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum() or "\uac00" <= ch <= "\ud7a3")
 
 
 def upsert_theme_entities(
@@ -465,7 +603,7 @@ def upsert_theme_visual_asset_candidates(
             "title": candidate.title,
             "image_url": str(candidate.image_url),
             "thumbnail_url": candidate.thumbnail_url or candidate.image_url,
-            "shooting_place": candidate.address or (target_item.address if target_item else None),
+            "shooting_place": candidate.address,
             "shooting_date": None,
             "photographer": None,
             "keywords": _dedupe_texts([candidate.title, candidate.source_family]),
@@ -477,6 +615,7 @@ def upsert_theme_visual_asset_candidates(
                 "provider_content_id": candidate.content_id,
                 "linked_content_id": target_item.content_id if target_item else None,
                 "linked_source_item_id": target_item.id if target_item else None,
+                "linked_target_address": target_item.address if target_item else None,
                 "theme_source_family": candidate.source_family,
                 "raw": candidate.raw,
             },
@@ -506,6 +645,7 @@ def upsert_source_documents_from_theme_candidates(
     candidates: list[ThemeDataCandidate],
     entities: list[models.TourismEntity],
     visual_assets: list[models.TourismVisualAsset],
+    run_id: str | None = None,
 ) -> list[models.SourceDocument]:
     documents: list[models.SourceDocument] = []
     entity_by_id = {entity.id: entity for entity in entities}
@@ -521,6 +661,7 @@ def upsert_source_documents_from_theme_candidates(
             source_item_id=source_item_id,
             entity=entity,
             visual_asset=visual_asset,
+            run_id=run_id,
         )
         payload = {
             "id": f"doc:theme:{candidate.source_family}:{_stable_digest(entity_id, candidate.id)}",
@@ -700,40 +841,50 @@ def _theme_source_metadata(
     source_item_id: str,
     entity: models.TourismEntity | None,
     visual_asset: models.TourismVisualAsset | None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
-        "source": candidate.source_family,
-        "source_family": candidate.source_family,
-        "source_item_id": source_item_id,
-        "title": candidate.title,
-        "content_id": target_item.content_id if target_item else None,
-        "theme_content_id": candidate.content_id,
-        "content_type": "theme",
-        "theme_source_family": candidate.source_family,
-        "theme_operation": candidate.operation,
-        "theme_entity_id": entity.id if entity else None,
-        "theme_candidate_count": 1,
-        "theme_attributes": candidate.theme_attributes,
-        "operating_info": candidate.operating_info,
-        "region_code": _item_area_cd(target_item),
-        "sigungu_code": _item_signgu_cd(target_item),
-        "legacy_area_code": target_item.legacy_area_code if target_item else None,
-        "legacy_sigungu_code": target_item.legacy_sigungu_code if target_item else None,
-        "ldong_regn_cd": _item_l_dong_regn_cd(target_item),
-        "ldong_signgu_cd": _item_l_dong_signgu_cd(target_item),
-        "address": candidate.address or (target_item.address if target_item else None),
-        "image_url": candidate.image_url,
-        "thumbnail_url": candidate.thumbnail_url,
-        "visual_asset_id": visual_asset.id if visual_asset else None,
-        "visual_asset_count": 1 if visual_asset else 0,
-        "usage_status": "theme_candidate",
-        "needs_review": True,
-        "needs_review_notes": candidate.needs_review or _default_theme_review_notes(candidate.source_family),
-        "data_quality_flags": _theme_data_quality_flags(candidate),
-        "interpretation_notes": _theme_interpretation_notes(candidate.source_family),
-        "retrieved_at": now_kst_naive().isoformat(),
-        "trust_level": 0.55 if candidate.source_family != "kto_medical" else 0.35,
-    }
+    return with_source_lifecycle_metadata(
+        {
+            "source": candidate.source_family,
+            "source_family": candidate.source_family,
+            "source_item_id": source_item_id,
+            "title": candidate.title,
+            "content_id": target_item.content_id if target_item else None,
+            "theme_content_id": candidate.content_id,
+            "content_type": "theme",
+            "theme_source_family": candidate.source_family,
+            "theme_operation": candidate.operation,
+            "theme_entity_id": entity.id if entity else None,
+            "theme_candidate_count": 1,
+            "theme_attributes": candidate.theme_attributes,
+            "operating_info": candidate.operating_info,
+            "region_code": _item_area_cd(target_item),
+            "sigungu_code": _item_signgu_cd(target_item),
+            "legacy_area_code": target_item.legacy_area_code if target_item else None,
+            "legacy_sigungu_code": target_item.legacy_sigungu_code if target_item else None,
+            "ldong_regn_cd": _item_l_dong_regn_cd(target_item),
+            "ldong_signgu_cd": _item_l_dong_signgu_cd(target_item),
+            "address": candidate.address,
+            "linked_target_title": target_item.title if target_item else None,
+            "linked_target_address": target_item.address if target_item else None,
+            "theme_match_signals": candidate.raw.get("theme_match_signals") if isinstance(candidate.raw, dict) else None,
+            "image_url": candidate.image_url,
+            "thumbnail_url": candidate.thumbnail_url,
+            "visual_asset_id": visual_asset.id if visual_asset else None,
+            "visual_asset_count": 1 if visual_asset else 0,
+            "usage_status": "theme_candidate",
+            "needs_review": True,
+            "needs_review_notes": candidate.needs_review or _default_theme_review_notes(candidate.source_family),
+            "data_quality_flags": _theme_data_quality_flags(candidate),
+            "interpretation_notes": _theme_interpretation_notes(candidate.source_family),
+            "retrieved_at": now_kst_naive().isoformat(),
+            "trust_level": 0.55 if candidate.source_family != "kto_medical" else 0.35,
+        },
+        source_role=SOURCE_ROLE_ENRICHMENT,
+        ingestion_method="theme_api_enrichment",
+        run_id=run_id,
+        detail_enriched=True,
+    )
 
 
 def _theme_source_content(target_item: models.TourismItem | None, candidate: ThemeDataCandidate) -> str:
@@ -749,7 +900,8 @@ def _theme_source_content(target_item: models.TourismItem | None, candidate: The
             f"연결 관광지: {target_item.title if target_item else ''}",
             f"출처 종류: {candidate.source_family}",
             f"작업: {candidate.operation}",
-            f"주소: {candidate.address or (target_item.address if target_item else '')}",
+            f"후보 주소: {candidate.address or ''}",
+            f"연결 관광지 주소: {target_item.address if target_item else ''}",
             f"문의: {candidate.tel or ''}",
             f"개요/스토리: {_truncate_text(candidate.overview, 800)}",
             f"테마 속성: {attributes}",
@@ -834,6 +986,12 @@ def _response_header(data: dict[str, Any]) -> dict[str, Any]:
 def _upsert_source_document(db: Session, payload: dict[str, Any]) -> models.SourceDocument:
     existing = db.get(models.SourceDocument, payload["id"])
     if existing:
+        payload["document_metadata"] = merge_source_lifecycle_metadata(
+            existing.document_metadata if isinstance(existing.document_metadata, dict) else {},
+            payload["document_metadata"],
+            source_role=SOURCE_ROLE_ENRICHMENT,
+            ingestion_method="theme_api_enrichment",
+        )
         for key, value in payload.items():
             setattr(existing, key, value)
         existing.updated_at = models.utcnow()
@@ -844,14 +1002,99 @@ def _upsert_source_document(db: Session, payload: dict[str, Any]) -> models.Sour
     return document
 
 
-def _theme_query(plan_call: dict[str, Any], target_item: models.TourismItem | None) -> str:
+def _theme_query(plan_call: dict[str, Any], target_item: models.TourismItem | None, *, source_family: str) -> str:
     arguments = plan_call.get("arguments") if isinstance(plan_call.get("arguments"), dict) else {}
     query = _string_or_none(arguments.get("query") or arguments.get("keyword"))
+    if target_item and target_item.title and _should_use_target_title_for_theme_query(
+        query,
+        target_item.title,
+        source_family,
+    ):
+        return target_item.title
     if query:
         return query
     if target_item and target_item.title:
         return target_item.title
     return _string_or_none(plan_call.get("target_content_id")) or "관광"
+
+
+def _should_use_target_title_for_theme_query(query: str | None, target_title: str, source_family: str) -> bool:
+    if not query:
+        return False
+    normalized_query = _normalize_match_text(query)
+    normalized_title = _normalize_match_text(target_title)
+    if normalized_title and normalized_title in normalized_query:
+        return False
+    if any(token in normalized_query for token in _target_title_tokens(target_title)):
+        return False
+    return _contains_family_generic_signal(query, source_family)
+
+
+def _contains_family_generic_signal(query: str | None, source_family: str) -> bool:
+    normalized = _normalize_match_text(query)
+    if not normalized:
+        return False
+    generic_terms = {
+        "kto_audio": {
+            "audio",
+            "audioguide",
+            "story",
+            "storytelling",
+            "guide",
+            "오디오",
+            "오디오가이드",
+            "오디오관광",
+            "오디오해설",
+            "스토리",
+            "스토리소재",
+            "스토리텔링",
+            "해설",
+            "음성",
+            "음성가이드",
+            "관광해설",
+        },
+        "kto_pet": {
+            "pet",
+            "pets",
+            "dog",
+            "반려동물",
+            "반려견",
+            "펫",
+            "동반",
+            "반려동물동반",
+            "반려견동반",
+            "펫동반",
+        },
+        "kto_wellness": {
+            "wellness",
+            "healing",
+            "웰니스",
+            "힐링",
+            "휴식",
+            "치유",
+            "건강",
+        },
+        "kto_eco": {
+            "eco",
+            "ecology",
+            "nature",
+            "생태",
+            "생태관광",
+            "친환경",
+            "자연",
+        },
+        "kto_medical": {
+            "medical",
+            "meditour",
+            "의료",
+            "의료관광",
+            "메디컬",
+            "병원",
+        },
+    }
+    family_terms = generic_terms.get(source_family, set())
+    normalized_terms = {_normalize_match_text(term) for term in family_terms if term}
+    return normalized in normalized_terms or any(term and term in normalized for term in normalized_terms)
 
 
 def _theme_data_quality_flags(candidate: ThemeDataCandidate) -> list[str]:

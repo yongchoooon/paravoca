@@ -12,6 +12,11 @@ from app.core.config import Settings, get_settings
 from app.core.timezone import now_kst_naive
 from app.db import models
 from app.rag.chroma_store import index_source_documents
+from app.rag.source_documents import (
+    SOURCE_ROLE_ENRICHMENT,
+    merge_source_lifecycle_metadata,
+    with_source_lifecycle_metadata,
+)
 from app.tools.tourism_enrichment import upsert_tourism_entity
 
 
@@ -384,12 +389,14 @@ def execute_route_signal_search(
             target_item=target_item,
             fallback_source_item_id=fallback_source_item_id or str(plan_call.get("id") or "route_signal"),
             assets=route_assets,
+            run_id=run_id,
         ),
         *upsert_source_documents_from_signal_records(
             db=db,
             target_item=target_item,
             fallback_source_item_id=fallback_source_item_id or str(plan_call.get("id") or "route_signal"),
             records=signal_records,
+            run_id=run_id,
         ),
     ]
     indexed = index_source_documents(db, documents) if documents else 0
@@ -528,11 +535,12 @@ def upsert_source_documents_from_route_assets(
     target_item: models.TourismItem | None,
     fallback_source_item_id: str,
     assets: list[models.TourismRouteAsset],
+    run_id: str | None = None,
 ) -> list[models.SourceDocument]:
     documents: list[models.SourceDocument] = []
     source_item_id = target_item.id if target_item else fallback_source_item_id
     for asset in assets:
-        metadata = _route_source_metadata(target_item, asset, source_item_id)
+        metadata = _route_source_metadata(target_item, asset, source_item_id, run_id=run_id)
         payload = {
             "id": f"doc:{asset.id}",
             "source": asset.source_family,
@@ -555,11 +563,12 @@ def upsert_source_documents_from_signal_records(
     target_item: models.TourismItem | None,
     fallback_source_item_id: str,
     records: list[models.TourismSignalRecord],
+    run_id: str | None = None,
 ) -> list[models.SourceDocument]:
     documents: list[models.SourceDocument] = []
     source_item_id = target_item.id if target_item else fallback_source_item_id
     for record in records:
-        metadata = _signal_source_metadata(target_item, record, source_item_id)
+        metadata = _signal_source_metadata(target_item, record, source_item_id, run_id=run_id)
         payload = {
             "id": f"doc:{record.id}",
             "source": record.source_family,
@@ -579,6 +588,12 @@ def upsert_source_documents_from_signal_records(
 def _upsert_source_document(db: Session, payload: dict[str, Any]) -> models.SourceDocument:
     existing = db.get(models.SourceDocument, payload["id"])
     if existing:
+        payload["document_metadata"] = merge_source_lifecycle_metadata(
+            existing.document_metadata if isinstance(existing.document_metadata, dict) else {},
+            payload["document_metadata"],
+            source_role=SOURCE_ROLE_ENRICHMENT,
+            ingestion_method="route_signal_enrichment",
+        )
         for key, value in payload.items():
             setattr(existing, key, value)
         existing.updated_at = models.utcnow()
@@ -740,8 +755,11 @@ def _route_source_metadata(
     target_item: models.TourismItem | None,
     asset: models.TourismRouteAsset,
     source_item_id: str,
+    *,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    return with_source_lifecycle_metadata(
+        {
         "source": asset.source_family,
         "source_family": asset.source_family,
         "source_item_id": source_item_id,
@@ -767,15 +785,23 @@ def _route_source_metadata(
         "interpretation_notes": ["동선 후보이며 실제 운영 전 안전, 날씨, 이동 조건 확인이 필요합니다."],
         "retrieved_at": (asset.retrieved_at or now_kst_naive()).isoformat(),
         "trust_level": 0.62,
-    }
+        },
+        source_role=SOURCE_ROLE_ENRICHMENT,
+        ingestion_method="route_signal_enrichment",
+        run_id=run_id,
+        detail_enriched=True,
+    )
 
 
 def _signal_source_metadata(
     target_item: models.TourismItem | None,
     record: models.TourismSignalRecord,
     source_item_id: str,
+    *,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    return with_source_lifecycle_metadata(
+        {
         "source": record.source_family,
         "source_family": record.source_family,
         "source_item_id": source_item_id,
@@ -800,7 +826,12 @@ def _signal_source_metadata(
         "interpretation_notes": [record.interpretation_note or "보조 신호입니다."],
         "retrieved_at": (record.retrieved_at or now_kst_naive()).isoformat(),
         "trust_level": 0.58,
-    }
+        },
+        source_role=SOURCE_ROLE_ENRICHMENT,
+        ingestion_method="route_signal_enrichment",
+        run_id=run_id,
+        detail_enriched=True,
+    )
 
 
 def _route_source_content(target_item: models.TourismItem | None, asset: models.TourismRouteAsset) -> str:

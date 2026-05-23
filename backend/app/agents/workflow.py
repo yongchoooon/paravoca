@@ -19,7 +19,10 @@ from app.agents.data_enrichment import (
     DATA_GAP_PROFILE_RESPONSE_SCHEMA,
     EVIDENCE_FUSION_RESPONSE_SCHEMA,
     API_FAMILY_PLANNER_RESPONSE_SCHEMA,
+    ROUTE_SIGNAL_SOURCE_FAMILIES,
+    THEME_SOURCE_FAMILIES,
     TOURAPI_DETAIL_PLANNER_RESPONSE_SCHEMA,
+    VISUAL_SOURCE_FAMILIES,
     build_api_capability_router_prompt,
     build_api_family_planner_prompt,
     build_data_gap_profile_prompt,
@@ -45,8 +48,8 @@ from app.agents.data_enrichment import (
 from app.core.config import get_settings
 from app.db import models
 from app.llm.gemini_gateway import GeminiGatewayError, GeminiJsonResult, call_gemini_json
-from app.rag.chroma_store import index_source_documents, search_source_documents
-from app.rag.source_documents import upsert_source_documents_from_items
+from app.rag.chroma_store import index_source_documents, search_source_documents_with_diagnostics
+from app.rag.source_documents import SOURCE_ROLE_RUNTIME, upsert_source_documents_from_items
 from app.tools.tourism import get_tourism_provider, log_tool_call, upsert_tourism_items
 from app.agents.run_cancellation import clear_run_cancellation, is_run_cancellation_requested
 
@@ -1003,7 +1006,7 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
                 if location.get("expanded_from_name")
             ],
         }
-        primary_keyword = _keyword_for_geo_scope(normalized, search_geo_scope)
+        primary_keyword = _rag_query_for_request(normalized, search_geo_scope)
         for location in locations:
             geo_kwargs = _tourapi_geo_kwargs(location)
             keyword_queries = _tourapi_keyword_queries(normalized, search_geo_scope, location)
@@ -1108,13 +1111,23 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
                 "approval": report["approval"],
             }
         upsert_tourism_items(db, items)
-        source_documents = upsert_source_documents_from_items(db, items)
+        source_documents = upsert_source_documents_from_items(
+            db,
+            items,
+            run_id=run_id,
+            source_role=SOURCE_ROLE_RUNTIME,
+            ingestion_method="workflow_baseline_tourapi",
+        )
         diagnostics["source_document_upsert_count"] = len(source_documents)
         indexed_count = index_source_documents(db, source_documents)
         diagnostics["indexed_document_count"] = indexed_count
-        vector_filters = _vector_filters_for_geo_scope(search_geo_scope, source=provider_source)
+        vector_filters = _vector_filters_for_geo_scope(
+            search_geo_scope,
+            source=provider_source,
+            normalized=normalized,
+        )
         diagnostics["vector_search_filter"] = vector_filters
-        retrieved = log_tool_call(
+        vector_result = log_tool_call(
             db=db,
             run_id=run_id,
             step_id=step.id,
@@ -1123,13 +1136,19 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
                 "query": primary_keyword,
                 "top_k": 10,
                 "filters": vector_filters,
+                "search_context": _rag_search_context(normalized, search_geo_scope),
             },
             source="chroma",
-            call=lambda: search_source_documents(
+            call=lambda: search_source_documents_with_diagnostics(
                 query=primary_keyword,
                 top_k=10,
                 filters=vector_filters,
+                search_context=_rag_search_context(normalized, search_geo_scope),
             ),
+        )
+        retrieved = vector_result.get("results", []) if isinstance(vector_result, dict) else []
+        diagnostics["vector_search"] = (
+            vector_result.get("retrieval_diagnostics", {}) if isinstance(vector_result, dict) else {}
         )
         diagnostics["vector_search_result_count"] = len(retrieved)
         retrieved = _filter_retrieved_documents_by_geo_scope(
@@ -1138,6 +1157,7 @@ def baseline_data_agent(db: Session, state: GraphState) -> GraphState:
             run_id=run_id,
         )
         diagnostics["post_geo_filter_result_count"] = len(retrieved)
+        diagnostics["retrieved_document_reasons"] = _retrieved_document_reasons(retrieved)
         if not retrieved:
             diagnostics["reason"] = "vector_search_empty_for_resolved_geo_scope"
             report = _insufficient_source_data_report(
@@ -1590,7 +1610,11 @@ def evidence_fusion_agent(db: Session, state: GraphState) -> GraphState:
     with step_log(db, state["run_id"], "EvidenceFusionAgent", "evidence_fusion", input_payload) as step:
         settings = get_settings()
         refreshed_documents = _refreshed_documents_after_enrichment(db, state, step.id)
-        documents = refreshed_documents or state.get("retrieved_documents", [])
+        documents = _merge_retrieved_documents(
+            _source_item_documents(db, state.get("source_items", [])),
+            state.get("retrieved_documents", []),
+            refreshed_documents,
+        )
         base_fusion = fuse_evidence(
             db=db,
             source_items=state.get("source_items", []),
@@ -1642,7 +1666,7 @@ def _refreshed_documents_after_enrichment(
 ) -> list[dict[str, Any]]:
     normalized = state.get("normalized_request") or {}
     geo_scope = state.get("geo_scope") or normalized.get("geo_scope") or {}
-    query = _keyword_for_geo_scope(normalized, geo_scope)
+    query = _rag_query_for_request(normalized, geo_scope)
     filters = _vector_filters_for_geo_scope(
         geo_scope,
         source=[
@@ -1660,21 +1684,88 @@ def _refreshed_documents_after_enrichment(
             "kto_eco",
             "kto_medical",
         ],
+        normalized=normalized,
     )
-    documents = log_tool_call(
+    result = log_tool_call(
         db=db,
         run_id=state["run_id"],
         step_id=step_id,
         tool_name="vector_search_post_enrichment",
-        arguments={"query": query, "top_k": 10, "filters": filters},
+        arguments={
+            "query": query,
+            "top_k": 10,
+            "filters": filters,
+            "search_context": _rag_search_context(normalized, geo_scope),
+        },
         source="chroma",
-        call=lambda: search_source_documents(query=query, top_k=10, filters=filters),
+        call=lambda: search_source_documents_with_diagnostics(
+            query=query,
+            top_k=10,
+            filters=filters,
+            search_context=_rag_search_context(normalized, geo_scope),
+        ),
     )
+    documents = result.get("results", []) if isinstance(result, dict) else []
     return _filter_retrieved_documents_by_geo_scope(
         documents,
         geo_scope=geo_scope,
         run_id=state["run_id"],
     )
+
+
+def _source_item_documents(db: Session, source_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    document_ids = [
+        f"doc:{item.get('id')}"
+        for item in source_items
+        if isinstance(item, dict) and item.get("id")
+    ]
+    if not document_ids:
+        return []
+    rows = db.query(models.SourceDocument).filter(models.SourceDocument.id.in_(document_ids)).all()
+    row_by_id = {row.id: row for row in rows}
+    documents: list[dict[str, Any]] = []
+    for document_id in document_ids:
+        row = row_by_id.get(document_id)
+        if row:
+            documents.append(_source_document_row_to_retrieved_document(row, retrieval_reason="source_item_shortlist"))
+    return documents
+
+
+def _source_document_row_to_retrieved_document(
+    row: models.SourceDocument,
+    *,
+    retrieval_reason: str,
+) -> dict[str, Any]:
+    metadata = row.document_metadata if isinstance(row.document_metadata, dict) else {}
+    return {
+        "doc_id": row.id,
+        "title": row.title,
+        "content": row.content,
+        "snippet": row.content[:260],
+        "score": None,
+        "relevance_score": None,
+        "matching_signals": [{"type": retrieval_reason, "label": "이번 run의 후보 근거"}],
+        "source_role": metadata.get("source_role"),
+        "metadata": metadata,
+    }
+
+
+def _merge_retrieved_documents(*document_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for group in document_groups:
+        for document in group or []:
+            if not isinstance(document, dict):
+                continue
+            doc_id = str(document.get("doc_id") or "").strip()
+            if not doc_id:
+                continue
+            existing = merged.get(doc_id)
+            if not existing:
+                merged[doc_id] = document
+                continue
+            if len(str(document.get("content") or "")) > len(str(existing.get("content") or "")):
+                merged[doc_id] = {**existing, **document}
+    return list(merged.values())
 
 
 def _region_code_from_area_result(item: dict[str, Any] | None) -> str | None:
@@ -1807,10 +1898,16 @@ def _keyword_for_geo_scope(
     geo_scope: dict[str, Any],
     location: dict[str, Any] | None = None,
 ) -> str:
-    location_name = (location or {}).get("keyword") or (location or {}).get("name")
+    location_name = (
+        (location or {}).get("keyword")
+        or (location or {}).get("name")
+        or (location or {}).get("location_name")
+    )
     if not location_name:
         locations = geo_scope.get("locations") if isinstance(geo_scope.get("locations"), list) else []
-        location_name = " ".join(str(item.get("keyword") or item.get("name") or "") for item in locations)
+        location_name = " ".join(
+            str(item.get("keyword") or item.get("name") or item.get("location_name") or "") for item in locations
+        )
     keywords = geo_scope.get("keywords") if isinstance(geo_scope.get("keywords"), list) else []
     local_terms = (
         (location or {}).get("sub_area_terms")
@@ -1827,6 +1924,81 @@ def _keyword_for_geo_scope(
         "액티비티",
     ]
     return " ".join(part for part in parts if part).strip()
+
+
+def _rag_query_for_request(normalized: dict[str, Any], geo_scope: dict[str, Any]) -> str:
+    message = str(normalized.get("message") or normalized.get("question") or "").strip()
+    intent = str(normalized.get("user_intent") or "").strip()
+    base = _keyword_for_geo_scope(normalized, geo_scope)
+    content_terms = _content_type_terms_for_request(normalized)
+    parts = [
+        base,
+        intent,
+        message,
+        " ".join(content_terms),
+    ]
+    return " ".join(part for part in parts if part).strip()
+
+
+def _rag_search_context(normalized: dict[str, Any], geo_scope: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "target_customer": normalized.get("target_customer"),
+        "preferred_themes": _string_list(normalized.get("preferred_themes")),
+        "narrow_keywords": _narrow_keywords_for_geo_scope(geo_scope),
+        "content_types": _content_type_filters_for_request(normalized),
+        "original_message": normalized.get("message") or normalized.get("question"),
+    }
+
+
+def _narrow_keywords_for_geo_scope(geo_scope: dict[str, Any]) -> list[str]:
+    keywords = geo_scope.get("keywords") if isinstance(geo_scope.get("keywords"), list) else []
+    terms = [str(keyword).strip() for keyword in keywords if str(keyword or "").strip()]
+    retained_keywords = geo_scope.get("retained_keywords") if isinstance(geo_scope.get("retained_keywords"), list) else []
+    terms.extend(str(keyword).strip() for keyword in retained_keywords if str(keyword or "").strip())
+    locations = geo_scope.get("locations") if isinstance(geo_scope.get("locations"), list) else []
+    for location in locations:
+        if not isinstance(location, dict):
+            continue
+        terms.extend(_string_list(location.get("sub_area_terms")))
+        for key in ["keyword", "matched_text", "name", "location_name"]:
+            value = str(location.get(key) or "").strip()
+            if value:
+                terms.append(value)
+    return _dedupe_texts([term for term in terms if term])[:12]
+
+
+def _content_type_terms_for_request(normalized: dict[str, Any]) -> list[str]:
+    labels = {
+        "event": "행사",
+        "accommodation": "숙박",
+        "leisure": "레저",
+        "attraction": "관광지",
+    }
+    return [labels.get(item, item) for item in _content_type_filters_for_request(normalized)]
+
+
+def _content_type_filters_for_request(normalized: dict[str, Any]) -> list[str]:
+    explicit = _string_list(normalized.get("content_types"))
+    if explicit:
+        return explicit
+    text = " ".join(
+        [
+            str(normalized.get("message") or ""),
+            str(normalized.get("question") or ""),
+            str(normalized.get("user_intent") or ""),
+            " ".join(_string_list(normalized.get("preferred_themes"))),
+        ]
+    )
+    content_types: list[str] = []
+    checks = [
+        (("축제", "행사", "페스티벌"), "event"),
+        (("숙박", "호텔", "스테이"), "accommodation"),
+        (("레저",), "leisure"),
+    ]
+    for tokens, content_type in checks:
+        if any(token in text for token in tokens):
+            content_types.append(content_type)
+    return _dedupe_texts(content_types)
 
 
 def _tourapi_keyword_queries(
@@ -1903,9 +2075,19 @@ def _clean_keyword_term(value: Any) -> str:
     return term.strip()
 
 
-def _vector_filters_for_geo_scope(geo_scope: dict[str, Any], *, source: str | list[str]) -> dict[str, Any]:
+def _vector_filters_for_geo_scope(
+    geo_scope: dict[str, Any],
+    *,
+    source: str | list[str],
+    normalized: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     filters: dict[str, Any] = {"source": source}
+    source_families = _source_family_filters_for_source(source)
+    if source_families:
+        filters["source_family"] = source_families if len(source_families) > 1 else source_families[0]
     if geo_scope.get("allow_nationwide"):
+        if _source_filter_is_core_tourapi(source):
+            _add_request_filters(filters, normalized or {}, [])
         return filters
     locations = _locations_for_tourapi_search(geo_scope)
     regn_codes = sorted(
@@ -1918,7 +2100,62 @@ def _vector_filters_for_geo_scope(geo_scope: dict[str, Any], *, source: str | li
         filters["ldong_regn_cd"] = regn_codes if len(regn_codes) > 1 else regn_codes[0]
     if signgu_codes and len(signgu_codes) == len(locations):
         filters["ldong_signgu_cd"] = signgu_codes if len(signgu_codes) > 1 else signgu_codes[0]
+    lcls_filters = _lcls_filters_for_locations(locations)
+    filters.update(lcls_filters)
+    if _source_filter_is_core_tourapi(source):
+        _add_request_filters(filters, normalized or {}, locations)
     return filters
+
+
+def _source_family_filters_for_source(source: str | list[str]) -> list[str]:
+    values = source if isinstance(source, list) else [source]
+    families: list[str] = []
+    for value in values:
+        source_name = str(value or "").strip()
+        if not source_name:
+            continue
+        families.append("kto_tourapi_kor" if source_name == "tourapi" else source_name)
+    return _dedupe_texts(families)
+
+
+def _source_filter_is_core_tourapi(source: str | list[str]) -> bool:
+    values = source if isinstance(source, list) else [source]
+    return set(str(value or "").strip() for value in values) <= {"tourapi"}
+
+
+def _lcls_filters_for_locations(locations: list[dict[str, Any]]) -> dict[str, Any]:
+    filters: dict[str, Any] = {}
+    for key in ["lcls_systm_1", "lcls_systm_2", "lcls_systm_3"]:
+        values = sorted({str(location.get(key)) for location in locations if location.get(key)})
+        if values:
+            filters[key] = values if len(values) > 1 else values[0]
+    return filters
+
+
+def _add_request_filters(
+    filters: dict[str, Any],
+    normalized: dict[str, Any],
+    locations: list[dict[str, Any]],
+) -> None:
+    content_types = _content_type_filters_for_request(normalized)
+    if content_types:
+        filters["content_type"] = content_types if len(content_types) > 1 else content_types[0]
+
+
+def _retrieved_document_reasons(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    reasons: list[dict[str, Any]] = []
+    for document in documents:
+        reasons.append(
+            {
+                "doc_id": document.get("doc_id"),
+                "title": document.get("title"),
+                "score": document.get("score"),
+                "relevance_score": document.get("relevance_score"),
+                "source_role": document.get("source_role"),
+                "matching_signals": document.get("matching_signals") or [],
+            }
+        )
+    return reasons
 
 
 def _filter_items_by_geo_scope(
@@ -1979,17 +2216,30 @@ def _filter_retrieved_documents_by_geo_scope(
     geo_scope: dict[str, Any],
     run_id: str | None,
 ) -> list[dict[str, Any]]:
+    scoped_documents = [
+        document
+        for document in documents
+        if _document_passes_run_retrieval_scope(document, run_id)
+        and _document_passes_evidence_integrity(document)
+    ]
+    scoped_dropped = len(documents) - len(scoped_documents)
+    if scoped_dropped:
+        logger.warning(
+            "Dropped %s weakly-linked or out-of-run enrichment documents for run_id=%s",
+            scoped_dropped,
+            run_id,
+        )
     if geo_scope.get("allow_nationwide"):
-        return documents
+        return scoped_documents
     locations = _locations_for_tourapi_search(geo_scope)
     if not locations:
         return []
-    filtered = [
+    geo_filtered = [
         document
-        for document in documents
+        for document in scoped_documents
         if _document_matches_geo_scope(document, locations)
     ]
-    dropped = len(documents) - len(filtered)
+    dropped = len(scoped_documents) - len(geo_filtered)
     if dropped:
         logger.warning(
             "Dropped %s off-region retrieved documents for run_id=%s geo_scope=%s",
@@ -1997,7 +2247,50 @@ def _filter_retrieved_documents_by_geo_scope(
             run_id,
             geo_scope,
         )
-    return filtered
+    return geo_filtered
+
+
+def _document_passes_run_retrieval_scope(document: dict[str, Any], run_id: str | None) -> bool:
+    metadata = document.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    source_family = str(metadata.get("source_family") or metadata.get("source") or "")
+    enrichment_families = {*VISUAL_SOURCE_FAMILIES, *ROUTE_SIGNAL_SOURCE_FAMILIES, *THEME_SOURCE_FAMILIES}
+    if source_family not in enrichment_families:
+        return True
+    if not run_id:
+        return False
+    return run_id in {
+        str(metadata.get("first_seen_run_id") or ""),
+        str(metadata.get("last_seen_run_id") or ""),
+    }
+
+
+def _document_passes_evidence_integrity(document: dict[str, Any]) -> bool:
+    metadata = document.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    source_family = str(metadata.get("source_family") or metadata.get("source") or "")
+    content_type = str(metadata.get("content_type") or "")
+    if content_type != "theme" and source_family not in THEME_SOURCE_FAMILIES:
+        return True
+    return bool(_metadata_string_list(metadata.get("theme_match_signals")))
+
+
+def _metadata_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item or "").strip()]
+    return []
 
 
 def _document_matches_geo_scope(document: dict[str, Any], locations: list[dict[str, Any]]) -> bool:
@@ -2865,19 +3158,37 @@ def validate_products(
     context_coverage_notes = _coverage_notes_from_context(evidence_context)
     avoid_limits = [f"요청 avoid 기준: {item}" for item in _string_list(qa_settings.get("avoid"))]
     validated = []
+    source_aliases = _source_id_alias_map(docs)
     shortage_note = _product_count_shortage_note(requested_count, product_count, len(available_source_ids))
     for index, product in enumerate(products[:product_count]):
         if not isinstance(product, dict):
             raise ValueError("Product item must be an object")
         raw_source_ids = _string_list(product.get("source_ids"))
-        invalid_source_ids = [source_id for source_id in raw_source_ids if source_id not in allowed_source_ids]
-        source_ids = [source_id for source_id in raw_source_ids if source_id in allowed_source_ids]
+        source_ids: list[str] = []
+        unresolved_invalid_source_ids: list[str] = []
+        repaired_source_id = False
+        for raw_source_id in raw_source_ids:
+            if raw_source_id in allowed_source_ids:
+                source_ids.append(raw_source_id)
+                continue
+            canonical_source_id = source_aliases.get(_normalize_source_alias(raw_source_id))
+            if canonical_source_id and canonical_source_id in allowed_source_ids:
+                source_ids.append(canonical_source_id)
+                repaired_source_id = True
+                continue
+            unresolved_invalid_source_ids.append(raw_source_id)
+        source_ids = _dedupe_texts(source_ids)
+        inferred_source_ids: list[str] = []
+        if not source_ids:
+            inferred_source_ids = _infer_source_ids_from_product_text(product, docs)
+            if inferred_source_ids:
+                source_ids = inferred_source_ids
+        source_ids = _expand_product_source_ids_with_linked_evidence(source_ids, docs, max_ids=5)
         review_notes = _safe_korean_string_list(product.get("needs_review"), "products[].needs_review")
-        if invalid_source_ids:
+        if unresolved_invalid_source_ids and not repaired_source_id and not inferred_source_ids:
             review_notes.append("모델이 실제 근거 목록에 없는 source id를 반환해 서버에서 제외했습니다.")
         if not source_ids:
-            source_ids = available_source_ids[: min(3, len(available_source_ids))]
-            review_notes.append("상품에 연결할 근거 id가 부족해 서버가 사용 가능한 근거를 보정했습니다.")
+            review_notes.append("상품에 연결된 근거 문서가 없어 게시 전 근거 연결이 필요합니다.")
         if shortage_note:
             review_notes.append(shortage_note)
         assumptions = (
@@ -2920,7 +3231,7 @@ def validate_products(
                     _normalize_difficulty(product.get("operation_difficulty")),
                     "products[].operation_difficulty",
                 ),
-                "source_ids": source_ids[:3],
+                "source_ids": source_ids[:5],
                 "assumptions": assumptions[:8],
                 "not_to_claim": not_to_claim[:8],
                 "evidence_summary": _normalize_evidence_summary(
@@ -2995,20 +3306,11 @@ def _desired_product_count(normalized: dict[str, Any], fallback: int) -> int:
 
 
 def _effective_product_count(normalized: dict[str, Any], docs: list[dict[str, Any]], fallback: int = 1) -> int:
-    requested = _desired_product_count(normalized, fallback=fallback)
-    evidence_count = len({str(doc.get("doc_id")) for doc in docs if doc.get("doc_id")})
-    if evidence_count <= 0:
-        return requested
-    return max(1, min(requested, evidence_count))
+    return _desired_product_count(normalized, fallback=fallback)
 
 
 def _product_count_shortage_note(requested_count: int, generated_count: int, evidence_count: int) -> str:
-    if requested_count <= generated_count:
-        return ""
-    return (
-        f"요청한 상품은 {requested_count}개지만 사용 가능한 근거 데이터가 {evidence_count}개라 "
-        f"{generated_count}개까지만 생성했습니다."
-    )
+    return ""
 
 
 def _safe_korean_text(value: Any, field_path: str, *, fallback: str) -> str:
@@ -3049,6 +3351,223 @@ def _dedupe_texts(values: list[str]) -> list[str]:
         if text and text not in deduped:
             deduped.append(text)
     return deduped
+
+
+def _source_id_alias_map(docs: list[dict[str, Any]]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    primary_by_key: dict[str, str] = {}
+    for doc in docs:
+        doc_id = str(doc.get("doc_id") or "").strip()
+        if not doc_id:
+            continue
+        metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+        source_family = str(metadata.get("source_family") or metadata.get("source") or "").lower()
+        keys = {
+            doc_id,
+            str(doc.get("source_item_id") or "").strip(),
+            str(metadata.get("source_item_id") or "").strip(),
+            str(doc.get("content_id") or "").strip(),
+            str(metadata.get("content_id") or "").strip(),
+        }
+        content_id = str(metadata.get("content_id") or doc.get("content_id") or "").strip()
+        if content_id:
+            keys.add(f"tourapi:content:{content_id}")
+            keys.add(f"doc:tourapi:content:{content_id}")
+        for key in keys:
+            normalized_key = _normalize_source_alias(key)
+            if not normalized_key:
+                continue
+            if _is_primary_tourapi_document(doc_id, source_family):
+                primary_by_key[normalized_key] = doc_id
+            if normalized_key in aliases and aliases[normalized_key] != doc_id:
+                ambiguous.add(normalized_key)
+                continue
+            aliases[normalized_key] = doc_id
+    for key in ambiguous:
+        if key in primary_by_key:
+            aliases[key] = primary_by_key[key]
+        else:
+            aliases.pop(key, None)
+    return aliases
+
+
+def _normalize_source_alias(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _is_primary_tourapi_document(doc_id: str, source_family: str) -> bool:
+    return doc_id.startswith("doc:tourapi:content:") or source_family in {"kto_tourapi_kor", "tourapi"}
+
+
+def _infer_source_ids_from_product_text(product: dict[str, Any], docs: list[dict[str, Any]]) -> list[str]:
+    product_text = _normalized_evidence_link_text(
+        " ".join(
+            [
+                str(product.get("title") or ""),
+                str(product.get("one_liner") or ""),
+                " ".join(_string_list(product.get("core_value"))),
+                _itinerary_text(product.get("itinerary")),
+                str(product.get("evidence_summary") or ""),
+            ]
+        )
+    )
+    if not product_text:
+        return []
+    scored: list[tuple[int, int, str]] = []
+    for index, doc in enumerate(docs):
+        doc_id = str(doc.get("doc_id") or "").strip()
+        title = str(doc.get("title") or "").strip()
+        if not doc_id or not title:
+            continue
+        score = _evidence_title_match_score(title, product_text)
+        if score >= 100:
+            scored.append((score, index, doc_id))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return _dedupe_texts([doc_id for _, _, doc_id in scored[:3]])
+
+
+def _expand_product_source_ids_with_linked_evidence(
+    source_ids: list[str],
+    docs: list[dict[str, Any]],
+    *,
+    max_ids: int,
+) -> list[str]:
+    if not source_ids:
+        return []
+    doc_by_id = {str(doc.get("doc_id") or ""): doc for doc in docs if doc.get("doc_id")}
+    selected_docs = [doc_by_id[source_id] for source_id in source_ids if source_id in doc_by_id]
+    if not selected_docs:
+        return source_ids[:max_ids]
+    linked_keys = {
+        key
+        for doc in selected_docs
+        for key in _source_link_keys(doc)
+    }
+    if not linked_keys:
+        return source_ids[:max_ids]
+    expanded = list(source_ids)
+    for doc in docs:
+        doc_id = str(doc.get("doc_id") or "").strip()
+        if not doc_id or doc_id in expanded:
+            continue
+        if not linked_keys.intersection(_source_link_keys(doc)):
+            continue
+        if not _is_directly_linked_supporting_document(doc, selected_docs):
+            continue
+        expanded.append(doc_id)
+        if len(expanded) >= max_ids:
+            break
+    return _dedupe_texts(expanded)[:max_ids]
+
+
+def _source_link_keys(doc: dict[str, Any]) -> set[str]:
+    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    keys: set[str] = set()
+    for value in [
+        doc.get("source_item_id"),
+        metadata.get("source_item_id"),
+        doc.get("content_id"),
+        metadata.get("content_id"),
+    ]:
+        text = str(value or "").strip()
+        if text:
+            keys.add(text)
+    content_id = str(metadata.get("content_id") or doc.get("content_id") or "").strip()
+    if content_id:
+        keys.add(f"tourapi:content:{content_id}")
+    return keys
+
+
+def _is_directly_linked_supporting_document(doc: dict[str, Any], selected_docs: list[dict[str, Any]]) -> bool:
+    doc_id = str(doc.get("doc_id") or "")
+    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    source_family = str(metadata.get("source_family") or metadata.get("source") or "").lower()
+    if _is_primary_tourapi_document(doc_id, source_family):
+        return False
+    doc_keys = _source_link_keys(doc)
+    if not doc_keys:
+        return False
+    return any(doc_keys.intersection(_source_link_keys(selected_doc)) for selected_doc in selected_docs)
+
+
+def _itinerary_text(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        parts.extend(
+            [
+                str(item.get("name") or ""),
+                str(item.get("description") or ""),
+                str(item.get("activity") or ""),
+            ]
+        )
+    return " ".join(parts)
+
+
+def _evidence_title_match_score(title: str, product_text: str) -> int:
+    variants = _evidence_title_variants(title)
+    for variant in variants:
+        if len(variant) >= 4 and variant in product_text:
+            return 100 + len(variant)
+    return 0
+
+
+_SOURCE_TITLE_PREFIXES = {
+    "서울",
+    "서울특별시",
+    "부산",
+    "부산광역시",
+    "대구",
+    "대구광역시",
+    "인천",
+    "인천광역시",
+    "광주",
+    "광주광역시",
+    "대전",
+    "대전광역시",
+    "울산",
+    "울산광역시",
+    "세종",
+    "세종특별자치시",
+    "경기",
+    "경기도",
+    "강원",
+    "강원특별자치도",
+    "충북",
+    "충청북도",
+    "충남",
+    "충청남도",
+    "전북",
+    "전라북도",
+    "전남",
+    "전라남도",
+    "경북",
+    "경상북도",
+    "경남",
+    "경상남도",
+    "제주",
+    "제주특별자치도",
+}
+
+
+def _evidence_title_variants(title: str) -> list[str]:
+    normalized = _normalized_evidence_link_text(title)
+    variants = [normalized] if normalized else []
+    for prefix in _SOURCE_TITLE_PREFIXES:
+        normalized_prefix = _normalized_evidence_link_text(prefix)
+        if normalized_prefix and normalized.startswith(normalized_prefix):
+            stripped = normalized[len(normalized_prefix) :]
+            if stripped:
+                variants.append(stripped)
+    return _dedupe_texts(variants)
+
+
+def _normalized_evidence_link_text(value: Any) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum() or "\uac00" <= ch <= "\ud7a3")
 
 
 def _candidate_cards_from_context(evidence_context: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3128,11 +3647,13 @@ def _coverage_notes_from_context(evidence_context: dict[str, Any]) -> list[str]:
 
 
 def _normalize_evidence_summary(value: Any, source_ids: list[str], docs: list[dict[str, Any]]) -> str:
+    if not source_ids:
+        return _evidence_summary_for_product(source_ids, docs)
     if isinstance(value, str) and value.strip() and _has_korean(value):
-        return value.strip()
+        return _append_linked_evidence_note(value.strip(), source_ids, docs)
     list_value = _safe_korean_string_list(value, "products[].evidence_summary")
     if list_value:
-        return " ".join(list_value[:3])
+        return _append_linked_evidence_note(" ".join(list_value[:3]), source_ids, docs)
     return _evidence_summary_for_product(source_ids, docs)
 
 
@@ -3142,6 +3663,33 @@ def _evidence_summary_for_product(source_ids: list[str], docs: list[dict[str, An
     if not titles:
         return "연결된 근거가 부족해 운영자 확인이 필요합니다."
     return f"{len(source_ids)}개 근거를 사용했습니다: {', '.join(titles[:3])}"
+
+
+def _append_linked_evidence_note(summary: str, source_ids: list[str], docs: list[dict[str, Any]]) -> str:
+    supporting_titles = _linked_supporting_evidence_titles(source_ids, docs)
+    if not supporting_titles:
+        return summary
+    note = f" 보강 근거로 {', '.join(supporting_titles[:2])}도 함께 확인했습니다."
+    if all(title in summary for title in supporting_titles[:2]):
+        return summary
+    return f"{summary}{note}"
+
+
+def _linked_supporting_evidence_titles(source_ids: list[str], docs: list[dict[str, Any]]) -> list[str]:
+    doc_by_id = {str(doc.get("doc_id") or ""): doc for doc in docs if doc.get("doc_id")}
+    titles: list[str] = []
+    for source_id in source_ids:
+        doc = doc_by_id.get(source_id)
+        if not doc:
+            continue
+        metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+        source_family = str(metadata.get("source_family") or metadata.get("source") or "").lower()
+        if _is_primary_tourapi_document(source_id, source_family):
+            continue
+        title = str(doc.get("title") or "").strip()
+        if title:
+            titles.append(title)
+    return _dedupe_texts(titles)
 
 
 def _marketing_evidence_disclaimer(
@@ -4406,7 +4954,8 @@ def _product_prompt(
     requested_product_count = _desired_product_count(normalized, fallback=3)
     effective_product_count = _effective_product_count(normalized, docs, fallback=3)
     evidence_count = len({str(doc.get("doc_id")) for doc in docs if doc.get("doc_id")})
-    evidence_prompt_limit = min(MAX_PRODUCT_COUNT, max(10, effective_product_count))
+    priority_doc_ids = _priority_evidence_document_ids(evidence_context)
+    evidence_prompt_limit = min(MAX_PRODUCT_COUNT, max(12, effective_product_count * 4, len(priority_doc_ids)))
     context = {
         "요청": {
             "normalized_request": normalized,
@@ -4414,17 +4963,18 @@ def _product_prompt(
             "requested_product_count": requested_product_count,
             "product_count": effective_product_count,
             "available_evidence_count": evidence_count,
-            "product_count_note": (
-                _product_count_shortage_note(requested_product_count, effective_product_count, evidence_count)
-                or "요청한 상품 수만큼 생성할 근거가 있습니다."
-            ),
+            "product_count_note": "요청한 상품 수는 근거 문서 수로 줄이지 않습니다. 직접 연결할 근거가 부족한 상품은 source_ids를 빈 배열로 두고 coverage_notes에 근거 부족을 남기세요.",
             "target_customer": normalized.get("target_customer"),
             "preferred_themes": normalized.get("preferred_themes"),
             "avoid": _string_list(normalized.get("avoid")),
         },
         "리서치_요약": research_summary,
         "source_items_shortlist": _summarize_source_items_for_prompt(source_items or [], limit=evidence_prompt_limit),
-        "retrieved_documents": _summarize_evidence(docs, limit=evidence_prompt_limit),
+        "retrieved_documents": _summarize_evidence(
+            docs,
+            limit=evidence_prompt_limit,
+            priority_doc_ids=priority_doc_ids,
+        ),
         "evidence_based_generation_context": _product_evidence_context_for_prompt(evidence_context),
         "QA_avoid_rules": _string_list(qa_settings.get("avoid")),
         "수정_요청": _prompt_revision_context(normalized.get("revision_context")),
@@ -4444,9 +4994,9 @@ def _product_prompt(
         },
         "규칙": [
             f"요청.product_count 값과 정확히 같은 개수의 상품을 생성하세요. 최대 {MAX_PRODUCT_COUNT}개를 절대 넘지 마세요.",
-            "요청.requested_product_count가 요청.product_count보다 크면, 근거 데이터가 부족해서 생성 개수를 줄인 것입니다. 이 사실을 각 상품의 needs_review 또는 coverage_notes에 반영하세요.",
-            "각 product는 최소 1개 이상의 source_id를 가져야 합니다.",
+            "근거 문서 수가 요청 상품 수보다 적어도 상품 개수를 줄이지 마세요.",
             "source_ids는 반드시 retrieved_documents 안에 있는 doc_id만 사용하세요. content_id나 임의 id를 쓰지 마세요.",
+            "각 product의 source_ids에는 상품과 직접 관련된 근거만 넣으세요. 직접 관련 근거가 없으면 빈 배열을 반환하고 needs_review/coverage_notes에 근거 부족을 남기세요.",
             "candidate_evidence_cards의 usable_facts, experience_hooks, recommended_product_angles를 우선 활용하세요.",
             "unresolved_gaps에 남은 정보는 상품 본문에 단정하지 말고 needs_review, assumptions, not_to_claim, claim_limits로 분리하세요.",
             "운영시간, 요금, 예약 가능 여부, 외국어 지원, 안전성, 의료/웰니스 효능은 근거가 없으면 절대 단정하지 마세요.",
@@ -4850,14 +5400,22 @@ def _period_from_range(start_date: Any, _end_date: Any) -> str | None:
     return start_date[:7]
 
 
-def _summarize_evidence(docs: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
+def _summarize_evidence(
+    docs: list[dict[str, Any]],
+    limit: int = 6,
+    *,
+    priority_doc_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
     summarized = []
-    for doc in docs[:limit]:
+    ordered_docs = _prioritize_documents_for_summary(docs, priority_doc_ids or [])
+    for doc in ordered_docs[:limit]:
         metadata = doc.get("metadata") or {}
         summarized.append(
             {
                 "doc_id": doc.get("doc_id"),
                 "title": doc.get("title"),
+                "source_item_id": metadata.get("source_item_id"),
+                "content_id": metadata.get("content_id"),
                 "content_type": metadata.get("content_type"),
                 "region_code": metadata.get("region_code"),
                 "event_start_date": metadata.get("event_start_date"),
@@ -4867,6 +5425,30 @@ def _summarize_evidence(docs: list[dict[str, Any]], limit: int = 6) -> list[dict
             }
         )
     return summarized
+
+
+def _prioritize_documents_for_summary(
+    docs: list[dict[str, Any]],
+    priority_doc_ids: list[str],
+) -> list[dict[str, Any]]:
+    if not priority_doc_ids:
+        return docs
+    priority = {doc_id: index for index, doc_id in enumerate(priority_doc_ids)}
+    indexed_docs = list(enumerate(docs))
+    indexed_docs.sort(
+        key=lambda item: (
+            priority.get(str(item[1].get("doc_id") or ""), len(priority)),
+            item[0],
+        )
+    )
+    return [doc for _, doc in indexed_docs]
+
+
+def _priority_evidence_document_ids(evidence_context: dict[str, Any]) -> list[str]:
+    doc_ids: list[str] = []
+    for card in _candidate_cards_from_context(evidence_context):
+        doc_ids.extend(_string_list(card.get("evidence_document_ids")))
+    return _dedupe_texts(doc_ids)
 
 
 def _summarize_source_items_for_prompt(source_items: list[dict[str, Any]], limit: int = MAX_PRODUCT_COUNT) -> list[dict[str, Any]]:
@@ -5469,20 +6051,22 @@ def _strip_qa_fix_sentence(text: str) -> str:
 
 
 def _validate_itinerary(value: Any, source_ids: list[str]) -> list[dict[str, Any]]:
+    fallback_source_id = source_ids[0] if source_ids else ""
     if not isinstance(value, list):
-        return [{"order": 1, "name": "source 기반 후보지 방문", "source_id": source_ids[0]}]
+        return [{"order": 1, "name": "운영 단계 확인", "source_id": fallback_source_id}]
     itinerary = []
     for index, item in enumerate(value[:5]):
         if not isinstance(item, dict):
             continue
+        item_source_id = item.get("source_id")
         itinerary.append(
             {
                 "order": int(item.get("order") or index + 1),
                 "name": _korean_text(str(item.get("name") or "운영 단계 확인"), "itinerary[].name"),
-                "source_id": item.get("source_id") if item.get("source_id") in source_ids else source_ids[0],
+                "source_id": item_source_id if item_source_id in source_ids else fallback_source_id,
             }
         )
-    return itinerary or [{"order": 1, "name": "source 기반 후보지 방문", "source_id": source_ids[0]}]
+    return itinerary or [{"order": 1, "name": "운영 단계 확인", "source_id": fallback_source_id}]
 
 
 def _validate_faq(value: Any, require_korean: bool = False) -> list[dict[str, str]]:
