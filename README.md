@@ -527,7 +527,7 @@ curl -X POST http://localhost:8000/api/workflow-runs/RUN_ID_FROM_RESPONSE/revisi
   }'
 ```
 
-`manual_edit`은 frontend의 직접 수정 modal에서 수정한 products/marketing_assets와 현재 QA issue 목록을 함께 전송합니다. 사용자는 직접 수정 창 안에서 전체 QA issue를 왼쪽 열로 보면서 오른쪽 편집 영역에서 전체 상품/마케팅 내용을 수정할 수 있습니다. `manual_save`는 같은 payload를 저장하되 QA를 다시 실행하지 않습니다. `llm_partial_rewrite`는 Product/Marketing 전체를 다시 만들지 않고, 선택된 QA issue가 가리키는 field path만 patch합니다. AI 수정과 QA 재검수는 새 문제를 찾는 broad QA가 아니라 선택한 QA issue가 해결됐는지만 확인하는 targeted QA입니다. 선택하지 않은 기존 QA issue는 사라진 것처럼 보이지 않도록 revision 결과에 그대로 남깁니다.
+`manual_edit`은 frontend의 직접 수정 modal에서 수정한 products/marketing_assets와 현재 QA issue 목록을 함께 전송합니다. 사용자는 직접 수정 창 안에서 전체 QA issue를 왼쪽 열로 보면서 오른쪽 편집 영역에서 전체 상품/마케팅 내용을 수정할 수 있습니다. `manual_save`는 같은 payload를 저장하되 QA를 다시 실행하지 않습니다. `llm_partial_rewrite`는 Product/Marketing 전체를 다시 만들지 않고, 선택된 QA issue가 가리키는 field path만 patch합니다. AI 수정과 QA 재검수는 새 문제를 찾는 broad QA가 아니라 선택한 QA issue가 해결됐는지만 확인하는 targeted QA입니다. 선택하지 않은 기존 QA issue는 사라진 것처럼 보이지 않도록 revision 결과에 그대로 남깁니다. AI 수정 revision은 변경된 필드별 `change_review`를 저장하고, 사용자는 같은 revision 안에서 각 변경을 유지하거나 이전 값으로 되돌릴 수 있습니다.
 
 RAG search:
 
@@ -726,8 +726,12 @@ Phase 14 Poster Studio도 구현 완료되었습니다. Run Detail과 Poster Stu
 
 Phase 15 Quality Audit은 완료되었습니다. 지정된 9개 run을 기준으로 QA, Marketing, RAG/Evidence, Image candidate selection, UI copy 문제를 각각 문서화했고, revision QA regression은 별도 15.1 문서로 정리했습니다.
 
-Phase 16 QA Quality Hardening도 구현 완료되었습니다. QA는 사용자 `avoid`와 명백한 evidence risk 중심으로 좁히고, copy 품질 평가는 QA evidence-risk 검수에서 제외합니다. 사용자-facing QA message는 실제 문제 문구를 인용하도록 보정하고, `source_id`, `field_path`, `missing_pet_policy`, source-id correction 같은 내부 진단은 기본 QA 목록에서 분리합니다. AI 수정/QA 재검수는 선택한 QA issue만 targeted recheck하며, 선택하지 않은 기존 issue는 revision에서 그대로 유지됩니다. 직접 수정 modal은 왼쪽에서 전체 QA issue를 참고하고 오른쪽에서 전체 상품/마케팅 내용을 편집하는 구조입니다.
+Phase 16 QA Quality Hardening도 구현 완료되었습니다. QA는 사용자 `avoid`와 명백한 evidence risk 중심으로 좁히고, copy 품질 평가는 QA evidence-risk 검수에서 제외합니다. `avoid`는 무조건 금지어로 처리하지 않고, 고객 노출 문구가 연결 근거로 뒷받침되지 않는 단정 claim인지 판단하도록 구성합니다. 사용자-facing QA message는 실제 문제 문구를 인용하도록 보정하고, `source_id`, `field_path`, `missing_pet_policy`, source-id correction 같은 내부 진단은 기본 QA 목록에서 분리합니다. AI 수정/QA 재검수는 선택한 QA issue만 targeted recheck하며, 선택하지 않은 기존 issue는 revision에서 그대로 유지됩니다. 직접 수정 modal은 왼쪽에서 전체 QA issue를 참고하고 오른쪽에서 전체 상품/마케팅 내용을 편집하는 구조입니다.
 
 Phase 17.1 Source/RAG Structure Cleanup도 구현 완료되었습니다. Source document role/origin/lifecycle metadata를 추가하고, RAG 검색에 지역/theme/content type/target customer/narrow keyword를 반영하며, 검색 부족 시 자동 fallback 없이 retrieval diagnostics에 query/filter/result count/reason을 남깁니다.
 
-다음 순서는 Phase 17.2 Product-level Evidence Bundle, Phase 17.3 source_id 검증과 Revision 안정화입니다. 이후 Phase 18 Evidence and Visual Evidence UX Redesign, Phase 19 Marketing Output Hardening, Phase 20 UI Copy and Product Surface Polish, Phase 21 Costs Dashboard, Phase 22 Deployment / Demo Hardening 순서로 진행합니다.
+Phase 17.2 Product-level Evidence Bundle은 취소했습니다. 17.1에서 product/evidence contamination과 generic fallback 문제가 크게 줄어 현재 단계에서는 별도 bundle 구조를 추가하지 않습니다.
+
+Phase 17.3 Revision Source Stability and Source ID Guardrails도 구현 완료되었습니다. ProductAgent가 임의 source_id를 만들면 서버가 확실한 alias만 정규화하고, 애매하거나 없는 source_id는 제외한 뒤 internal diagnostic에 남깁니다. AI 수정, 직접 수정, QA-only revision은 source/evidence 수정 기능이 아니므로 부모 run의 `source_ids`, `evidence_summary`, `retrieved_documents`, `evidence_profile` 등을 유지하고, revision metadata에 `source_stability`를 남깁니다.
+
+다음 순서는 Phase 18 Evidence and Visual Evidence UX Redesign, Phase 19 Marketing Output Hardening, Phase 20 UI Copy and Product Surface Polish, Phase 21 Costs Dashboard, Phase 22 Deployment / Demo Hardening 순서로 진행합니다.

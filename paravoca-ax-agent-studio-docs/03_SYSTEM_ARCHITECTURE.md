@@ -308,6 +308,7 @@ workflow는 `awaiting_approval`에서 멈춥니다.
 - revision run은 최상위 원본 run 아래에 연결되고 `revision_number`가 증가합니다.
 - AI 수정은 Product/Marketing 전체 재생성 없이 선택된 QA issue가 가리키는 필드만 patch합니다.
 - AI 수정과 QA 재검수는 선택한 QA issue만 targeted recheck합니다. 선택하지 않은 기존 issue는 revision에서 그대로 carryover되어 사라진 것처럼 보이지 않게 합니다.
+- AI 수정 revision에는 변경된 필드별 `change_review` metadata를 남깁니다. 사용자는 같은 revision 안에서 각 변경을 유지하거나 이전 값으로 되돌릴 수 있으며, 되돌린 변경과 연결된 원래 QA issue는 다시 QA 목록에 표시됩니다.
 - 직접 수정은 Product/Marketing 전체를 편집한 뒤 하나의 revision으로 저장할 수 있고, QA 재검수를 실행하면 현재 QA issue 목록을 기준으로 targeted recheck합니다.
 
 ## 상태 모델

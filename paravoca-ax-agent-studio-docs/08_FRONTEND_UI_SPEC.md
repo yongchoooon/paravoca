@@ -637,6 +637,10 @@ Result Review 우상단에는 다음 revision action을 둡니다.
 - `AI 수정`: 선택한 QA issue가 가리키는 필드만 AI가 patch합니다. Product/Marketing 전체 재생성 UI처럼 보이면 안 됩니다. QA issue를 선택하지 않으면 버튼은 비활성화되고 hover tooltip으로 선택 안내를 보여줍니다.
 - `직접 수정`: 운영자가 product, sales copy, FAQ, SNS posts, search keywords, assumptions, not_to_claim을 직접 수정합니다. 왼쪽 열에는 Product 선택, 전체 QA issue, Revision note를 이어서 보여주고, 오른쪽 열에는 전체 편집 form을 보여줍니다. 왼쪽 열과 오른쪽 편집 영역은 서로 독립적으로 스크롤됩니다.
 - `QA 재검수`: 상품 내용은 유지하고 선택한 QA issue가 해결됐는지만 targeted recheck합니다. 처음부터 전체 QA를 다시 실행해 새 issue를 찾는 화면처럼 보이면 안 됩니다.
+- AI 수정 revision의 Result Review는 변경된 필드만 강조합니다. 상단에 변경 전체 목록을 따로 만들지 않고, 실제 변경된 위치에서 `이전` / `현재` 영역을 분리해 보여줍니다. 각 변경에는 현재 AI 수정 내용을 유지하는 초록 체크와 이전 내용으로 되돌리는 빨간 X 액션을 제공합니다. 액션은 새 revision을 만들지 않고 현재 revision의 결과만 업데이트합니다.
+- AI 수정 revision에서 변경이 남아 있는 상품과 탭에는 빨간 원형 count badge를 표시합니다.
+- 이전 내용으로 되돌린 변경에 원래 QA issue가 연결되어 있으면 해당 QA issue를 다시 QA 목록에 표시합니다.
+- Evidence + QA의 `선택 근거만 보기`는 현재 선택 상품 하나가 아니라, 전체 상품 기획에 실제 연결된 source id의 합집합을 보여줍니다. 연결된 source id가 없으면 전체 근거로 fallback하지 않고 0개로 표시합니다.
 
 Revision modal 규칙:
 

@@ -28,6 +28,8 @@ User-facing QA issues should focus on:
 - Operational uncertainty stated as fact
 - High-risk safety, price, booking, operating-hour, language, medical, wellness, or pet-policy claims
 
+`avoid` is interpreted through evidence risk, not as a blind keyword ban. QA should judge whether the customer-facing phrase is a concrete claim that is not supported by the linked evidence. If the linked evidence directly supports the claim, QA should not create a user-facing issue merely because the phrase matches an avoid category.
+
 QA should not create user-facing issues for:
 
 - Copy being too short, generic, or not attractive enough
@@ -96,6 +98,18 @@ Targeted recheck behavior:
 - If the LLM does not quote a customer-facing phrase, the backend validator either rewrites the message from the current target field or excludes the issue from the normal user QA list.
 - Manual edit sends the current QA issues for targeted recheck so all existing issues remain visible unless they are resolved.
 
+## AI Revision Change Review
+
+AI partial rewrite revisions now also include `revision.change_review`.
+
+- The backend records changed product/marketing fields with `before`, `after`, `field_label`, and related original QA issue metadata.
+- Run Detail highlights only pending AI changes at the changed field location. It does not show a separate all-change summary card above the product detail.
+- Each changed field shows separate `이전` and `현재` regions, not a compressed arrow sentence.
+- Product buttons and content tabs show red count badges when that product/tab has pending AI changes.
+- The operator can accept the current AI change with the green check or revert to the previous value with the red X.
+- Accept/revert updates the same revision run. It does not create another revision.
+- If a reverted change has a related original QA issue, that issue is restored into the current QA list.
+
 ## Revision Patch Prompt Policy
 
 The AI patch flow is driven by selected QA issues and target fields. The revision modal does not include a free-form "Requested changes" field for AI revision or QA recheck.
@@ -129,6 +143,7 @@ Current QA criteria:
 
 - Quote the exact customer-facing phrase in `message`.
 - Do not create an issue if no problem phrase can be quoted.
+- Treat avoid rules as unsupported-claim checks. The model must compare the quoted customer-facing phrase against the linked product evidence instead of applying keyword bans.
 - Do not judge copy attractiveness, shortness, or generic wording in evidence-risk QA.
 - Do not treat safe uncertainty wording as a problem.
 - Do not expose internal field paths or raw gap names in user-facing messages.
