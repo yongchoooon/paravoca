@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import re
 import time
 from contextlib import contextmanager
@@ -258,10 +259,16 @@ def _run_qa_only_revision(
         raise ValueError("manual_edit/qa_only revision requires products and marketing_assets")
 
     state = _base_revision_state(run, context)
+    products, source_stability = _preserve_revision_source_state(
+        context,
+        products,
+        mode=str(context.get("revision_mode") or ""),
+    )
     state.update(
         {
             "product_ideas": products,
             "marketing_assets": marketing_assets,
+            "source_stability": source_stability,
         }
     )
     _revision_context_step(db, state, context)
@@ -288,11 +295,17 @@ def _run_manual_save_revision(
         raise ValueError("manual_save revision requires products and marketing_assets")
 
     state = _base_revision_state(run, context)
+    products, source_stability = _preserve_revision_source_state(
+        context,
+        products,
+        mode=str(context.get("revision_mode") or ""),
+    )
     state.update(
         {
             "product_ideas": products,
             "marketing_assets": marketing_assets,
             "qa_report": source_output.get("qa_report") or {},
+            "source_stability": source_stability,
         }
     )
     _revision_context_step(db, state, context)
@@ -310,6 +323,12 @@ def _run_llm_partial_revision(
     _revision_context_step(db, state, context)
     _raise_if_cancelled(db, run.id)
     state.update(revision_patch_agent(db, state))
+    products, source_stability = _preserve_revision_source_state(
+        context,
+        state.get("product_ideas", []),
+        mode="llm_partial_rewrite",
+    )
+    state.update({"product_ideas": products, "source_stability": source_stability})
     _raise_if_cancelled(db, run.id)
     if context.get("qa_issues"):
         state.update(targeted_revision_qa_agent(db, state))
@@ -407,7 +426,391 @@ def _run_revision_metadata(db: Session, run_id: str, state: GraphState) -> dict[
         "qa_settings": context.get("qa_settings", {}) if isinstance(context, dict) else {},
         "comment": context.get("comment") if isinstance(context, dict) else None,
         "approval_history": context.get("approval_history", []) if isinstance(context, dict) else [],
+        "source_stability": state.get("source_stability") or {},
+        "change_review": _build_ai_revision_change_review(context, state, revision_mode),
     }
+
+
+def _preserve_revision_source_state(
+    context: dict[str, Any],
+    products: list[dict[str, Any]],
+    *,
+    mode: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    source_output = context.get("source_final_output") if isinstance(context, dict) else {}
+    source_output = source_output if isinstance(source_output, dict) else {}
+    source_products = [
+        product for product in source_output.get("products", [])
+        if isinstance(product, dict)
+    ]
+    source_by_id = {str(product.get("id") or ""): product for product in source_products}
+    preserved_products = json.loads(json.dumps(products or [], ensure_ascii=False))
+    product_reports: list[dict[str, Any]] = []
+    changed_fields: list[str] = []
+
+    for product in preserved_products:
+        if not isinstance(product, dict):
+            continue
+        product_id = str(product.get("id") or "")
+        source_product = source_by_id.get(product_id)
+        if not source_product:
+            product_reports.append(
+                {
+                    "product_id": product_id,
+                    "status": "source_product_missing",
+                    "preserved_fields": [],
+                    "changed_fields": [],
+                    "reason": "부모 run에서 같은 product id를 찾지 못해 source fields를 보존하지 못했습니다.",
+                }
+            )
+            continue
+        preserved_fields = []
+        product_changed_fields = []
+        for field in ["source_ids", "evidence_summary"]:
+            source_value = json.loads(json.dumps(source_product.get(field), ensure_ascii=False))
+            if product.get(field) != source_value:
+                product_changed_fields.append(field)
+                changed_fields.append(f"products[{product_id}].{field}")
+            product[field] = source_value
+            preserved_fields.append(field)
+        if _preserve_itinerary_source_ids(product, source_product):
+            preserved_fields.append("itinerary[].source_id")
+            product_changed_fields.append("itinerary[].source_id")
+            changed_fields.append(f"products[{product_id}].itinerary[].source_id")
+        product_reports.append(
+            {
+                "product_id": product_id,
+                "status": "preserved",
+                "preserved_fields": preserved_fields,
+                "changed_fields": product_changed_fields,
+                "source_ids": product.get("source_ids", []),
+            }
+        )
+
+    source_fields_preserved = [
+        "products[].source_ids",
+        "products[].evidence_summary",
+        "products[].itinerary[].source_id",
+        "retrieved_documents",
+        "evidence_profile",
+        "productization_advice",
+        "data_coverage",
+        "unresolved_gaps",
+        "source_confidence",
+        "ui_highlights",
+    ]
+    return preserved_products, {
+        "source_stability_mode": _source_stability_mode_for_revision(mode),
+        "source_fields_preserved": source_fields_preserved,
+        "source_fields_changed": _dedupe_texts(changed_fields),
+        "evidence_recomputed": False,
+        "reason": "Revision은 source/evidence 수정 기능이 아니므로 부모 run의 근거 연결을 유지했습니다.",
+        "product_source_preservation": product_reports,
+        "invalid_source_id_diagnostics": _invalid_source_id_diagnostics_from_products(preserved_products),
+    }
+
+
+def _preserve_itinerary_source_ids(product: dict[str, Any], source_product: dict[str, Any]) -> bool:
+    itinerary = product.get("itinerary")
+    source_itinerary = source_product.get("itinerary")
+    if not isinstance(itinerary, list) or not isinstance(source_itinerary, list):
+        return False
+    changed = False
+    for index, item in enumerate(itinerary):
+        if not isinstance(item, dict) or index >= len(source_itinerary):
+            continue
+        source_item = source_itinerary[index]
+        if not isinstance(source_item, dict):
+            continue
+        source_id = source_item.get("source_id")
+        if item.get("source_id") != source_id:
+            item["source_id"] = source_id
+            changed = True
+    return changed
+
+
+def _source_stability_mode_for_revision(mode: str) -> str:
+    if mode == "llm_partial_rewrite":
+        return "preserve_parent_sources_after_ai_patch"
+    if mode == "manual_edit":
+        return "preserve_parent_sources_after_manual_edit"
+    if mode == "manual_save":
+        return "preserve_parent_sources_after_manual_save"
+    if mode == "qa_only":
+        return "preserve_parent_sources_for_qa_only"
+    return "preserve_parent_sources"
+
+
+def _build_ai_revision_change_review(
+    context: Any,
+    state: GraphState,
+    revision_mode: Any,
+) -> dict[str, Any]:
+    if str(revision_mode or "") != "llm_partial_rewrite" or not isinstance(context, dict):
+        return {"enabled": False, "items": [], "pending_count": 0}
+    source_output = context.get("source_final_output")
+    if not isinstance(source_output, dict):
+        return {"enabled": False, "items": [], "pending_count": 0}
+    source_products = [item for item in source_output.get("products", []) or [] if isinstance(item, dict)]
+    current_products = [item for item in state.get("product_ideas", []) or [] if isinstance(item, dict)]
+    source_assets = [item for item in source_output.get("marketing_assets", []) or [] if isinstance(item, dict)]
+    current_assets = [item for item in state.get("marketing_assets", []) or [] if isinstance(item, dict)]
+    selected_issues = [item for item in context.get("qa_issues", []) or [] if isinstance(item, dict)]
+
+    items: list[dict[str, Any]] = []
+    source_products_by_id = {str(item.get("id") or ""): item for item in source_products}
+    source_assets_by_id = {str(item.get("product_id") or ""): item for item in source_assets}
+
+    for product in current_products:
+        product_id = str(product.get("id") or "")
+        before = source_products_by_id.get(product_id)
+        if not before:
+            continue
+        items.extend(
+            _revision_change_items_for_record(
+                product_id=product_id,
+                entity="product",
+                before=before,
+                after=product,
+                selected_issues=selected_issues,
+            )
+        )
+
+    for asset in current_assets:
+        product_id = str(asset.get("product_id") or "")
+        before = source_assets_by_id.get(product_id)
+        if not before:
+            continue
+        items.extend(
+            _revision_change_items_for_record(
+                product_id=product_id,
+                entity="marketing",
+                before=before,
+                after=asset,
+                selected_issues=selected_issues,
+            )
+        )
+
+    return {
+        "enabled": True,
+        "mode": "ai_revision_change_review",
+        "status": "pending" if items else "no_changes",
+        "items": items,
+        "pending_count": sum(1 for item in items if item.get("status") == "pending"),
+    }
+
+
+def _revision_change_items_for_record(
+    *,
+    product_id: str,
+    entity: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    selected_issues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for path in _revision_review_paths(entity, before, after):
+        before_value = _get_nested_value(before, path)
+        after_value = _get_nested_value(after, path)
+        if _json_normalized(before_value) == _json_normalized(after_value):
+            continue
+        issue = _matching_revision_change_issue(product_id, path, selected_issues)
+        change_id = _revision_change_id(entity, product_id, path)
+        items.append(
+            {
+                "id": change_id,
+                "entity": entity,
+                "product_id": product_id,
+                "field_path": path,
+                "field_label": _revision_change_field_label(path),
+                "before": before_value,
+                "after": after_value,
+                "status": "pending",
+                "qa_issue": json.loads(json.dumps(issue, ensure_ascii=False)) if issue else None,
+            }
+        )
+    return items
+
+
+def _revision_review_paths(entity: str, before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    if entity == "product":
+        paths = [
+            "title",
+            "one_liner",
+            "target_customer",
+            "core_value",
+            "estimated_duration",
+            "operation_difficulty",
+            "assumptions",
+            "not_to_claim",
+        ]
+        max_itinerary = max(
+            len(before.get("itinerary") or []) if isinstance(before.get("itinerary"), list) else 0,
+            len(after.get("itinerary") or []) if isinstance(after.get("itinerary"), list) else 0,
+        )
+        for index in range(max_itinerary):
+            paths.extend(
+                [
+                    f"itinerary[{index}].name",
+                    f"itinerary[{index}].description",
+                    f"itinerary[{index}].duration",
+                ]
+            )
+        return paths
+
+    sales_paths = [
+        "sales_copy.headline",
+        "sales_copy.subheadline",
+        "sales_copy.disclaimer",
+    ]
+    before_sections = _get_nested_value(before, "sales_copy.sections")
+    after_sections = _get_nested_value(after, "sales_copy.sections")
+    max_sections = max(
+        len(before_sections) if isinstance(before_sections, list) else 0,
+        len(after_sections) if isinstance(after_sections, list) else 0,
+    )
+    for index in range(max_sections):
+        sales_paths.extend([f"sales_copy.sections[{index}].title", f"sales_copy.sections[{index}].body"])
+    before_faq = before.get("faq")
+    after_faq = after.get("faq")
+    max_faq = max(
+        len(before_faq) if isinstance(before_faq, list) else 0,
+        len(after_faq) if isinstance(after_faq, list) else 0,
+    )
+    for index in range(max_faq):
+        sales_paths.extend([f"faq[{index}].question", f"faq[{index}].answer"])
+    sales_paths.extend(["sns_posts", "search_keywords"])
+    return sales_paths
+
+
+def _revision_change_id(entity: str, product_id: str, path: str) -> str:
+    digest = hashlib.sha256(f"{entity}:{product_id}:{path}".encode("utf-8")).hexdigest()[:16]
+    return f"change_{digest}"
+
+
+def _json_normalized(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _get_nested_value(record: dict[str, Any], path: str) -> Any:
+    current: Any = record
+    for token in _path_tokens(path):
+        if isinstance(token, int):
+            if not isinstance(current, list) or token >= len(current):
+                return None
+            current = current[token]
+        else:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(token)
+    return current
+
+
+def _set_nested_value(record: dict[str, Any], path: str, value: Any) -> bool:
+    tokens = _path_tokens(path)
+    if not tokens:
+        return False
+    current: Any = record
+    for token in tokens[:-1]:
+        if isinstance(token, int):
+            if not isinstance(current, list) or token >= len(current):
+                return False
+            current = current[token]
+        else:
+            if not isinstance(current, dict) or token not in current:
+                return False
+            current = current[token]
+    last = tokens[-1]
+    if isinstance(last, int):
+        if not isinstance(current, list) or last >= len(current):
+            return False
+        current[last] = value
+        return True
+    if not isinstance(current, dict):
+        return False
+    current[last] = value
+    return True
+
+
+def _path_tokens(path: str) -> list[str | int]:
+    tokens: list[str | int] = []
+    for part in path.split("."):
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)(?:\[(\d+)\])?", part)
+        if not match:
+            return []
+        tokens.append(match.group(1))
+        if match.group(2) is not None:
+            tokens.append(int(match.group(2)))
+    return tokens
+
+
+def _matching_revision_change_issue(
+    product_id: str,
+    path: str,
+    selected_issues: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for issue in selected_issues:
+        if str(issue.get("product_id") or "") != product_id:
+            continue
+        issue_path = str(issue.get("field_path") or "").strip()
+        if not issue_path:
+            continue
+        if issue_path == path:
+            return issue
+        if issue_path in {"faq", "sns_posts", "search_keywords"} and path.startswith(issue_path):
+            return issue
+        if issue_path == "sales_copy.sections" and path.startswith("sales_copy.sections"):
+            return issue
+    return None
+
+
+def _revision_change_field_label(path: str) -> str:
+    if path == "title":
+        return "상품명"
+    if path == "one_liner":
+        return "한 줄 소개"
+    if path == "target_customer":
+        return "대상 고객"
+    if path == "core_value":
+        return "핵심 가치"
+    if path == "estimated_duration":
+        return "예상 소요 시간"
+    if path == "operation_difficulty":
+        return "운영 난이도"
+    if path == "assumptions":
+        return "운영 가정"
+    if path == "not_to_claim":
+        return "단정 금지 항목"
+    if path.startswith("itinerary["):
+        return "일정"
+    if path == "sales_copy.headline":
+        return "홍보 제목"
+    if path == "sales_copy.subheadline":
+        return "홍보 부제목"
+    if path == "sales_copy.disclaimer":
+        return "유의 문구"
+    section_match = re.fullmatch(r"sales_copy\.sections\[(\d+)\]\.(title|body)", path)
+    if section_match:
+        return f"상세 설명 {int(section_match.group(1)) + 1}"
+    faq_match = re.fullmatch(r"faq\[(\d+)\]\.(question|answer)", path)
+    if faq_match:
+        return f"FAQ {int(faq_match.group(1)) + 1}"
+    if path == "sns_posts":
+        return "SNS 문구"
+    if path == "search_keywords":
+        return "검색 키워드"
+    return _field_path_label(path)
+
+
+def _invalid_source_id_diagnostics_from_products(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        for item in product.get("internal_diagnostics", []) or []:
+            if isinstance(item, dict) and item.get("category") == "source_id_guardrail":
+                diagnostics.append(item)
+    return diagnostics
 
 
 def _revision_qa_recheck_mode(revision_mode: Any) -> str | None:
@@ -3166,23 +3569,60 @@ def validate_products(
         raw_source_ids = _string_list(product.get("source_ids"))
         source_ids: list[str] = []
         unresolved_invalid_source_ids: list[str] = []
+        source_id_diagnostics: list[dict[str, Any]] = []
         repaired_source_id = False
         for raw_source_id in raw_source_ids:
             if raw_source_id in allowed_source_ids:
                 source_ids.append(raw_source_id)
+                source_id_diagnostics.append(
+                    _source_id_guardrail_diagnostic(
+                        product_id=str(product.get("id") or f"product_{index + 1}"),
+                        raw_source_id=raw_source_id,
+                        action="accepted",
+                        reason="provided_source_id_allowed",
+                        normalized_to=raw_source_id,
+                    )
+                )
                 continue
             canonical_source_id = source_aliases.get(_normalize_source_alias(raw_source_id))
             if canonical_source_id and canonical_source_id in allowed_source_ids:
                 source_ids.append(canonical_source_id)
                 repaired_source_id = True
+                source_id_diagnostics.append(
+                    _source_id_guardrail_diagnostic(
+                        product_id=str(product.get("id") or f"product_{index + 1}"),
+                        raw_source_id=raw_source_id,
+                        action="normalized",
+                        reason="source_id_alias_resolved_to_single_allowed_document",
+                        normalized_to=canonical_source_id,
+                    )
+                )
                 continue
             unresolved_invalid_source_ids.append(raw_source_id)
+            source_id_diagnostics.append(
+                _source_id_guardrail_diagnostic(
+                    product_id=str(product.get("id") or f"product_{index + 1}"),
+                    raw_source_id=raw_source_id,
+                    action="excluded",
+                    reason="source_id_not_in_allowed_documents",
+                )
+            )
         source_ids = _dedupe_texts(source_ids)
         inferred_source_ids: list[str] = []
         if not source_ids:
             inferred_source_ids = _infer_source_ids_from_product_text(product, docs)
             if inferred_source_ids:
                 source_ids = inferred_source_ids
+                for inferred_source_id in inferred_source_ids:
+                    source_id_diagnostics.append(
+                        _source_id_guardrail_diagnostic(
+                            product_id=str(product.get("id") or f"product_{index + 1}"),
+                            raw_source_id="",
+                            action="normalized",
+                            reason="source_id_inferred_from_exact_evidence_title_match",
+                            normalized_to=inferred_source_id,
+                        )
+                    )
         source_ids = _expand_product_source_ids_with_linked_evidence(source_ids, docs, max_ids=5)
         review_notes = _safe_korean_string_list(product.get("needs_review"), "products[].needs_review")
         if unresolved_invalid_source_ids and not repaired_source_id and not inferred_source_ids:
@@ -3215,36 +3655,63 @@ def validate_products(
                 *context_coverage_notes,
             ]
         )[:8]
-        validated.append(
-            {
-                "id": str(product.get("id") or f"product_{index + 1}"),
-                "title": _required_string(product, "title"),
-                "one_liner": _required_string(product, "one_liner"),
-                "target_customer": str(product.get("target_customer") or normalized.get("target_customer") or "외국인"),
-                "core_value": _korean_string_list(product.get("core_value"), "products[].core_value")[:5] or ["지역 경험"],
-                "itinerary": _validate_itinerary(product.get("itinerary"), source_ids),
-                "estimated_duration": _korean_text(
-                    str(product.get("estimated_duration") or "3~4시간"),
-                    "products[].estimated_duration",
-                ),
-                "operation_difficulty": _korean_text(
-                    _normalize_difficulty(product.get("operation_difficulty")),
-                    "products[].operation_difficulty",
-                ),
-                "source_ids": source_ids[:5],
-                "assumptions": assumptions[:8],
-                "not_to_claim": not_to_claim[:8],
-                "evidence_summary": _normalize_evidence_summary(
-                    product.get("evidence_summary"),
-                    source_ids,
-                    docs,
-                ),
-                "needs_review": needs_review,
-                "coverage_notes": coverage_notes,
-                "claim_limits": claim_limits,
-            }
-        )
+        product_id = str(product.get("id") or f"product_{index + 1}")
+        validated_product = {
+            "id": product_id,
+            "title": _required_string(product, "title"),
+            "one_liner": _required_string(product, "one_liner"),
+            "target_customer": str(product.get("target_customer") or normalized.get("target_customer") or "외국인"),
+            "core_value": _korean_string_list(product.get("core_value"), "products[].core_value")[:5] or ["지역 경험"],
+            "itinerary": _validate_itinerary(product.get("itinerary"), source_ids),
+            "estimated_duration": _korean_text(
+                str(product.get("estimated_duration") or "3~4시간"),
+                "products[].estimated_duration",
+            ),
+            "operation_difficulty": _korean_text(
+                _normalize_difficulty(product.get("operation_difficulty")),
+                "products[].operation_difficulty",
+            ),
+            "source_ids": source_ids[:5],
+            "assumptions": assumptions[:8],
+            "not_to_claim": not_to_claim[:8],
+            "evidence_summary": _normalize_evidence_summary(
+                product.get("evidence_summary"),
+                source_ids,
+                docs,
+            ),
+            "needs_review": needs_review,
+            "coverage_notes": coverage_notes,
+            "claim_limits": claim_limits,
+        }
+        product_source_id_diagnostics = [
+            {**diagnostic, "product_id": product_id}
+            for diagnostic in source_id_diagnostics
+            if diagnostic.get("action") != "accepted"
+        ]
+        if product_source_id_diagnostics:
+            validated_product["internal_diagnostics"] = product_source_id_diagnostics
+        validated.append(validated_product)
     return validated
+
+
+def _source_id_guardrail_diagnostic(
+    *,
+    product_id: str,
+    raw_source_id: str,
+    action: str,
+    reason: str,
+    normalized_to: str | None = None,
+) -> dict[str, Any]:
+    diagnostic = {
+        "category": "source_id_guardrail",
+        "product_id": product_id,
+        "invalid_source_id": raw_source_id,
+        "reason": reason,
+        "action": action,
+    }
+    if normalized_to:
+        diagnostic["normalized_to"] = normalized_to
+    return diagnostic
 
 
 def validate_marketing_assets(
@@ -3966,8 +4433,8 @@ def _unsupported_claim_issues(
         (
             "missing_price_or_fee",
             "price_claim",
-            [r"\d[\d,]*\s*원(?:입니다|으로|에|부터|까지)?", r"무료입니다", r"최저가(?:를)? 보장"],
-            "가격이나 무료 여부를 단정하고 있습니다.",
+            [r"\d[\d,]*\s*원(?:입니다|으로|에|부터|까지)?", r"최저가(?:를)? 보장"],
+            "가격이나 요금 정보를 단정하고 있습니다.",
             "가격/요금은 운영자 확인 필요 문구로 바꾸세요.",
         ),
         (
@@ -4324,10 +4791,11 @@ def validate_qa_report(
             continue
         product_id = issue.get("product_id")
         inferred_product_id = _infer_issue_product_id(message, products)
+        resolved_product_id = product_id if product_id in product_ids else inferred_product_id
         issue_type = _normalize_user_qa_issue_type(raw_type, message, suggested_fix)
         validated_issues.append(
             {
-                "product_id": product_id if product_id in product_ids else inferred_product_id,
+                "product_id": resolved_product_id,
                 "severity": _normalize_qa_severity(str(issue.get("severity") or "medium"), issue_type, message),
                 "type": issue_type,
                 "issue_category": _qa_issue_category(issue_type, message),
@@ -4996,6 +5464,8 @@ def _product_prompt(
             f"요청.product_count 값과 정확히 같은 개수의 상품을 생성하세요. 최대 {MAX_PRODUCT_COUNT}개를 절대 넘지 마세요.",
             "근거 문서 수가 요청 상품 수보다 적어도 상품 개수를 줄이지 마세요.",
             "source_ids는 반드시 retrieved_documents 안에 있는 doc_id만 사용하세요. content_id나 임의 id를 쓰지 마세요.",
+            "source_ids에 확실하지 않은 값을 넣지 마세요. 허용된 doc_id가 없으면 source_ids는 빈 배열이어야 합니다.",
+            "다른 source_id 형식, content_id, 관광지 id, API item id를 추측해서 만들지 마세요.",
             "각 product의 source_ids에는 상품과 직접 관련된 근거만 넣으세요. 직접 관련 근거가 없으면 빈 배열을 반환하고 needs_review/coverage_notes에 근거 부족을 남기세요.",
             "candidate_evidence_cards의 usable_facts, experience_hooks, recommended_product_angles를 우선 활용하세요.",
             "unresolved_gaps에 남은 정보는 상품 본문에 단정하지 말고 needs_review, assumptions, not_to_claim, claim_limits로 분리하세요.",
@@ -5093,6 +5563,9 @@ def _qa_prompt(
             "사용자에게 보이는 모든 텍스트 필드는 반드시 한국어로 작성하세요. 영어 문장을 쓰지 마세요.",
             "QA 요약, 이슈 메시지, 수정 제안은 반드시 한국어로 작성하세요.",
             "QA의 중심은 사용자가 지정한 avoid와 명백한 evidence risk입니다.",
+            "사용자가 지정한 avoid는 단순 금지어 목록이 아니라 evidence risk 기준입니다. 고객 노출 문구가 연결 근거로 직접 뒷받침되면 issue로 만들지 마세요.",
+            "특정 단어가 보인다는 이유만으로 issue를 만들지 말고, 해당 문장이 연결 근거 없이 단정한 claim인지 판단하세요.",
+            "가격, 요금, 예약, 운영시간 같은 구체 claim은 연결 근거 없이 단정한 경우에만 issue로 만드세요.",
             "검수_항목에 있는 근거 기반 제한은 실제 운영/법무/신뢰 리스크가 있는 고객 노출 문구에만 적용하세요.",
             "검수 대상은 상품_목록과 마케팅_자산의 고객 노출 문구입니다. 근거_문서 자체의 메타데이터 품질 문제를 이슈로 만들지 마세요.",
             "상품_목록의 not_to_claim, assumptions, needs_review는 내부 운영 참고 항목입니다. 이 항목 자체를 고객 노출 문구 위반으로 지적하지 마세요.",
@@ -5101,7 +5574,7 @@ def _qa_prompt(
             "FAQ에서 '~수 있습니다', '확인 필요', '문의 필요', '현장 상황에 따라', '사전에 확인'은 단정 표현이 아니라 불확실성/확인 필요 표현입니다. 이 표현만으로 이슈를 만들지 마세요.",
             "우천, 기상, 현장 상황에 따라 취소/변경/중단될 수 있다는 문구는 정상적인 리스크 안내입니다. 이 표현만으로 이슈를 만들지 마세요.",
             "'환상적인', '아름다운', '특별한', '여유로운', '만끽하세요', '감상하세요', '즐겨보세요', '기대할 수 있습니다' 같은 일반 홍보 표현은 금지 표현이 아닙니다.",
-            "금지 표현은 실제 운영 리스크가 분명한 표현만 의미합니다. 예: '항상 운영', '예약 즉시 확정', '반드시 이용 가능', '가격은 N원입니다', '무료입니다', '100% 안전', '최저가 보장', '무조건 만족'.",
+            "금지 표현은 실제 운영 리스크가 분명하고 근거가 부족한 표현만 의미합니다. 근거가 있는 운영 정보와 근거 없는 단정 claim을 구분하세요.",
             "출처 근거 누락은 구체적 사실 주장에만 적용하세요. 분위기, 감상, 추천형 홍보 문구만으로 출처 누락 이슈를 만들지 마세요.",
             "문구가 짧다, 매력이 부족하다, 상세 설명이 약하다는 copy 품질 평가는 QA issue로 만들지 마세요. 이 평가는 별도 Marketing hardening 범위입니다.",
             "명확한 법무/운영 리스크가 없거나 단순 문체 선호에 가까우면 issue를 만들지 마세요.",
@@ -5848,7 +6321,6 @@ def _is_marketing_tone_only_issue(message: str, suggested_fix: str) -> bool:
         "근거",
         "가격은",
         "원입니다",
-        "무료입니다",
         "최저가",
         "항상",
         "반드시",

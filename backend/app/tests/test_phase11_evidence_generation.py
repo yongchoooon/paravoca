@@ -232,6 +232,10 @@ def test_validate_products_does_not_fallback_to_generic_sources_when_source_ids_
     assert any("실제 근거 목록에 없는 source id" in item for item in products[0]["needs_review"])
     assert any("근거 문서가 없어" in item for item in products[0]["needs_review"])
     assert not any("서버가 사용 가능한 근거를 보정" in item for item in products[0]["needs_review"])
+    assert products[0]["internal_diagnostics"][0]["category"] == "source_id_guardrail"
+    assert products[0]["internal_diagnostics"][0]["invalid_source_id"] == "missing_doc"
+    assert products[0]["internal_diagnostics"][0]["action"] == "excluded"
+    assert products[0]["internal_diagnostics"][0]["reason"] == "source_id_not_in_allowed_documents"
 
 
 def test_validate_products_repairs_source_item_id_to_real_doc_id_without_generic_fallback():
@@ -269,6 +273,8 @@ def test_validate_products_repairs_source_item_id_to_real_doc_id_without_generic
     )
 
     assert products[0]["source_ids"] == ["doc:tourapi:content:2551424", "doc:theme:kto_audio:test"]
+    assert products[0]["internal_diagnostics"][0]["action"] == "normalized"
+    assert products[0]["internal_diagnostics"][0]["normalized_to"] == "doc:tourapi:content:2551424"
     assert not any("근거 문서가 없어" in item for item in products[0]["needs_review"])
 
 

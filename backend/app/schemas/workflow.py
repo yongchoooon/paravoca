@@ -52,6 +52,15 @@ class QAIssueDeleteRequest(BaseModel):
     issue_indices: list[int] = Field(default_factory=list)
 
 
+class RevisionChangeDecision(BaseModel):
+    change_id: str = Field(min_length=1)
+    action: Literal["accept", "revert"]
+
+
+class RevisionChangeDecisionRequest(BaseModel):
+    decisions: list[RevisionChangeDecision] = Field(default_factory=list, min_length=1)
+
+
 class WorkflowRunDeleteRequest(BaseModel):
     run_ids: list[str] = Field(default_factory=list, min_length=1)
 

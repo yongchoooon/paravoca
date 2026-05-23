@@ -6,7 +6,9 @@ import httpx
 from sqlalchemy import inspect
 
 from app.agents.workflow import (
+    _build_ai_revision_change_review,
     _build_targeted_revision_qa_diff_summary,
+    _preserve_revision_source_state,
     apply_revision_patch,
     _filter_items_by_geo_scope,
     _filter_retrieved_documents_by_geo_scope,
@@ -2197,6 +2199,102 @@ def test_apply_revision_patch_only_applies_allowed_issue_field():
     assert patched_assets[0]["faq"][0]["answer"] == "예약 즉시 확정됩니다."
 
 
+def test_revision_source_stability_preserves_parent_source_fields():
+    source_products = [
+        {
+            "id": "product_1",
+            "title": "원본 상품",
+            "one_liner": "원본 설명",
+            "source_ids": ["doc:tourapi:content:1"],
+            "evidence_summary": "원본 근거 요약",
+            "itinerary": [{"order": 1, "name": "원본 일정", "source_id": "doc:tourapi:content:1"}],
+        }
+    ]
+    edited_products = [
+        {
+            "id": "product_1",
+            "title": "수정 상품",
+            "one_liner": "수정 설명",
+            "source_ids": ["doc:invalid"],
+            "evidence_summary": "수정하면 안 되는 근거 요약",
+            "itinerary": [{"order": 1, "name": "수정 일정", "source_id": "doc:invalid"}],
+        }
+    ]
+
+    products, source_stability = _preserve_revision_source_state(
+        {"source_final_output": {"products": source_products}},
+        edited_products,
+        mode="manual_edit",
+    )
+
+    assert products[0]["title"] == "수정 상품"
+    assert products[0]["one_liner"] == "수정 설명"
+    assert products[0]["source_ids"] == ["doc:tourapi:content:1"]
+    assert products[0]["evidence_summary"] == "원본 근거 요약"
+    assert products[0]["itinerary"][0]["name"] == "수정 일정"
+    assert products[0]["itinerary"][0]["source_id"] == "doc:tourapi:content:1"
+    assert source_stability["source_stability_mode"] == "preserve_parent_sources_after_manual_edit"
+    assert source_stability["evidence_recomputed"] is False
+    assert "products[product_1].source_ids" in source_stability["source_fields_changed"]
+
+
+def test_ai_revision_change_review_tracks_changed_fields_and_related_issue():
+    source_output = {
+        "products": [{"id": "product_1", "title": "이전 상품명", "one_liner": "이전 소개"}],
+        "marketing_assets": [
+            {
+                "product_id": "product_1",
+                "sales_copy": {
+                    "headline": "이전 제목",
+                    "subheadline": "이전 부제목",
+                    "sections": [{"title": "소개", "body": "이전 본문"}],
+                    "disclaimer": "확인 후 안내합니다.",
+                },
+                "faq": [],
+                "sns_posts": [],
+                "search_keywords": [],
+            }
+        ],
+    }
+    selected_issue = {
+        "product_id": "product_1",
+        "type": "source_missing",
+        "severity": "medium",
+        "field_path": "sales_copy.sections[0].body",
+        "message": "상세 설명에 문제 문구 '이전 본문'이 있습니다.",
+        "suggested_fix": "상세 설명을 수정하세요.",
+    }
+
+    review = _build_ai_revision_change_review(
+        {"source_final_output": source_output, "qa_issues": [selected_issue]},
+        {
+            "product_ideas": [{"id": "product_1", "title": "이전 상품명", "one_liner": "이전 소개"}],
+            "marketing_assets": [
+                {
+                    "product_id": "product_1",
+                    "sales_copy": {
+                        "headline": "이전 제목",
+                        "subheadline": "이전 부제목",
+                        "sections": [{"title": "소개", "body": "수정 본문"}],
+                        "disclaimer": "확인 후 안내합니다.",
+                    },
+                    "faq": [],
+                    "sns_posts": [],
+                    "search_keywords": [],
+                }
+            ],
+        },
+        "llm_partial_rewrite",
+    )
+
+    assert review["enabled"] is True
+    assert review["pending_count"] == 1
+    assert review["items"][0]["field_path"] == "sales_copy.sections[0].body"
+    assert review["items"][0]["before"] == "이전 본문"
+    assert review["items"][0]["after"] == "수정 본문"
+    assert review["items"][0]["qa_issue"]["message"] == selected_issue["message"]
+
+
 def test_targeted_revision_diff_counts_resolved_selected_and_unselected_carryover():
     selected_issues = [
         {
@@ -2300,6 +2398,123 @@ def test_delete_run_qa_issues_updates_report(monkeypatch):
     assert len(result["qa_report"]["issues"]) == 1
     assert result["qa_report"]["issues"][0]["message"] == "남길 리뷰입니다."
     assert len(result["qa_report"]["dismissed_issues"]) == 1
+
+
+def test_ai_revision_change_decisions_accept_or_revert_without_new_revision():
+    final_output = {
+        "status": "awaiting_approval",
+        "products": [{"id": "product_1", "title": "상품", "source_ids": []}],
+        "marketing_assets": [
+            {
+                "product_id": "product_1",
+                "sales_copy": {
+                    "headline": "수정된 제목",
+                    "subheadline": "수정된 부제목",
+                    "sections": [],
+                    "disclaimer": "확인 후 안내합니다.",
+                },
+                "faq": [],
+                "sns_posts": [],
+                "search_keywords": [],
+            }
+        ],
+        "qa_report": {
+            "overall_status": "pass",
+            "summary": "선택한 QA 이슈가 해결되었습니다.",
+            "issues": [],
+            "pass_count": 1,
+            "needs_review_count": 0,
+            "fail_count": 0,
+        },
+        "revision": {
+            "revision_mode": "llm_partial_rewrite",
+            "change_review": {
+                "enabled": True,
+                "status": "pending",
+                "pending_count": 2,
+                "items": [
+                    {
+                        "id": "change_accept",
+                        "entity": "marketing",
+                        "product_id": "product_1",
+                        "field_path": "sales_copy.headline",
+                        "field_label": "홍보 제목",
+                        "before": "이전 제목",
+                        "after": "수정된 제목",
+                        "status": "pending",
+                        "qa_issue": {
+                            "product_id": "product_1",
+                            "severity": "medium",
+                            "type": "source_missing",
+                            "message": "홍보 제목에 문제 문구 '이전 제목'이 있습니다.",
+                            "suggested_fix": "홍보 제목을 수정하세요.",
+                        },
+                    },
+                    {
+                        "id": "change_revert",
+                        "entity": "marketing",
+                        "product_id": "product_1",
+                        "field_path": "sales_copy.subheadline",
+                        "field_label": "홍보 부제목",
+                        "before": "이전 부제목",
+                        "after": "수정된 부제목",
+                        "status": "pending",
+                        "qa_issue": {
+                            "product_id": "product_1",
+                            "severity": "medium",
+                            "type": "unsupported_claim",
+                            "message": "홍보 부제목에 문제 문구 '이전 부제목'이 있습니다.",
+                            "suggested_fix": "홍보 부제목을 수정하세요.",
+                        },
+                    },
+                ],
+            },
+        },
+    }
+
+    with SessionLocal() as db:
+        run = models.WorkflowRun(
+            template_id="default_product_planning",
+            parent_run_id="run_parent_change_review",
+            revision_number=1,
+            revision_mode="llm_partial_rewrite",
+            status="awaiting_approval",
+            input={"message": "테스트"},
+            final_output=final_output,
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        run_id = run.id
+
+    with TestClient(app) as client:
+        response = unwrap(
+            client.post(
+                f"/api/workflow-runs/{run_id}/revision-changes/decide",
+                json={
+                    "decisions": [
+                        {"change_id": "change_accept", "action": "accept"},
+                        {"change_id": "change_revert", "action": "revert"},
+                    ]
+                },
+            )
+        )
+        result = unwrap(client.get(f"/api/workflow-runs/{run_id}/result"))
+        fetched_run = unwrap(client.get(f"/api/workflow-runs/{run_id}"))
+
+    asset = result["marketing_assets"][0]
+    assert asset["sales_copy"]["headline"] == "수정된 제목"
+    assert asset["sales_copy"]["subheadline"] == "이전 부제목"
+    statuses = {
+        item["id"]: item["status"]
+        for item in result["revision"]["change_review"]["items"]
+    }
+    assert statuses == {"change_accept": "accepted", "change_revert": "reverted"}
+    assert result["revision"]["change_review"]["pending_count"] == 0
+    assert len(result["qa_report"]["issues"]) == 1
+    assert result["qa_report"]["issues"][0]["message"] == "홍보 부제목에 문제 문구 '이전 부제목'이 있습니다."
+    assert fetched_run["revision_number"] == 1
+    assert response["run"]["id"] == run_id
 
 
 def test_gemini_high_demand_response_is_retryable():
@@ -2412,7 +2627,9 @@ def test_approval_actions_update_run_status_and_history(monkeypatch):
 
         manual_products = [dict(product) for product in changes_result["products"]]
         manual_marketing_assets = [dict(asset) for asset in changes_result["marketing_assets"]]
+        original_source_ids = list(manual_products[0].get("source_ids") or [])
         manual_products[0]["one_liner"] = "운영자가 직접 수정한 설명입니다."
+        manual_products[0]["source_ids"] = ["doc:invalid-manual-edit"]
         manual_revision = unwrap(
             client.post(
                 f"/api/workflow-runs/{changes_run['id']}/revisions",
@@ -2493,8 +2710,11 @@ def test_approval_actions_update_run_status_and_history(monkeypatch):
     assert manual_revision_run["revision_number"] == 1
     assert manual_revision_run["revision_mode"] == "manual_edit"
     assert manual_revision_result["products"][0]["one_liner"] == "운영자가 직접 수정한 설명입니다."
+    assert manual_revision_result["products"][0]["source_ids"] == original_source_ids
     assert manual_revision_result["revision"]["source_run_id"] == changes_run["id"]
     assert manual_revision_result["revision"]["qa_recheck_mode"] == "qa_only_recheck"
+    assert manual_revision_result["revision"]["source_stability"]["source_stability_mode"] == "preserve_parent_sources_after_manual_edit"
+    assert manual_revision_result["revision"]["source_stability"]["evidence_recomputed"] is False
     assert "qa_diff_summary" in manual_revision_result["revision"]
     assert manual_revision_result["revision"]["approval_history"][0]["decision"] == "request_changes"
     assert {step["agent_name"] for step in manual_revision_steps} >= {
@@ -2519,6 +2739,8 @@ def test_approval_actions_update_run_status_and_history(monkeypatch):
     assert rewrite_revision_run["revision_mode"] == "llm_partial_rewrite"
     assert len(rewrite_revision_result["products"]) >= 2
     assert rewrite_revision_result["revision"]["qa_recheck_mode"] == "ai_partial_rewrite_recheck"
+    assert rewrite_revision_result["revision"]["source_stability"]["source_stability_mode"] == "preserve_parent_sources_after_ai_patch"
+    assert rewrite_revision_result["revision"]["source_stability"]["evidence_recomputed"] is False
     assert "qa_diff_summary" in rewrite_revision_result["revision"]
     assert {step["agent_name"] for step in rewrite_revision_steps} >= {
         "RevisionContextAgent",
@@ -2531,6 +2753,10 @@ def test_approval_actions_update_run_status_and_history(monkeypatch):
     assert qa_revision_run["status"] == "awaiting_approval"
     assert qa_revision_run["parent_run_id"] == changes_run["id"]
     assert qa_revision_run["revision_number"] == 4
+    qa_revision_result = unwrap(client.get(f"/api/workflow-runs/{qa_revision['id']}/result"))
+    assert qa_revision_result["products"][0]["source_ids"] == changes_result["products"][0]["source_ids"]
+    assert qa_revision_result["revision"]["source_stability"]["source_stability_mode"] == "preserve_parent_sources_for_qa_only"
+    assert qa_revision_result["revision"]["source_stability"]["evidence_recomputed"] is False
     assert "ProductAgent" not in {step["agent_name"] for step in qa_revision_steps}
     assert "MarketingAgent" not in {step["agent_name"] for step in qa_revision_steps}
     assert rejected["run"]["status"] == "rejected"

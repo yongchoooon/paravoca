@@ -27,6 +27,7 @@ class GraphState(TypedDict, total=False):
     product_ideas: list[dict[str, Any]]
     marketing_assets: list[dict[str, Any]]
     qa_report: dict[str, Any]
+    source_stability: dict[str, Any]
     approval: dict[str, Any] | None
     final_report: dict[str, Any] | None
     run_status: str

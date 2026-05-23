@@ -11,7 +11,7 @@ from app.api.responses import ok
 from app.agents.data_enrichment import enrichment_run_to_dict
 from app.agents.preflight import validate_preflight_request
 from app.agents.run_cancellation import request_run_cancellation
-from app.agents.workflow import run_product_planning_workflow, run_revision_workflow
+from app.agents.workflow import run_product_planning_workflow, run_revision_workflow, _set_nested_value
 from app.db import models
 from app.db.session import SessionLocal, get_db
 from app.evals.reporting import list_evaluation_reports, read_evaluation_report
@@ -22,6 +22,7 @@ from app.schemas.workflow import (
     ApprovalRead,
     LLMCallRead,
     QAIssueDeleteRequest,
+    RevisionChangeDecisionRequest,
     ToolCallRead,
     WorkflowRunCreate,
     WorkflowRunCancelResult,
@@ -698,6 +699,124 @@ def delete_run_qa_issues(
             "qa_report": qa_report,
             "removed_count": len(removed_issues),
         }
+    )
+
+
+@router.post("/{run_id}/revision-changes/decide")
+def decide_revision_changes(
+    run_id: str,
+    payload: RevisionChangeDecisionRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    run = get_run_or_404(db, run_id)
+    if not run.final_output:
+        raise HTTPException(status_code=409, detail="Workflow run has no generated result")
+    final_output = dict(run.final_output)
+    revision = dict(final_output.get("revision") or {})
+    if revision.get("revision_mode") != "llm_partial_rewrite":
+        raise HTTPException(status_code=409, detail="Revision change review is only available for AI revision runs")
+    change_review = dict(revision.get("change_review") or {})
+    items = [dict(item) for item in change_review.get("items", []) if isinstance(item, dict)]
+    if not items:
+        raise HTTPException(status_code=409, detail="This revision has no tracked changes")
+
+    item_by_id = {str(item.get("id") or ""): item for item in items}
+    invalid_ids = [decision.change_id for decision in payload.decisions if decision.change_id not in item_by_id]
+    if invalid_ids:
+        raise HTTPException(status_code=422, detail=f"Invalid revision change ids: {invalid_ids}")
+
+    products = [dict(item) for item in final_output.get("products", []) if isinstance(item, dict)]
+    marketing_assets = [dict(item) for item in final_output.get("marketing_assets", []) if isinstance(item, dict)]
+    qa_report = dict(final_output.get("qa_report") or {})
+    qa_issues = [dict(item) for item in qa_report.get("issues", []) if isinstance(item, dict)]
+    changed_count = 0
+    now = models.utcnow().isoformat()
+
+    for decision in payload.decisions:
+        item = item_by_id[decision.change_id]
+        if item.get("status") != "pending":
+            continue
+        action = decision.action
+        if action == "revert":
+            target = _revision_change_target(item, products, marketing_assets)
+            if target is None or not _set_nested_value(target, str(item.get("field_path") or ""), item.get("before")):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Could not revert revision change: {decision.change_id}",
+                )
+            qa_issue = item.get("qa_issue")
+            if isinstance(qa_issue, dict) and not _qa_issue_exists(qa_issues, qa_issue):
+                revived = dict(qa_issue)
+                revived["revision_reverted"] = True
+                revived["user_visible"] = revived.get("user_visible", True)
+                qa_issues.append(revived)
+        item["status"] = "accepted" if action == "accept" else "reverted"
+        item["decided_at"] = now
+        changed_count += 1
+
+    qa_report["issues"] = qa_issues
+    qa_report["needs_review_count"] = len(qa_issues)
+    qa_report["fail_count"] = sum(
+        1
+        for issue in qa_issues
+        if str(issue.get("severity") or "").lower() in {"critical", "high"}
+    )
+    qa_report["overall_status"] = "needs_review" if qa_issues else "pass"
+    if changed_count:
+        if qa_issues:
+            qa_report["summary"] = f"AI 수정 변경 검토를 반영했습니다. 현재 QA 이슈 {len(qa_issues)}건이 남아 있습니다."
+        else:
+            qa_report["summary"] = "AI 수정 변경 검토를 반영했습니다. 현재 표시할 QA 이슈가 없습니다."
+
+    pending_count = sum(1 for item in items if item.get("status") == "pending")
+    change_review["items"] = items
+    change_review["pending_count"] = pending_count
+    change_review["status"] = "pending" if pending_count else "completed"
+    change_review["updated_at"] = now
+    revision["change_review"] = change_review
+
+    final_output["products"] = products
+    final_output["marketing_assets"] = marketing_assets
+    final_output["qa_report"] = qa_report
+    final_output["revision"] = revision
+    run.final_output = final_output
+    db.commit()
+    db.refresh(run)
+
+    return ok(
+        {
+            "run": WorkflowRunRead.model_validate(run).model_dump(mode="json"),
+            "result": final_output,
+            "change_review": change_review,
+            "qa_report": qa_report,
+        }
+    )
+
+
+def _revision_change_target(
+    item: dict,
+    products: list[dict],
+    marketing_assets: list[dict],
+) -> dict | None:
+    product_id = str(item.get("product_id") or "")
+    if item.get("entity") == "product":
+        return next((product for product in products if str(product.get("id") or "") == product_id), None)
+    if item.get("entity") == "marketing":
+        return next((asset for asset in marketing_assets if str(asset.get("product_id") or "") == product_id), None)
+    return None
+
+
+def _qa_issue_exists(issues: list[dict], candidate: dict) -> bool:
+    candidate_key = _qa_issue_identity(candidate)
+    return any(_qa_issue_identity(issue) == candidate_key for issue in issues)
+
+
+def _qa_issue_identity(issue: dict) -> tuple[str, str, str, str]:
+    return (
+        str(issue.get("product_id") or ""),
+        str(issue.get("type") or ""),
+        str(issue.get("message") or ""),
+        str(issue.get("suggested_fix") or ""),
     )
 
 
