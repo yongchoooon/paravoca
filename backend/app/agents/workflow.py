@@ -38,8 +38,6 @@ from app.agents.data_enrichment import (
     normalize_gap_profile_payload,
     normalize_tourapi_detail_planner_payload,
     merge_enrichment_plan_fragments,
-    plan_family_deterministic,
-    profile_data_gaps,
     select_enrichment_candidate_items,
     summarize_candidate_pool,
     PLANNER_DEFINITIONS,
@@ -47,7 +45,6 @@ from app.agents.data_enrichment import (
 from app.core.config import get_settings
 from app.db import models
 from app.llm.gemini_gateway import GeminiGatewayError, GeminiJsonResult, call_gemini_json
-from app.llm.usage_log import safe_write_llm_usage_log
 from app.rag.chroma_store import index_source_documents, search_source_documents
 from app.rag.source_documents import upsert_source_documents_from_items
 from app.tools.tourism import get_tourism_provider, log_tool_call, upsert_tourism_items
@@ -144,7 +141,7 @@ def _initial_workflow_state(run: models.WorkflowRun) -> GraphState:
         "user_request": run.input,
         "errors": [],
         "agent_execution": [],
-        "cost_summary": {"estimated_cost_usd": 0.0, "mode": "rule_based"},
+        "cost_summary": {"estimated_cost_usd": 0.0, "mode": "gemini"},
     }
 
 
@@ -266,7 +263,11 @@ def _run_qa_only_revision(
     )
     _revision_context_step(db, state, context)
     _raise_if_cancelled(db, run.id)
-    state.update(qa_agent(db, state))
+    if context.get("qa_issues"):
+        state.update(targeted_revision_qa_agent(db, state))
+    else:
+        state.update(qa_agent(db, state))
+    state.update(_revision_qa_diff_state(state))
     _raise_if_cancelled(db, run.id)
     state.update(human_approval_node(db, state))
     return state
@@ -307,7 +308,11 @@ def _run_llm_partial_revision(
     _raise_if_cancelled(db, run.id)
     state.update(revision_patch_agent(db, state))
     _raise_if_cancelled(db, run.id)
-    state.update(qa_agent(db, state))
+    if context.get("qa_issues"):
+        state.update(targeted_revision_qa_agent(db, state))
+    else:
+        state.update(qa_agent(db, state))
+    state.update(_revision_qa_diff_state(state))
     _raise_if_cancelled(db, run.id)
     state.update(human_approval_node(db, state))
     return state
@@ -350,7 +355,7 @@ def _base_revision_state(run: models.WorkflowRun, context: dict[str, Any]) -> Gr
         "research_summary": source_output.get("research_summary", {}),
         "errors": [],
         "agent_execution": [],
-        "cost_summary": {"estimated_cost_usd": 0.0, "mode": "rule_based"},
+        "cost_summary": {"estimated_cost_usd": 0.0, "mode": "gemini"},
         "revision_context": context,
     }
 
@@ -386,17 +391,247 @@ def _run_revision_metadata(db: Session, run_id: str, state: GraphState) -> dict[
     if not run:
         return {}
     context = state.get("revision_context")
+    revision_mode = run.revision_mode or (context.get("revision_mode") if isinstance(context, dict) else None)
     return {
         "root_run_id": context.get("root_run_id") if isinstance(context, dict) else run.parent_run_id,
         "parent_run_id": run.parent_run_id,
         "revision_number": run.revision_number,
-        "revision_mode": run.revision_mode,
+        "revision_mode": revision_mode,
+        "qa_recheck_mode": _revision_qa_recheck_mode(revision_mode),
+        "qa_diff_summary": state.get("qa_diff_summary") or {},
         "source_run_id": context.get("source_run_id") if isinstance(context, dict) else run.parent_run_id,
         "requested_changes": context.get("requested_changes", []) if isinstance(context, dict) else [],
         "qa_settings": context.get("qa_settings", {}) if isinstance(context, dict) else {},
         "comment": context.get("comment") if isinstance(context, dict) else None,
         "approval_history": context.get("approval_history", []) if isinstance(context, dict) else [],
     }
+
+
+def _revision_qa_recheck_mode(revision_mode: Any) -> str | None:
+    mode = str(revision_mode or "").strip()
+    if mode in {"manual_edit", "qa_only"}:
+        return "qa_only_recheck"
+    if mode == "llm_partial_rewrite":
+        return "ai_partial_rewrite_recheck"
+    if mode == "manual_save":
+        return "not_rechecked"
+    return None
+
+
+def _revision_qa_diff_state(state: GraphState) -> GraphState:
+    context = state.get("revision_context")
+    if not isinstance(context, dict):
+        return {}
+    source_output = context.get("source_final_output")
+    if not isinstance(source_output, dict):
+        return {}
+    qa_report = state.get("qa_report")
+    if not isinstance(qa_report, dict):
+        return {}
+    if qa_report.get("targeted_recheck") is True:
+        return {
+            "qa_diff_summary": _build_targeted_revision_qa_diff_summary(
+                context.get("qa_issues", []) if isinstance(context.get("qa_issues"), list) else [],
+                qa_report,
+                revision_mode=context.get("revision_mode"),
+            )
+        }
+    return {
+        "qa_diff_summary": _build_revision_qa_diff_summary(
+            source_output,
+            qa_report,
+            revision_mode=context.get("revision_mode"),
+        )
+    }
+
+
+def _build_targeted_revision_qa_diff_summary(
+    selected_issues: list[Any],
+    qa_report: dict[str, Any],
+    *,
+    revision_mode: Any = None,
+) -> dict[str, Any]:
+    results = qa_report.get("revision_issue_results") if isinstance(qa_report.get("revision_issue_results"), list) else []
+    carryover_issues = [
+        issue for issue in qa_report.get("issues", [])
+        if isinstance(issue, dict) and issue.get("revision_carryover") is True
+    ]
+    items: list[dict[str, Any]] = []
+    counts = {"resolved": 0, "still_open": len(carryover_issues)}
+    for index, issue in enumerate(selected_issues):
+        if not isinstance(issue, dict):
+            continue
+        result = results[index] if index < len(results) and isinstance(results[index], dict) else {}
+        status = "still_open" if result.get("status") == "still_open" else "resolved"
+        counts[status] += 1
+        items.append(
+            {
+                "status": status,
+                "product_id": issue.get("product_id"),
+                "original_type": issue.get("type"),
+                "original_message": _normalize_revision_issue_text(issue),
+                "current_message": result.get("message"),
+            }
+        )
+    for issue in carryover_issues:
+        items.append(
+            {
+                "status": "still_open",
+                "product_id": issue.get("product_id"),
+                "original_type": issue.get("type"),
+                "original_message": _normalize_revision_issue_text(issue),
+                "carryover": True,
+            }
+        )
+    return {
+        "revision_mode": str(revision_mode or ""),
+        "qa_recheck_mode": _revision_qa_recheck_mode(revision_mode),
+        "scope": "selected_qa_issues_only",
+        "counts": counts,
+        "items": items,
+    }
+
+
+def _build_revision_qa_diff_summary(
+    source_output: dict[str, Any],
+    qa_report: dict[str, Any],
+    *,
+    revision_mode: Any = None,
+) -> dict[str, Any]:
+    original_report = source_output.get("qa_report") if isinstance(source_output.get("qa_report"), dict) else {}
+    original_issues = [
+        issue for issue in original_report.get("issues", []) if isinstance(issue, dict)
+    ]
+    current_issues = [
+        issue for issue in qa_report.get("issues", []) if isinstance(issue, dict)
+    ]
+    pre_existing_notes = _pre_existing_gap_texts(source_output)
+    matched_current: set[int] = set()
+    items: list[dict[str, Any]] = []
+
+    for original in original_issues:
+        match_index, match_status = _find_matching_revision_issue(original, current_issues, matched_current)
+        if match_index is None:
+            items.append(
+                {
+                    "status": "resolved",
+                    "product_id": original.get("product_id"),
+                    "original_type": original.get("type"),
+                    "original_message": _normalize_revision_issue_text(original),
+                }
+            )
+            continue
+        matched_current.add(match_index)
+        current = current_issues[match_index]
+        items.append(
+            {
+                "status": match_status,
+                "product_id": current.get("product_id") or original.get("product_id"),
+                "original_type": original.get("type"),
+                "current_type": current.get("type"),
+                "original_message": _normalize_revision_issue_text(original),
+                "current_message": _normalize_revision_issue_text(current),
+            }
+        )
+
+    for index, current in enumerate(current_issues):
+        if index in matched_current:
+            continue
+        current_text = _normalize_revision_issue_text(current)
+        status = "pre_existing_gap" if _matches_pre_existing_gap(current_text, pre_existing_notes) else "new_issue"
+        items.append(
+            {
+                "status": status,
+                "product_id": current.get("product_id"),
+                "current_type": current.get("type"),
+                "current_message": current_text,
+            }
+        )
+
+    counts = {key: 0 for key in ["resolved", "still_open", "new_issue", "pre_existing_gap", "changed_wording", "needs_followup"]}
+    for item in items:
+        status = str(item.get("status") or "needs_followup")
+        counts[status] = counts.get(status, 0) + 1
+
+    return {
+        "revision_mode": str(revision_mode or ""),
+        "qa_recheck_mode": _revision_qa_recheck_mode(revision_mode),
+        "counts": counts,
+        "items": items,
+    }
+
+
+def _find_matching_revision_issue(
+    original: dict[str, Any],
+    current_issues: list[dict[str, Any]],
+    matched_current: set[int],
+) -> tuple[int | None, str]:
+    for index, current in enumerate(current_issues):
+        if index in matched_current:
+            continue
+        if _revision_issues_same(original, current, strict=True):
+            return index, "still_open"
+    for index, current in enumerate(current_issues):
+        if index in matched_current:
+            continue
+        if _revision_issues_same(original, current, strict=False):
+            return index, "changed_wording"
+    return None, "resolved"
+
+
+def _revision_issues_same(original: dict[str, Any], current: dict[str, Any], *, strict: bool) -> bool:
+    if str(original.get("product_id") or "") != str(current.get("product_id") or ""):
+        return False
+    original_type = str(original.get("issue_category") or original.get("type") or "")
+    current_type = str(current.get("issue_category") or current.get("type") or "")
+    original_text = _normalize_revision_issue_text(original)
+    current_text = _normalize_revision_issue_text(current)
+    if strict:
+        return original_type == current_type and original_text == current_text
+    if original_type and current_type and original_type == current_type:
+        return True
+    return _text_similarity_token_overlap(original_text, current_text) >= 0.55
+
+
+def _normalize_revision_issue_text(issue: dict[str, Any]) -> str:
+    text = f"{issue.get('message') or ''} {issue.get('suggested_fix') or ''}"
+    text = _strip_internal_field_paths(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:500]
+
+
+def _text_similarity_token_overlap(left: str, right: str) -> float:
+    left_tokens = {token for token in re.split(r"[\s,.'\"()]+", left) if len(token) >= 2}
+    right_tokens = {token for token in re.split(r"[\s,.'\"()]+", right) if len(token) >= 2}
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(len(left_tokens), len(right_tokens))
+
+
+def _pre_existing_gap_texts(source_output: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for product in source_output.get("products", []) or []:
+        if not isinstance(product, dict):
+            continue
+        texts.extend(_string_list(product.get("needs_review")))
+        texts.extend(_string_list(product.get("internal_diagnostics")))
+        texts.extend(_string_list(product.get("review_notes")))
+    qa_report = source_output.get("qa_report") if isinstance(source_output.get("qa_report"), dict) else {}
+    for issue in qa_report.get("internal_diagnostics", []) or []:
+        if isinstance(issue, dict):
+            texts.append(_normalize_revision_issue_text(issue))
+    return [_strip_internal_field_paths(text) for text in texts if str(text or "").strip()]
+
+
+def _matches_pre_existing_gap(current_text: str, gap_texts: list[str]) -> bool:
+    internal_gap_terms = ["반려동물", "운영자 확인", "근거 연결", "근거 문서", "확인 필요"]
+    if any(term in current_text for term in internal_gap_terms):
+        for gap_text in gap_texts:
+            if any(term in current_text and term in gap_text for term in internal_gap_terms):
+                return True
+            if _text_similarity_token_overlap(current_text, gap_text) >= 0.25:
+                return True
+    return False
 
 
 def _build_graph(db: Session):
@@ -571,26 +806,20 @@ def planner_agent(db: Session, state: GraphState) -> GraphState:
     with step_log(db, state["run_id"], "PlannerAgent", "planner", state.get("user_request")) as step:
         request = state["user_request"]
         settings = get_settings()
-        if settings.llm_enabled:
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose="planner",
-                prompt=_planner_prompt(request),
-                response_schema=PLANNER_RESPONSE_SCHEMA,
-                max_output_tokens=4096,
-                temperature=0.1,
-                settings=settings,
-            )
-            normalized = validate_planner_output(gemini_result.data, request)
-            meta = _gemini_generation_meta("PlannerAgent", "planner", gemini_result)
-            step.model = gemini_result.model
-        else:
-            normalized = _default_normalized_request(request)
-            meta = _rule_based_generation_meta("PlannerAgent", "planner")
-            step.model = "rule-based-v1"
-            record_rule_based_llm_call(db, state["run_id"], step.id, "planner", request, normalized)
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="planner",
+            prompt=_planner_prompt(request),
+            response_schema=PLANNER_RESPONSE_SCHEMA,
+            max_output_tokens=4096,
+            temperature=0.1,
+            settings=settings,
+        )
+        normalized = validate_planner_output(gemini_result.data, request)
+        meta = _gemini_generation_meta("PlannerAgent", "planner", gemini_result)
+        step.model = gemini_result.model
         plan = _default_workflow_plan()
         output = {"normalized_request": normalized, "plan": plan, "generation": meta}
         step.output = output
@@ -611,25 +840,21 @@ def geo_resolver_agent(db: Session, state: GraphState) -> GraphState:
     with step_log(db, state["run_id"], "GeoResolverAgent", "geo_resolution", resolver_input) as step:
         settings = get_settings()
         llm_hints: dict[str, Any] | None = None
-        if settings.llm_enabled:
-            catalog = load_ldong_catalog(db)
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose="geo_resolution",
-                prompt=_geo_resolution_prompt(resolver_input, catalog_options=_geo_catalog_options_for_prompt(catalog)),
-                response_schema=GEO_RESOLUTION_RESPONSE_SCHEMA,
-                max_output_tokens=2048,
-                temperature=0.05,
-                settings=settings,
-            )
-            llm_hints = validate_geo_resolution_hints(gemini_result.data)
-            meta = _gemini_generation_meta("GeoResolverAgent", "geo_resolution", gemini_result)
-            step.model = gemini_result.model
-        else:
-            meta = _rule_based_generation_meta("GeoResolverAgent", "geo_resolution")
-            step.model = "rule-based-v1"
+        catalog = load_ldong_catalog(db)
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="geo_resolution",
+            prompt=_geo_resolution_prompt(resolver_input, catalog_options=_geo_catalog_options_for_prompt(catalog)),
+            response_schema=GEO_RESOLUTION_RESPONSE_SCHEMA,
+            max_output_tokens=2048,
+            temperature=0.05,
+            settings=settings,
+        )
+        llm_hints = validate_geo_resolution_hints(gemini_result.data)
+        meta = _gemini_generation_meta("GeoResolverAgent", "geo_resolution", gemini_result)
+        step.model = gemini_result.model
         geo_scope = resolve_geo_scope(
             db,
             message=request.get("message"),
@@ -651,8 +876,6 @@ def geo_resolver_agent(db: Session, state: GraphState) -> GraphState:
             "geo_intent": llm_hints,
             "generation": meta,
         }
-        if not settings.llm_enabled:
-            record_rule_based_llm_call(db, state["run_id"], step.id, "geo_resolution", resolver_input, step.output)
         return {
             "normalized_request": normalized,
             "geo_scope": geo_scope,
@@ -729,7 +952,6 @@ def geo_exit_node(db: Session, state: GraphState) -> GraphState:
             },
         }
         step.output = report
-        record_rule_based_llm_call(db, state["run_id"], step.id, "geo_scope_exit", geo_scope, report)
         return {
             "run_status": run_status,
             "final_report": report,
@@ -1125,48 +1347,33 @@ def data_gap_profiler_agent(db: Session, state: GraphState) -> GraphState:
         "candidate_pool_summary": state.get("candidate_pool_summary", {}),
     }
     with step_log(db, state["run_id"], "DataGapProfilerAgent", "data_gap_profile", input_payload) as step:
-        if settings.llm_enabled:
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose="data_gap_profile",
-                prompt=build_data_gap_profile_prompt(
-                    source_items=state.get("source_items", []),
-                    retrieved_documents=state.get("retrieved_documents", []),
-                    normalized_request=state.get("normalized_request", {}),
-                    capability_brief=capability_brief,
-                    candidate_pool_summary=state.get("candidate_pool_summary", {}),
-                    gap_inventory=gap_inventory,
-                ),
-                response_schema=DATA_GAP_PROFILE_REF_RESPONSE_SCHEMA,
-                max_output_tokens=8192,
-                temperature=0.1,
-                settings=settings,
-            )
-            gap_report = normalize_gap_profile_payload(
-                gemini_result.data,
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="data_gap_profile",
+            prompt=build_data_gap_profile_prompt(
                 source_items=state.get("source_items", []),
                 retrieved_documents=state.get("retrieved_documents", []),
                 normalized_request=state.get("normalized_request", {}),
+                capability_brief=capability_brief,
+                candidate_pool_summary=state.get("candidate_pool_summary", {}),
                 gap_inventory=gap_inventory,
-            )
-            meta = _gemini_generation_meta("DataGapProfilerAgent", "data_gap_profile", gemini_result)
-            step.model = gemini_result.model
-        else:
-            gap_report = profile_data_gaps(
-                source_items=state.get("source_items", []),
-                retrieved_documents=state.get("retrieved_documents", []),
-                normalized_request=state.get("normalized_request", {}),
-            )
-            gap_report = {
-                **gap_report,
-                "reasoning_summary": gap_report.get("reasoning_summary")
-                or "LLM_ENABLED=false라 Gemini gap 판단을 실행하지 않고 로컬 테스트 호환 경로로 계산했습니다.",
-                "needs_review": gap_report.get("needs_review") or [],
-            }
-            meta = _offline_generation_meta("DataGapProfilerAgent", "data_gap_profile")
-            step.model = meta["model"]
+            ),
+            response_schema=DATA_GAP_PROFILE_REF_RESPONSE_SCHEMA,
+            max_output_tokens=8192,
+            temperature=0.1,
+            settings=settings,
+        )
+        gap_report = normalize_gap_profile_payload(
+            gemini_result.data,
+            source_items=state.get("source_items", []),
+            retrieved_documents=state.get("retrieved_documents", []),
+            normalized_request=state.get("normalized_request", {}),
+            gap_inventory=gap_inventory,
+        )
+        meta = _gemini_generation_meta("DataGapProfilerAgent", "data_gap_profile", gemini_result)
+        step.model = gemini_result.model
         step.output = {"gap_report": gap_report, "generation": meta}
         return {
             "data_gap_report": gap_report,
@@ -1182,38 +1389,29 @@ def api_capability_router_agent(db: Session, state: GraphState) -> GraphState:
     max_call_budget = int(settings.enrichment_max_call_budget)
     capabilities = capability_matrix_for_prompt(settings)
     with step_log(db, state["run_id"], "ApiCapabilityRouterAgent", "api_capability_routing", gap_report) as step:
-        if settings.llm_enabled:
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose="api_capability_routing",
-                prompt=build_api_capability_router_prompt(
-                    gap_report=gap_report,
-                    capabilities=capabilities,
-                    settings=settings,
-                    max_call_budget=max_call_budget,
-                ),
-                response_schema=API_CAPABILITY_ROUTING_RESPONSE_SCHEMA,
-                max_output_tokens=2048,
-                temperature=0.05,
-                settings=settings,
-            )
-            capability_routing = normalize_family_routing_payload(
-                gemini_result.data,
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="api_capability_routing",
+            prompt=build_api_capability_router_prompt(
                 gap_report=gap_report,
+                capabilities=capabilities,
                 settings=settings,
-            )
-            meta = _gemini_generation_meta("ApiCapabilityRouterAgent", "api_capability_routing", gemini_result)
-            step.model = gemini_result.model
-        else:
-            capability_routing = normalize_family_routing_payload(
-                {"family_routes": [], "routing_reasoning": "LLM_ENABLED=false라 로컬 호환 경로로 family lane을 분배했습니다."},
-                gap_report=gap_report,
-                settings=settings,
-            )
-            meta = _offline_generation_meta("ApiCapabilityRouterAgent", "api_capability_routing")
-            step.model = meta["model"]
+                max_call_budget=max_call_budget,
+            ),
+            response_schema=API_CAPABILITY_ROUTING_RESPONSE_SCHEMA,
+            max_output_tokens=2048,
+            temperature=0.05,
+            settings=settings,
+        )
+        capability_routing = normalize_family_routing_payload(
+            gemini_result.data,
+            gap_report=gap_report,
+            settings=settings,
+        )
+        meta = _gemini_generation_meta("ApiCapabilityRouterAgent", "api_capability_routing", gemini_result)
+        step.model = gemini_result.model
         step.output = {"capability_routing": capability_routing, "generation": meta}
         return {
             "capability_routing": capability_routing,
@@ -1277,62 +1475,50 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
         "lane_existing_planned_count": lane_existing_planned_count,
     }
     with step_log(db, state["run_id"], definition["agent_name"], definition["purpose"], input_payload) as step:
-        if settings.llm_enabled:
-            if planner_key == "tourapi_detail":
-                planner_prompt = build_tourapi_detail_planner_prompt(
-                    capability_routing=capability_routing,
-                    gap_report=gap_report,
-                    max_call_budget=max_call_budget,
-                    existing_planned_count=lane_existing_planned_count,
-                )
-                planner_schema = TOURAPI_DETAIL_PLANNER_RESPONSE_SCHEMA
-                planner_max_output_tokens = 8192
-            else:
-                planner_prompt = build_api_family_planner_prompt(
-                    planner_key=planner_key,
-                    capability_routing=capability_routing,
-                    gap_report=gap_report,
-                    capabilities=capability_matrix_for_prompt(settings),
-                    settings=settings,
-                    max_call_budget=max_call_budget,
-                    existing_planned_count=lane_existing_planned_count,
-                )
-                planner_schema = API_FAMILY_PLANNER_RESPONSE_SCHEMA
-                planner_max_output_tokens = 2048
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose=definition["purpose"],
-                prompt=planner_prompt,
-                response_schema=planner_schema,
-                max_output_tokens=planner_max_output_tokens,
-                temperature=0.05,
-                settings=settings,
+        if planner_key == "tourapi_detail":
+            planner_prompt = build_tourapi_detail_planner_prompt(
+                capability_routing=capability_routing,
+                gap_report=gap_report,
+                max_call_budget=max_call_budget,
+                existing_planned_count=lane_existing_planned_count,
             )
-            if planner_key == "tourapi_detail":
-                fragment = normalize_tourapi_detail_planner_payload(
-                    gemini_result.data,
-                    capability_routing=capability_routing,
-                    gap_report=gap_report,
-                    settings=settings,
-                    max_call_budget=max_call_budget,
-                    existing_planned_count=lane_existing_planned_count,
-                )
-            else:
-                fragment = normalize_family_planner_payload(
-                    gemini_result.data,
-                    planner_key=planner_key,
-                    capability_routing=capability_routing,
-                    gap_report=gap_report,
-                    settings=settings,
-                    max_call_budget=max_call_budget,
-                    existing_planned_count=lane_existing_planned_count,
-                )
-            meta = _gemini_generation_meta(definition["agent_name"], definition["purpose"], gemini_result)
-            step.model = gemini_result.model
+            planner_schema = TOURAPI_DETAIL_PLANNER_RESPONSE_SCHEMA
+            planner_max_output_tokens = 8192
         else:
-            fragment = plan_family_deterministic(
+            planner_prompt = build_api_family_planner_prompt(
+                planner_key=planner_key,
+                capability_routing=capability_routing,
+                gap_report=gap_report,
+                capabilities=capability_matrix_for_prompt(settings),
+                settings=settings,
+                max_call_budget=max_call_budget,
+                existing_planned_count=lane_existing_planned_count,
+            )
+            planner_schema = API_FAMILY_PLANNER_RESPONSE_SCHEMA
+            planner_max_output_tokens = 2048
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose=definition["purpose"],
+            prompt=planner_prompt,
+            response_schema=planner_schema,
+            max_output_tokens=planner_max_output_tokens,
+            temperature=0.05,
+            settings=settings,
+        )
+        if planner_key == "tourapi_detail":
+            fragment = normalize_tourapi_detail_planner_payload(
+                gemini_result.data,
+                capability_routing=capability_routing,
+                gap_report=gap_report,
+                settings=settings,
+                max_call_budget=max_call_budget,
+                existing_planned_count=lane_existing_planned_count,
+            )
+        else:
+            fragment = normalize_family_planner_payload(
+                gemini_result.data,
                 planner_key=planner_key,
                 capability_routing=capability_routing,
                 gap_report=gap_report,
@@ -1340,8 +1526,8 @@ def api_family_planner_agent(db: Session, state: GraphState, planner_key: str) -
                 max_call_budget=max_call_budget,
                 existing_planned_count=lane_existing_planned_count,
             )
-            meta = _offline_generation_meta(definition["agent_name"], definition["purpose"])
-            step.model = meta["model"]
+        meta = _gemini_generation_meta(definition["agent_name"], definition["purpose"], gemini_result)
+        step.model = gemini_result.model
         next_fragments = [*existing_fragments, fragment]
         output = {"fragment": fragment, "generation": meta}
         if planner_key == "theme_data":
@@ -1412,33 +1598,25 @@ def evidence_fusion_agent(db: Session, state: GraphState) -> GraphState:
             gap_report=state.get("data_gap_report") or {"gaps": []},
             enrichment_summary=state.get("enrichment_summary") or {},
         )
-        if settings.llm_enabled:
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose="evidence_fusion",
-                prompt=build_evidence_fusion_prompt(
-                    base_fusion=base_fusion,
-                    retrieved_documents=documents,
-                    gap_report=state.get("data_gap_report") or {"gaps": []},
-                    enrichment_summary=state.get("enrichment_summary") or {},
-                ),
-                response_schema=EVIDENCE_FUSION_RESPONSE_SCHEMA,
-                max_output_tokens=16384,
-                temperature=0.1,
-                settings=settings,
-            )
-            fusion = normalize_evidence_fusion_payload(gemini_result.data, base_fusion=base_fusion)
-            meta = _gemini_generation_meta("EvidenceFusionAgent", "evidence_fusion", gemini_result)
-            step.model = gemini_result.model
-        else:
-            fusion = {
-                **base_fusion,
-                "ui_highlights": _offline_fusion_highlights(base_fusion, state.get("enrichment_summary") or {}),
-            }
-            meta = _offline_generation_meta("EvidenceFusionAgent", "evidence_fusion")
-            step.model = meta["model"]
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="evidence_fusion",
+            prompt=build_evidence_fusion_prompt(
+                base_fusion=base_fusion,
+                retrieved_documents=documents,
+                gap_report=state.get("data_gap_report") or {"gaps": []},
+                enrichment_summary=state.get("enrichment_summary") or {},
+            ),
+            response_schema=EVIDENCE_FUSION_RESPONSE_SCHEMA,
+            max_output_tokens=16384,
+            temperature=0.1,
+            settings=settings,
+        )
+        fusion = normalize_evidence_fusion_payload(gemini_result.data, base_fusion=base_fusion)
+        meta = _gemini_generation_meta("EvidenceFusionAgent", "evidence_fusion", gemini_result)
+        step.model = gemini_result.model
         output = {
             **fusion,
             "retrieved_documents": documents,
@@ -1911,54 +2089,48 @@ def research_agent(db: Session, state: GraphState) -> GraphState:
         docs = state.get("retrieved_documents", [])
         evidence_context = _evidence_context_from_state(state)
         settings = get_settings()
-        if settings.llm_enabled:
-            prompt_kwargs = {
-                "normalized": state.get("normalized_request", {}),
-                "docs": docs,
-                "evidence_context": evidence_context,
-                "data_gap_report": state.get("data_gap_report") or {},
-                "enrichment_summary": state.get("enrichment_summary") or {},
-            }
-            try:
-                gemini_result = call_gemini_json(
-                    db=db,
-                    run_id=state["run_id"],
-                    step_id=step.id,
-                    purpose="research_synthesis",
-                    prompt=_research_synthesis_prompt(**prompt_kwargs),
-                    response_schema=RESEARCH_SYNTHESIS_RESPONSE_SCHEMA,
-                    max_output_tokens=8192,
-                    temperature=0.15,
-                    settings=settings,
-                )
-            except GeminiGatewayError as exc:
-                if not _is_timeout_like_gemini_error(exc):
-                    raise
-                logger.warning(
-                    "Retrying research synthesis with compact prompt after Gemini timeout. run_id=%s step_id=%s error=%s",
-                    state["run_id"],
-                    step.id,
-                    exc,
-                )
-                gemini_result = call_gemini_json(
-                    db=db,
-                    run_id=state["run_id"],
-                    step_id=step.id,
-                    purpose="research_synthesis_compact_retry",
-                    prompt=_research_synthesis_prompt(**prompt_kwargs, compact_retry_error=str(exc)),
-                    response_schema=RESEARCH_SYNTHESIS_RESPONSE_SCHEMA,
-                    max_output_tokens=4096,
-                    temperature=0.1,
-                    settings=settings,
-                )
-            summary = validate_research_synthesis(gemini_result.data, state)
-            meta = _gemini_generation_meta("ResearchSynthesisAgent", "research_synthesis", gemini_result)
-            step.model = gemini_result.model
-        else:
-            summary = build_offline_research_synthesis(state)
-            meta = _rule_based_generation_meta("ResearchSynthesisAgent", "research")
-            step.model = "rule-based-v1"
-            record_rule_based_llm_call(db, state["run_id"], step.id, "research", docs, summary)
+        prompt_kwargs = {
+            "normalized": state.get("normalized_request", {}),
+            "docs": docs,
+            "evidence_context": evidence_context,
+            "data_gap_report": state.get("data_gap_report") or {},
+            "enrichment_summary": state.get("enrichment_summary") or {},
+        }
+        try:
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose="research_synthesis",
+                prompt=_research_synthesis_prompt(**prompt_kwargs),
+                response_schema=RESEARCH_SYNTHESIS_RESPONSE_SCHEMA,
+                max_output_tokens=8192,
+                temperature=0.15,
+                settings=settings,
+            )
+        except GeminiGatewayError as exc:
+            if not _is_timeout_like_gemini_error(exc):
+                raise
+            logger.warning(
+                "Retrying research synthesis with compact prompt after Gemini timeout. run_id=%s step_id=%s error=%s",
+                state["run_id"],
+                step.id,
+                exc,
+            )
+            gemini_result = call_gemini_json(
+                db=db,
+                run_id=state["run_id"],
+                step_id=step.id,
+                purpose="research_synthesis_compact_retry",
+                prompt=_research_synthesis_prompt(**prompt_kwargs, compact_retry_error=str(exc)),
+                response_schema=RESEARCH_SYNTHESIS_RESPONSE_SCHEMA,
+                max_output_tokens=4096,
+                temperature=0.1,
+                settings=settings,
+            )
+        summary = validate_research_synthesis(gemini_result.data, state)
+        meta = _gemini_generation_meta("ResearchSynthesisAgent", "research_synthesis", gemini_result)
+        step.model = gemini_result.model
         step.output = {"research_summary": summary, "generation": meta}
         return {
             "research_summary": summary,
@@ -1984,69 +2156,63 @@ def product_agent(db: Session, state: GraphState) -> GraphState:
         evidence_context = _evidence_context_from_state(state)
         qa_settings = _qa_settings_from_state(state)
         settings = get_settings()
-        if not settings.llm_enabled:
-            products = build_rule_based_products(normalized, docs, evidence_context=evidence_context)
-            meta = _rule_based_generation_meta("ProductAgent", "product_generation")
-            step.model = "rule-based-v1"
-            record_rule_based_llm_call(db, state["run_id"], step.id, "product_generation", normalized, products)
-        else:
-            product_prompt = _product_prompt(
+        product_prompt = _product_prompt(
+            normalized,
+            state.get("research_summary", {}),
+            docs,
+            evidence_context=evidence_context,
+            source_items=state.get("source_items", []),
+            qa_settings=qa_settings,
+        )
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="product_generation",
+            prompt=product_prompt,
+            response_schema=PRODUCT_RESPONSE_SCHEMA,
+            max_output_tokens=16384,
+            temperature=0.35,
+            settings=settings,
+        )
+        try:
+            products = validate_products(
+                gemini_result.data,
                 normalized,
-                state.get("research_summary", {}),
                 docs,
                 evidence_context=evidence_context,
-                source_items=state.get("source_items", []),
                 qa_settings=qa_settings,
             )
-            gemini_result = call_gemini_json(
+        except ValueError as exc:
+            repair_result = call_gemini_json(
                 db=db,
                 run_id=state["run_id"],
                 step_id=step.id,
-                purpose="product_generation",
-                prompt=product_prompt,
+                purpose="product_generation_repair",
+                prompt=_product_prompt(
+                    normalized,
+                    state.get("research_summary", {}),
+                    docs,
+                    evidence_context=evidence_context,
+                    source_items=state.get("source_items", []),
+                    qa_settings=qa_settings,
+                    validation_error=str(exc),
+                ),
                 response_schema=PRODUCT_RESPONSE_SCHEMA,
                 max_output_tokens=16384,
-                temperature=0.35,
+                temperature=0.2,
                 settings=settings,
             )
-            try:
-                products = validate_products(
-                    gemini_result.data,
-                    normalized,
-                    docs,
-                    evidence_context=evidence_context,
-                    qa_settings=qa_settings,
-                )
-            except ValueError as exc:
-                repair_result = call_gemini_json(
-                    db=db,
-                    run_id=state["run_id"],
-                    step_id=step.id,
-                    purpose="product_generation_repair",
-                    prompt=_product_prompt(
-                        normalized,
-                        state.get("research_summary", {}),
-                        docs,
-                        evidence_context=evidence_context,
-                        source_items=state.get("source_items", []),
-                        qa_settings=qa_settings,
-                        validation_error=str(exc),
-                    ),
-                    response_schema=PRODUCT_RESPONSE_SCHEMA,
-                    max_output_tokens=16384,
-                    temperature=0.2,
-                    settings=settings,
-                )
-                products = validate_products(
-                    repair_result.data,
-                    normalized,
-                    docs,
-                    evidence_context=evidence_context,
-                    qa_settings=qa_settings,
-                )
-                gemini_result = repair_result
-            meta = _gemini_generation_meta("ProductAgent", "product_generation", gemini_result)
-            step.model = gemini_result.model
+            products = validate_products(
+                repair_result.data,
+                normalized,
+                docs,
+                evidence_context=evidence_context,
+                qa_settings=qa_settings,
+            )
+            gemini_result = repair_result
+        meta = _gemini_generation_meta("ProductAgent", "product_generation", gemini_result)
+        step.model = gemini_result.model
         step.output = {"products": products, "generation": meta}
         return {
             "product_ideas": products,
@@ -2062,56 +2228,50 @@ def marketing_agent(db: Session, state: GraphState) -> GraphState:
         docs = state.get("retrieved_documents", [])
         revision_context = state.get("revision_context")
         qa_settings = _qa_settings_from_state(state)
-        if not settings.llm_enabled:
-            assets = build_rule_based_marketing(products)
-            meta = _rule_based_generation_meta("MarketingAgent", "marketing_generation")
-            step.model = "rule-based-v1"
-            record_rule_based_llm_call(db, state["run_id"], step.id, "marketing_generation", products, assets)
-        else:
-            gemini_result = call_gemini_json(
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="marketing_generation",
+            prompt=_marketing_prompt(
+                products,
+                docs,
+                revision_context,
+                evidence_context,
+                qa_settings,
+            ),
+            response_schema=MARKETING_RESPONSE_SCHEMA,
+            max_output_tokens=16384,
+            temperature=0.35,
+            settings=settings,
+        )
+        try:
+            assets = validate_marketing_assets(gemini_result.data, products, evidence_context=evidence_context)
+        except ValueError as exc:
+            if not _should_retry_marketing_validation(exc):
+                raise
+            repair_result = call_gemini_json(
                 db=db,
                 run_id=state["run_id"],
                 step_id=step.id,
-                purpose="marketing_generation",
+                purpose="marketing_generation_repair",
                 prompt=_marketing_prompt(
                     products,
                     docs,
                     revision_context,
                     evidence_context,
                     qa_settings,
+                    validation_error=str(exc),
                 ),
                 response_schema=MARKETING_RESPONSE_SCHEMA,
                 max_output_tokens=16384,
-                temperature=0.35,
+                temperature=0.2,
                 settings=settings,
             )
-            try:
-                assets = validate_marketing_assets(gemini_result.data, products, evidence_context=evidence_context)
-            except ValueError as exc:
-                if not _should_retry_marketing_validation(exc):
-                    raise
-                repair_result = call_gemini_json(
-                    db=db,
-                    run_id=state["run_id"],
-                    step_id=step.id,
-                    purpose="marketing_generation_repair",
-                    prompt=_marketing_prompt(
-                        products,
-                        docs,
-                        revision_context,
-                        evidence_context,
-                        qa_settings,
-                        validation_error=str(exc),
-                    ),
-                    response_schema=MARKETING_RESPONSE_SCHEMA,
-                    max_output_tokens=16384,
-                    temperature=0.2,
-                    settings=settings,
-                )
-                assets = validate_marketing_assets(repair_result.data, products, evidence_context=evidence_context)
-                gemini_result = repair_result
-            meta = _gemini_generation_meta("MarketingAgent", "marketing_generation", gemini_result)
-            step.model = gemini_result.model
+            assets = validate_marketing_assets(repair_result.data, products, evidence_context=evidence_context)
+            gemini_result = repair_result
+        meta = _gemini_generation_meta("MarketingAgent", "marketing_generation", gemini_result)
+        step.model = gemini_result.model
         step.output = {"marketing_assets": assets, "generation": meta}
         return {
             "marketing_assets": assets,
@@ -2127,45 +2287,33 @@ def qa_agent(db: Session, state: GraphState) -> GraphState:
         docs = state.get("retrieved_documents", [])
         evidence_context = _evidence_context_from_state(state)
         qa_settings = _qa_settings_from_state(state)
-        if not settings.llm_enabled:
-            qa_report = build_rule_based_qa(
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="qa_review",
+            prompt=_qa_prompt(
                 products,
                 assets,
-                docs=docs,
-                evidence_context=evidence_context,
-                qa_settings=qa_settings,
-            )
-            meta = _rule_based_generation_meta("QAComplianceAgent", "qa_review")
-            step.model = "rule-based-v1"
-            record_rule_based_llm_call(db, state["run_id"], step.id, "qa_review", assets, qa_report)
-        else:
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose="qa_review",
-                prompt=_qa_prompt(
-                    products,
-                    assets,
-                    docs,
-                    qa_settings,
-                    evidence_context,
-                ),
-                response_schema=QA_RESPONSE_SCHEMA,
-                max_output_tokens=16384,
-                temperature=0.1,
-                settings=settings,
-            )
-            qa_report = validate_qa_report(
-                gemini_result.data,
-                products,
-                docs=docs,
-                evidence_context=evidence_context,
-                marketing_assets=assets,
-                qa_settings=qa_settings,
-            )
-            meta = _gemini_generation_meta("QAComplianceAgent", "qa_review", gemini_result)
-            step.model = gemini_result.model
+                docs,
+                qa_settings,
+                evidence_context,
+            ),
+            response_schema=QA_RESPONSE_SCHEMA,
+            max_output_tokens=16384,
+            temperature=0.1,
+            settings=settings,
+        )
+        qa_report = validate_qa_report(
+            gemini_result.data,
+            products,
+            docs=docs,
+            evidence_context=evidence_context,
+            marketing_assets=assets,
+            qa_settings=qa_settings,
+        )
+        meta = _gemini_generation_meta("QAComplianceAgent", "qa_review", gemini_result)
+        step.model = gemini_result.model
         step.output = {"qa_report": qa_report, "generation": meta}
         return {
             "qa_report": qa_report,
@@ -2188,46 +2336,30 @@ def revision_patch_agent(db: Session, state: GraphState) -> GraphState:
             raise ValueError("AI revision requires source products and marketing_assets")
 
         settings = get_settings()
-        if not settings.llm_enabled:
-            patch_payload = build_rule_based_revision_patch(
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="revision_patch",
+            prompt=_revision_patch_prompt(
                 products,
                 marketing_assets,
                 state.get("revision_context", {}),
-            )
-            meta = _rule_based_generation_meta("RevisionPatchAgent", "revision_patch")
-            step.model = "rule-based-v1"
-            record_rule_based_llm_call(
-                db,
-                state["run_id"],
-                step.id,
-                "revision_patch",
-                state.get("revision_context", {}),
-                patch_payload,
-            )
-        else:
-            gemini_result = call_gemini_json(
-                db=db,
-                run_id=state["run_id"],
-                step_id=step.id,
-                purpose="revision_patch",
-                prompt=_revision_patch_prompt(
-                    products,
-                    marketing_assets,
-                    state.get("revision_context", {}),
-                ),
-                response_schema=REVISION_PATCH_RESPONSE_SCHEMA,
-                max_output_tokens=16384,
-                temperature=0.15,
-                settings=settings,
-            )
-            patch_payload = gemini_result.data
-            meta = _gemini_generation_meta("RevisionPatchAgent", "revision_patch", gemini_result)
-            step.model = gemini_result.model
+            ),
+            response_schema=REVISION_PATCH_RESPONSE_SCHEMA,
+            max_output_tokens=16384,
+            temperature=0.15,
+            settings=settings,
+        )
+        patch_payload = gemini_result.data
+        meta = _gemini_generation_meta("RevisionPatchAgent", "revision_patch", gemini_result)
+        step.model = gemini_result.model
 
         patched_products, patched_assets = apply_revision_patch(
             patch_payload,
             products,
             marketing_assets,
+            allowed_patch_scope=_revision_allowed_patch_scope(state.get("revision_context", {})),
         )
         output = {
             "patch": patch_payload,
@@ -2239,6 +2371,54 @@ def revision_patch_agent(db: Session, state: GraphState) -> GraphState:
         return {
             "product_ideas": patched_products,
             "marketing_assets": patched_assets,
+            "agent_execution": _append_agent_execution(state, meta),
+        }
+
+
+def targeted_revision_qa_agent(db: Session, state: GraphState) -> GraphState:
+    with step_log(
+        db,
+        state["run_id"],
+        "QAComplianceAgent",
+        "qa_targeted_revision_review",
+        state.get("revision_context"),
+    ) as step:
+        revision_context = state.get("revision_context", {})
+        source_output = revision_context.get("source_final_output", {}) if isinstance(revision_context, dict) else {}
+        selected_issues = revision_context.get("qa_issues", []) if isinstance(revision_context, dict) else []
+        products = state.get("product_ideas", [])
+        assets = state.get("marketing_assets", [])
+        settings = get_settings()
+        gemini_result = call_gemini_json(
+            db=db,
+            run_id=state["run_id"],
+            step_id=step.id,
+            purpose="qa_targeted_revision_review",
+            prompt=_targeted_revision_qa_prompt(
+                source_output.get("products") or [],
+                source_output.get("marketing_assets") or [],
+                products,
+                assets,
+                selected_issues,
+                revision_context.get("qa_settings", {}) if isinstance(revision_context, dict) else {},
+            ),
+            response_schema=TARGETED_QA_RESPONSE_SCHEMA,
+            max_output_tokens=4096,
+            temperature=0.05,
+            settings=settings,
+        )
+        qa_report = validate_targeted_revision_qa_report(
+            gemini_result.data,
+            selected_issues,
+            products,
+            marketing_assets=assets,
+            source_output=source_output,
+        )
+        meta = _gemini_generation_meta("QAComplianceAgent", "qa_targeted_revision_review", gemini_result)
+        step.model = gemini_result.model
+        step.output = {"qa_report": qa_report, "generation": meta}
+        return {
+            "qa_report": qa_report,
             "agent_execution": _append_agent_execution(state, meta),
         }
 
@@ -2469,6 +2649,15 @@ REVISION_PATCH_RESPONSE_SCHEMA = {
     },
 }
 
+TARGETED_QA_RESPONSE_SCHEMA = {
+    "type": "object",
+    "required": ["summary", "items"],
+    "properties": {
+        "summary": {"type": "string"},
+        "items": {"type": "array"},
+    },
+}
+
 QA_RESPONSE_SCHEMA = {
     "type": "object",
     "required": [
@@ -2480,167 +2669,6 @@ QA_RESPONSE_SCHEMA = {
         "fail_count",
     ],
 }
-
-
-def build_rule_based_products(
-    normalized: dict[str, Any],
-    docs: list[dict[str, Any]],
-    *,
-    evidence_context: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    requested_count = _desired_product_count(normalized, fallback=3)
-    count = _effective_product_count(normalized, docs, fallback=3)
-    region_label = _region_label_from_normalized(normalized)
-    templates = [
-        (f"{region_label} 야간 로컬 미식 투어", ["야경", "로컬 음식", "짧은 동선"]),
-        (f"{region_label} 대표 액티비티 사진 코스", ["액티비티", "사진", "야간 관광"]),
-        (f"{region_label} 시즌 행사 연계 패키지", ["축제", "관광지", "시즌성"]),
-        (f"{region_label} 로컬 산책 + 카페 투어", ["로컬 산책", "카페", "가벼운 도보"]),
-        (f"{region_label} 문화 체험 입문 클래스", ["문화 체험", "푸드투어", "현장 확인"]),
-    ]
-    source_ids = [str(doc["doc_id"]) for doc in docs if doc.get("doc_id")]
-    if not source_ids:
-        raise ValueError("TourAPI source documents are required for product generation")
-    coverage_notes = _coverage_notes_from_context(evidence_context or {})
-    shortage_note = _product_count_shortage_note(requested_count, count, len(source_ids))
-    if shortage_note:
-        coverage_notes = _dedupe_texts([shortage_note, *coverage_notes])
-    context_claim_limits = _claim_limits_from_context(evidence_context or {})
-    products = []
-    for index in range(count):
-        title, core = templates[index % len(templates)]
-        product_source_ids = source_ids[: min(3, len(source_ids))]
-        not_to_claim = _dedupe_texts(["가격 확정", "항상 운영", "예약 즉시 확정", *context_claim_limits])[:8]
-        products.append(
-            {
-                "id": f"product_{index + 1}",
-                "title": title,
-                "one_liner": f"{region_label}에서 {normalized['target_customer']} 대상 운영자가 검토할 수 있는 액티비티 초안입니다.",
-                "target_customer": normalized["target_customer"],
-                "core_value": core,
-                "itinerary": [
-                    {"order": 1, "name": "source 기반 후보지 방문", "source_id": source_ids[index % len(source_ids)]},
-                    {"order": 2, "name": "현장 운영 조건 확인", "source_id": source_ids[(index + 1) % len(source_ids)]},
-                ],
-                "estimated_duration": "3~4시간",
-                "operation_difficulty": "보통",
-                "source_ids": product_source_ids,
-                "assumptions": ["세부 가격과 예약 가능 여부는 운영자가 확정해야 합니다."],
-                "not_to_claim": not_to_claim,
-                "evidence_summary": _evidence_summary_for_product(product_source_ids, docs),
-                "needs_review": _needs_review_from_context(evidence_context or {})[:6],
-                "coverage_notes": coverage_notes[:6],
-                "claim_limits": not_to_claim,
-            }
-        )
-    return products
-
-
-def build_rule_based_marketing(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    assets = []
-    for product in products:
-        assets.append(
-            {
-                "product_id": product["id"],
-                "sales_copy": {
-                    "headline": product["title"],
-                    "subheadline": product["one_liner"],
-                    "sections": [
-                        {"title": "추천 포인트", "body": ", ".join(product["core_value"])},
-                        {"title": "운영 메모", "body": "일정, 가격, 포함사항은 최종 확인 후 게시하세요."},
-                        {"title": "출처 기반 구성", "body": "연결된 관광 데이터 source를 기준으로 구성한 초안입니다."},
-                    ],
-                    "disclaimer": "세부 일정, 가격, 포함사항은 운영자가 최종 확정해야 합니다.",
-                },
-                "faq": [
-                    {"question": "우천 시에도 진행하나요?", "answer": "현장 안전 기준에 따라 변경될 수 있어 운영자 확인이 필요합니다."},
-                    {"question": "가격이 확정되어 있나요?", "answer": "가격은 공급사 조건 확인 후 확정해야 합니다."},
-                    {"question": "외국어 안내가 포함되나요?", "answer": "가이드 포함 여부는 운영자가 최종 설정해야 합니다."},
-                    {"question": "집결지는 어디인가요?", "answer": "상품 등록 전 정확한 집결지를 확정해야 합니다."},
-                    {"question": "행사 일정이 바뀌면 어떻게 되나요?", "answer": "공식 일정 변경 시 상품 일정도 함께 업데이트해야 합니다."},
-                ],
-                "sns_posts": [
-                    f"{product['title']} 초안",
-                    "요청 지역의 로컬 경험을 묶은 액티비티 후보",
-                    "운영 확정 전 일정과 포함사항을 확인하세요",
-                ],
-                "search_keywords": [product["title"], "외국인", "액티비티", "야경", "푸드투어", "축제", "로컬", "전통시장"],
-                "evidence_disclaimer": _marketing_evidence_disclaimer(product),
-                "claim_limits": _dedupe_texts(
-                    _string_list(product.get("claim_limits")) + _string_list(product.get("not_to_claim"))
-                )[:8],
-            }
-        )
-    return assets
-
-
-def build_rule_based_qa(
-    products: list[dict[str, Any]],
-    assets: list[dict[str, Any]],
-    *,
-    docs: list[dict[str, Any]] | None = None,
-    evidence_context: dict[str, Any] | None = None,
-    qa_settings: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    issues = []
-    prohibited = ["100% 만족", "무조건", "항상 운영", "최저가 보장", "완전 안전", "예약 즉시 확정"]
-    for asset in assets:
-        text = str(asset)
-        for phrase in prohibited:
-            if phrase in text:
-                issues.append(
-                    {
-                        "product_id": asset["product_id"],
-                        "severity": "high",
-                        "type": "prohibited_phrase",
-                        "message": f"금지 표현 포함: {phrase}",
-                        "field_path": "marketing_assets",
-                        "suggested_fix": "과장 또는 단정 표현을 운영자 확인 필요 문구로 바꾸세요.",
-                    }
-                )
-    issues = _dedupe_qa_issues(
-        [
-            *issues,
-            *_evidence_based_qa_issues(
-                products,
-                assets,
-                docs or [],
-                evidence_context or {},
-                qa_settings or {},
-            ),
-        ]
-    )
-    return {
-        "overall_status": "needs_review" if issues else "pass",
-        "summary": "자동 검수 완료. 가격/일정/포함사항은 사람 승인 전 확인 필요.",
-        "issues": issues,
-        "pass_count": len(products) if not issues else 0,
-        "needs_review_count": len(products) if issues else 0,
-        "fail_count": 0,
-    }
-
-
-def build_rule_based_revision_patch(
-    products: list[dict[str, Any]],
-    assets: list[dict[str, Any]],
-    revision_context: dict[str, Any],
-) -> dict[str, Any]:
-    product_patches = []
-    for product in products:
-        title = str(product.get("title") or "")
-        cleaned_title = re.sub(r"[\s\d]{3,}$", "", title).strip()
-        if cleaned_title and cleaned_title != title:
-            product_patches.append(
-                {
-                    "product_id": product.get("id"),
-                    "fields": {"title": cleaned_title},
-                }
-            )
-    return {
-        "product_patches": product_patches,
-        "marketing_patches": [],
-        "notes": ["규칙 기반 revision patch는 명확한 제목 정리만 처리합니다."],
-    }
 
 
 def validate_geo_resolution_hints(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3142,6 +3170,20 @@ def _dedupe_qa_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+QA_USER_ISSUE_TYPES = {
+    "avoid_rule",
+    "unsupported_claim",
+    "source_missing",
+    "operational_uncertainty",
+    "content_format",
+    "price_claim",
+    "booking_claim",
+    "operating_hours_claim",
+    "theme_claim",
+    "safety_claim",
+}
+
+
 def _evidence_based_qa_issues(
     products: list[dict[str, Any]],
     assets: list[dict[str, Any]],
@@ -3175,10 +3217,12 @@ def _evidence_based_qa_issues(
                 issues.append(
                     _qa_issue(
                         product_id,
-                        "high",
-                        "source_missing",
-                        "상품이 실제 근거 목록에 없는 문서를 참조하고 있습니다.",
-                        "실제 근거 문서에 있는 source id만 연결하세요.",
+                        "info",
+                        "internal_diagnostic",
+                        "상품의 근거 연결에서 내부 문서 보정이 필요합니다.",
+                        "Developer 영역에서 근거 연결 로그를 확인하세요.",
+                        user_visible=False,
+                        details={"invalid_source_ids": invalid_source_ids},
                     )
                 )
 
@@ -3196,13 +3240,18 @@ def _evidence_based_qa_issues(
         )
         for avoid in avoid_rules:
             if avoid and avoid in public_text:
+                avoid_match = _first_public_text_match([re.escape(avoid)], public_text, _public_text_segments(product, asset))
+                quote = avoid_match["quote"] if avoid_match else avoid
+                label = avoid_match["label"] if avoid_match else "고객 노출 문구"
                 issues.append(
                     _qa_issue(
                         product_id,
                         "medium",
                         "avoid_rule",
-                        f"요청한 회피 조건과 충돌하는 표현이 포함되어 있습니다: {avoid}",
+                        f"{label}에 요청한 회피 조건과 충돌하는 문제 문구 '{quote}'가 있습니다.",
                         "해당 표현을 제거하거나 운영자 확인 필요 문구로 바꾸세요.",
+                        field_path=avoid_match["field_path"] if avoid_match else "",
+                        issue_category="avoid_rule",
                     )
                 )
     return _dedupe_qa_issues(issues)
@@ -3215,15 +3264,71 @@ def _qa_issue(
     message: str,
     suggested_fix: str,
     field_path: str = "",
+    *,
+    issue_category: str | None = None,
+    user_visible: bool = True,
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    issue = {
         "product_id": product_id,
         "severity": severity,
         "type": issue_type,
+        "issue_category": issue_category or _qa_issue_category(issue_type, message),
+        "user_visible": user_visible,
         "message": message,
         "field_path": field_path,
         "suggested_fix": suggested_fix,
     }
+    if details:
+        issue["details"] = details
+    return issue
+
+
+def _qa_issue_category(issue_type: str, message: str = "") -> str:
+    issue_type = str(issue_type or "").lower()
+    text = f"{issue_type} {message}"
+    if issue_type == "internal_diagnostic":
+        return "internal_diagnostic"
+    if issue_type == "avoid_rule" or "avoid" in issue_type or "prohibited" in issue_type:
+        return "avoid_rule"
+    if issue_type == "source_missing" or "출처" in text or "근거 누락" in text:
+        return "source_missing"
+    if any(term in text for term in ["operating_hours", "booking", "reservation", "availability", "운영시간", "예약"]):
+        return "operational_uncertainty"
+    if any(term in text for term in ["price", "safety", "language", "theme", "claim", "가격", "안전", "외국어", "효능", "반려동물"]):
+        return "unsupported_claim"
+    if "format" in issue_type or "제목" in text:
+        return "content_format"
+    return "unsupported_claim"
+
+
+def _normalize_user_qa_issue_type(issue_type: str, message: str, suggested_fix: str) -> str:
+    raw = str(issue_type or "").strip().lower()
+    text = f"{raw} {message} {suggested_fix}"
+    if raw in QA_USER_ISSUE_TYPES:
+        return raw
+    if "prohibited" in raw or "avoid" in raw or "금지" in text or "회피" in text:
+        return "avoid_rule"
+    if "source" in raw or "evidence" in raw or "citation" in raw or "근거" in text or "출처" in text:
+        return "source_missing"
+    if any(term in text for term in ["운영시간", "예약", "예약 가능", "상시 운영", "운영 조건"]):
+        return "operational_uncertainty"
+    if any(term in text for term in ["가격", "무료", "최저가", "안전", "외국어", "웰니스", "의료", "반려동물"]):
+        return "unsupported_claim"
+    if "제목" in text or "불필요한 문자" in text:
+        return "content_format"
+    return "unsupported_claim"
+
+
+def _normalize_qa_severity(severity: str, issue_type: str, message: str) -> str:
+    normalized = str(severity or "").lower()
+    if normalized not in {"critical", "high", "medium", "low", "info"}:
+        normalized = "medium"
+    if issue_type == "internal_diagnostic":
+        return "info"
+    if any(term in message for term in ["100%", "완전 안전", "최저가 보장", "치료", "완치"]):
+        return "high"
+    return normalized
 
 
 def _public_product_text(product: dict[str, Any]) -> str:
@@ -3406,10 +3511,67 @@ def _qa_problem_quote(text: str, match: re.Match[str]) -> str:
     return text[start:end].strip()[:80]
 
 
+def _revision_allowed_patch_scope(revision_context: dict[str, Any]) -> dict[str, set[str]] | None:
+    if not isinstance(revision_context, dict):
+        return None
+    issues = revision_context.get("qa_issues")
+    if not isinstance(issues, list) or not issues:
+        return None
+    scope: dict[str, set[str]] = {}
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        product_id = str(issue.get("product_id") or "").strip()
+        if not product_id:
+            continue
+        field_path = str(issue.get("field_path") or "").strip()
+        paths = _revision_patch_paths_from_issue(field_path, str(issue.get("message") or ""))
+        scope.setdefault(product_id, set()).update(paths)
+    return scope or None
+
+
+def _revision_patch_paths_from_issue(field_path: str, message: str) -> set[str]:
+    normalized = field_path.strip()
+    if normalized:
+        return {normalized}
+    text = message or ""
+    if "FAQ" in text or "faq" in text.lower():
+        return {"faq"}
+    if "SNS" in text or "sns" in text.lower():
+        return {"sns_posts"}
+    if "제목" in text or "headline" in text.lower():
+        return {"title", "sales_copy.headline"}
+    if "상세 설명" in text or "sales copy" in text.lower() or "판매 문구" in text:
+        return {"sales_copy.sections"}
+    return {"one_liner", "sales_copy.headline", "sales_copy.subheadline", "sales_copy.sections", "faq", "sns_posts"}
+
+
+def _revision_patch_path_allowed(
+    allowed_patch_scope: dict[str, set[str]] | None,
+    product_id: str,
+    candidate_path: str,
+) -> bool:
+    if allowed_patch_scope is None:
+        return True
+    allowed_paths = allowed_patch_scope.get(product_id)
+    if not allowed_paths:
+        return False
+    for allowed_path in allowed_paths:
+        if candidate_path == allowed_path:
+            return True
+        if allowed_path in {"faq", "sns_posts", "search_keywords"} and candidate_path.startswith(allowed_path):
+            return True
+        if allowed_path == "sales_copy.sections" and candidate_path.startswith("sales_copy.sections"):
+            return True
+    return False
+
+
 def apply_revision_patch(
     payload: dict[str, Any],
     products: list[dict[str, Any]],
     marketing_assets: list[dict[str, Any]],
+    *,
+    allowed_patch_scope: dict[str, set[str]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     patched_products = json.loads(json.dumps(products, ensure_ascii=False))
     patched_assets = json.loads(json.dumps(marketing_assets, ensure_ascii=False))
@@ -3427,10 +3589,10 @@ def apply_revision_patch(
         if not product or not isinstance(fields, dict):
             continue
         for key in ["title", "one_liner", "estimated_duration", "operation_difficulty"]:
-            if key in fields:
+            if key in fields and _revision_patch_path_allowed(allowed_patch_scope, str(product.get("id") or ""), key):
                 product[key] = _korean_text(str(fields[key]), f"products[].{key}")
         for key in ["core_value", "assumptions", "not_to_claim"]:
-            if key in fields:
+            if key in fields and _revision_patch_path_allowed(allowed_patch_scope, str(product.get("id") or ""), key):
                 product[key] = _korean_string_list(fields[key], f"products[].{key}") or product.get(key, [])
 
     marketing_patches = payload.get("marketing_patches") or []
@@ -3446,16 +3608,27 @@ def apply_revision_patch(
         if isinstance(sales_copy_patch, dict):
             sales_copy = asset.setdefault("sales_copy", {})
             for key in ["headline", "subheadline", "disclaimer"]:
-                if key in sales_copy_patch:
+                path = f"sales_copy.{key}"
+                if key in sales_copy_patch and _revision_patch_path_allowed(allowed_patch_scope, str(asset.get("product_id") or ""), path):
                     sales_copy[key] = _korean_text(str(sales_copy_patch[key]), f"sales_copy.{key}")
-            _apply_section_patches(sales_copy, sales_copy_patch.get("sections"))
+            _apply_section_patches(
+                sales_copy,
+                sales_copy_patch.get("sections"),
+                allowed_patch_scope=allowed_patch_scope,
+                product_id=str(asset.get("product_id") or ""),
+            )
 
-        _apply_faq_patches(asset, patch.get("faq"))
-        if "sns_posts" in patch:
+        _apply_faq_patches(
+            asset,
+            patch.get("faq"),
+            allowed_patch_scope=allowed_patch_scope,
+            product_id=str(asset.get("product_id") or ""),
+        )
+        if "sns_posts" in patch and _revision_patch_path_allowed(allowed_patch_scope, str(asset.get("product_id") or ""), "sns_posts"):
             sns_posts = _korean_string_list(patch.get("sns_posts"), "marketing_assets[].sns_posts")
             if sns_posts:
                 asset["sns_posts"] = sns_posts[:5]
-        if "search_keywords" in patch:
+        if "search_keywords" in patch and _revision_patch_path_allowed(allowed_patch_scope, str(asset.get("product_id") or ""), "search_keywords"):
             product = product_by_id.get(asset.get("product_id")) or {}
             keywords = _normalize_search_keywords(patch.get("search_keywords"), product)
             if keywords:
@@ -3464,7 +3637,13 @@ def apply_revision_patch(
     return patched_products, patched_assets
 
 
-def _apply_section_patches(sales_copy: dict[str, Any], patches: Any) -> None:
+def _apply_section_patches(
+    sales_copy: dict[str, Any],
+    patches: Any,
+    *,
+    allowed_patch_scope: dict[str, set[str]] | None = None,
+    product_id: str = "",
+) -> None:
     if not isinstance(patches, list):
         return
     sections = sales_copy.get("sections")
@@ -3479,13 +3658,19 @@ def _apply_section_patches(sales_copy: dict[str, Any], patches: Any) -> None:
         section = sections[index]
         if not isinstance(section, dict):
             continue
-        if "title" in patch:
+        if "title" in patch and _revision_patch_path_allowed(allowed_patch_scope, product_id, f"sales_copy.sections[{index}].title"):
             section["title"] = _korean_text(str(patch["title"]), "sales_copy.sections[].title")
-        if "body" in patch:
+        if "body" in patch and _revision_patch_path_allowed(allowed_patch_scope, product_id, f"sales_copy.sections[{index}].body"):
             section["body"] = _korean_text(str(patch["body"]), "sales_copy.sections[].body")
 
 
-def _apply_faq_patches(asset: dict[str, Any], patches: Any) -> None:
+def _apply_faq_patches(
+    asset: dict[str, Any],
+    patches: Any,
+    *,
+    allowed_patch_scope: dict[str, set[str]] | None = None,
+    product_id: str = "",
+) -> None:
     if not isinstance(patches, list):
         return
     faq = asset.get("faq")
@@ -3500,9 +3685,9 @@ def _apply_faq_patches(asset: dict[str, Any], patches: Any) -> None:
         item = faq[index]
         if not isinstance(item, dict):
             continue
-        if "question" in patch:
+        if "question" in patch and _revision_patch_path_allowed(allowed_patch_scope, product_id, f"faq[{index}].question"):
             item["question"] = _korean_text(str(patch["question"]), "faq[].question")
-        if "answer" in patch:
+        if "answer" in patch and _revision_patch_path_allowed(allowed_patch_scope, product_id, f"faq[{index}].answer"):
             item["answer"] = _korean_text(str(patch["answer"]), "faq[].answer")
 
 
@@ -3549,47 +3734,80 @@ def validate_qa_report(
     if not isinstance(issues, list):
         raise ValueError("QA issues must be an array")
     product_ids = {product["id"] for product in products}
-    validated_issues = []
+    validated_issues: list[dict[str, Any]] = []
+    internal_diagnostics: list[dict[str, Any]] = []
     for issue in issues:
         if not isinstance(issue, dict):
             continue
         message = _normalize_qa_issue_message(issue)
         suggested_fix = _normalize_qa_suggested_fix(issue)
+        raw_type = str(issue.get("type") or "general")
         if _is_non_actionable_source_metadata_issue(message, suggested_fix):
+            continue
+        if _is_internal_diagnostic_issue(raw_type, message, suggested_fix):
+            internal_diagnostics.append(
+                _qa_internal_diagnostic(
+                    issue,
+                    message,
+                    suggested_fix,
+                    product_ids,
+                    products,
+                    reason="internal_field_or_source_metadata",
+                )
+            )
             continue
         if _is_safe_uncertainty_phrase_issue(message, suggested_fix):
             continue
         if _is_marketing_tone_only_issue(message, suggested_fix):
             continue
+        if _is_copy_quality_only_issue(message, suggested_fix):
+            continue
+        if not _qa_issue_has_problem_quote(message) and not _is_allowed_unquoted_qa_issue(raw_type, message):
+            internal_diagnostics.append(
+                _qa_internal_diagnostic(
+                    issue,
+                    message,
+                    suggested_fix,
+                    product_ids,
+                    products,
+                    reason="missing_problem_quote",
+                )
+            )
+            continue
         product_id = issue.get("product_id")
         inferred_product_id = _infer_issue_product_id(message, products)
+        issue_type = _normalize_user_qa_issue_type(raw_type, message, suggested_fix)
         validated_issues.append(
             {
                 "product_id": product_id if product_id in product_ids else inferred_product_id,
-                "severity": str(issue.get("severity") or "medium"),
-                "type": str(issue.get("type") or "general"),
+                "severity": _normalize_qa_severity(str(issue.get("severity") or "medium"), issue_type, message),
+                "type": issue_type,
+                "issue_category": _qa_issue_category(issue_type, message),
+                "user_visible": True,
                 "message": message,
                 "field_path": str(issue.get("field_path") or ""),
                 "suggested_fix": _enrich_qa_suggested_fix(message, suggested_fix, products),
             }
         )
-    validated_issues = _dedupe_qa_issues(
-        [
-            *validated_issues,
-            *_evidence_based_qa_issues(
-                products,
-                marketing_assets or [],
-                docs or [],
-                evidence_context or {},
-                qa_settings or {},
-            ),
-        ]
+    deterministic_issues = _evidence_based_qa_issues(
+        products,
+        marketing_assets or [],
+        docs or [],
+        evidence_context or {},
+        qa_settings or {},
     )
+    for issue in deterministic_issues:
+        if issue.get("type") == "internal_diagnostic" or issue.get("user_visible") is False:
+            internal_diagnostics.append(issue)
+        else:
+            validated_issues.append(issue)
+    validated_issues = _dedupe_qa_issues(validated_issues)
+    internal_diagnostics = _dedupe_qa_issues(internal_diagnostics)
     overall_status = str(payload.get("overall_status") or ("needs_review" if validated_issues else "pass"))
     if validated_issues and overall_status == "pass":
         overall_status = "needs_review"
     if not validated_issues:
-        return {
+        report = {
             "overall_status": "pass",
             "summary": _normalize_qa_summary(None, []),
             "issues": [],
@@ -3597,7 +3815,10 @@ def validate_qa_report(
             "needs_review_count": 0,
             "fail_count": 0,
         }
-    return {
+        if internal_diagnostics:
+            report["internal_diagnostics"] = internal_diagnostics
+        return report
+    report = {
         "overall_status": overall_status,
         "summary": _normalize_qa_summary(
             _qa_summary_value_for_issues(payload.get("summary"), validated_issues),
@@ -3608,44 +3829,207 @@ def validate_qa_report(
         "needs_review_count": int(payload.get("needs_review_count") or (len(products) if validated_issues else 0)),
         "fail_count": int(payload.get("fail_count") or 0),
     }
+    if internal_diagnostics:
+        report["internal_diagnostics"] = internal_diagnostics
+    return report
 
 
-def build_offline_research_synthesis(state: GraphState) -> dict[str, Any]:
-    docs = state.get("retrieved_documents", [])
-    evidence_context = _evidence_context_from_state(state)
-    source_ids = [str(doc.get("doc_id")) for doc in docs[:5] if doc.get("doc_id")]
-    region_label = _region_label_from_normalized(state.get("normalized_request", {}))
-    payload = {
-        "research_brief": (
-            f"{region_label}은 수집된 TourAPI/RAG 근거를 기준으로 상품화 후보를 검토할 수 있습니다. "
-            "세부 운영 조건은 EvidenceFusion의 후보별 card와 unresolved gap을 따라야 합니다."
-        ),
-        "candidate_evidence_cards": _product_evidence_context_for_prompt(evidence_context)["candidate_evidence_cards"],
-        "usable_claims": _string_list(
-            (evidence_context.get("productization_advice") or {}).get("usable_claims")
-            if isinstance(evidence_context.get("productization_advice"), dict)
-            else []
-        ) or ["TourAPI에 있는 장소명, 주소, 개요는 근거와 함께 사용할 수 있습니다."],
-        "restricted_claims": _claim_limits_from_context(evidence_context)
-        or ["가격, 예약 가능 여부, 운영 시간은 운영자가 최종 확인해야 합니다."],
-        "operational_unknowns": _needs_review_from_context(evidence_context),
-        "unresolved_gaps": _compact_unresolved_gaps_for_product(evidence_context.get("unresolved_gaps")),
-        "product_generation_guidance": [
-            "각 상품은 실제 evidence_document_ids와 연결된 candidate evidence card를 사용하세요.",
-            "운영 조건이 부족한 항목은 상품 본문이 아니라 확인 필요 항목으로 분리하세요.",
-        ],
-        "qa_risk_notes": [
-            "근거 없는 가격, 예약, 운영시간, 안전, 외국어 지원, 의료/웰니스 효능 claim을 만들지 마세요."
-        ],
-        "region_insights": [
-            {
-                "claim": f"{region_label}의 수집 근거를 기준으로 후보 동선을 검토합니다.",
-                "evidence_source_ids": source_ids,
-                "confidence": evidence_context.get("source_confidence") or 0.0,
-            }
-        ],
+def validate_targeted_revision_qa_report(
+    payload: dict[str, Any],
+    selected_issues: list[Any],
+    products: list[dict[str, Any]],
+    *,
+    marketing_assets: list[dict[str, Any]] | None = None,
+    source_output: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    issue_results: list[dict[str, Any]] = []
+    product_ids = {str(product.get("id")) for product in products if isinstance(product, dict)}
+    current_product_by_id = {str(product.get("id")): product for product in products if isinstance(product, dict)}
+    current_asset_by_id = {
+        str(asset.get("product_id")): asset
+        for asset in (marketing_assets or [])
+        if isinstance(asset, dict)
     }
-    return _complete_research_synthesis(payload, state)
+    visible_issues: list[dict[str, Any]] = _revision_unselected_qa_issues(
+        source_output or {},
+        selected_issues,
+        current_product_by_id=current_product_by_id,
+        current_asset_by_id=current_asset_by_id,
+    )
+    for index, selected_issue in enumerate(selected_issues):
+        if not isinstance(selected_issue, dict):
+            continue
+        item = items[index] if index < len(items) and isinstance(items[index], dict) else {}
+        status = str(item.get("status") or "").strip().lower()
+        server_resolved_reason = _targeted_issue_resolved_by_current_text(
+            selected_issue,
+            current_product_by_id,
+            current_asset_by_id,
+        )
+        is_resolved = status == "resolved" or server_resolved_reason is not None
+        result_message = _strip_internal_field_paths(str(item.get("message") or selected_issue.get("message") or "").strip())
+        result_fix = _strip_internal_field_paths(str(item.get("suggested_fix") or selected_issue.get("suggested_fix") or "").strip())
+        if not is_resolved and not _qa_issue_has_problem_quote(result_message):
+            quote = _targeted_issue_quote_for_current_text(
+                selected_issue,
+                current_product_by_id,
+                current_asset_by_id,
+            )
+            if quote:
+                result_message = _targeted_still_open_message(selected_issue, quote)
+            else:
+                result_message = _normalize_qa_issue_message(selected_issue)
+        issue_results.append(
+            {
+                "original_issue_index": index,
+                "product_id": selected_issue.get("product_id"),
+                "status": "resolved" if is_resolved else "still_open",
+                "message": result_message,
+                "suggested_fix": result_fix,
+                "server_resolved_reason": server_resolved_reason,
+            }
+        )
+        if is_resolved:
+            continue
+        product_id = selected_issue.get("product_id")
+        raw_type = str(selected_issue.get("type") or "unsupported_claim")
+        issue_type = _normalize_user_qa_issue_type(raw_type, result_message, result_fix)
+        visible_issues.append(
+            {
+                "product_id": product_id if product_id in product_ids else None,
+                "severity": _normalize_qa_severity(str(selected_issue.get("severity") or "medium"), issue_type, result_message),
+                "type": issue_type,
+                "issue_category": _qa_issue_category(issue_type, result_message),
+                "user_visible": True,
+                "message": result_message or _normalize_qa_issue_message(selected_issue),
+                "field_path": str(selected_issue.get("field_path") or ""),
+                "suggested_fix": result_fix or _normalize_qa_suggested_fix(selected_issue),
+            }
+        )
+    visible_issues = _dedupe_qa_issues(visible_issues)
+    summary = str(payload.get("summary") or "").strip()
+    return {
+        "overall_status": "needs_review" if visible_issues else "pass",
+        "summary": summary if summary and _has_korean(summary) else _normalize_qa_summary(None, visible_issues),
+        "issues": visible_issues,
+        "pass_count": len(products) if not visible_issues else 0,
+        "needs_review_count": len({issue.get("product_id") for issue in visible_issues if issue.get("product_id")}),
+        "fail_count": 0,
+        "targeted_recheck": True,
+        "rechecked_issue_count": len(issue_results),
+        "revision_issue_results": issue_results,
+    }
+
+
+def _revision_unselected_qa_issues(
+    source_output: dict[str, Any],
+    selected_issues: list[Any],
+    *,
+    current_product_by_id: dict[str, dict[str, Any]] | None = None,
+    current_asset_by_id: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    original_report = source_output.get("qa_report") if isinstance(source_output.get("qa_report"), dict) else {}
+    original_issues = original_report.get("issues") if isinstance(original_report.get("issues"), list) else []
+    selected_keys = {
+        _qa_issue_identity(issue)
+        for issue in selected_issues
+        if isinstance(issue, dict)
+    }
+    carryover: list[dict[str, Any]] = []
+    for issue in original_issues:
+        if not isinstance(issue, dict):
+            continue
+        if _qa_issue_identity(issue) in selected_keys:
+            continue
+        copied = json.loads(json.dumps(issue, ensure_ascii=False))
+        copied["revision_carryover"] = True
+        copied["user_visible"] = copied.get("user_visible", True)
+        if not _qa_issue_has_problem_quote(str(copied.get("message") or "")):
+            quote = _targeted_issue_quote_for_current_text(
+                copied,
+                current_product_by_id or {},
+                current_asset_by_id or {},
+            )
+            if quote:
+                copied["message"] = _targeted_still_open_message(copied, quote)
+        carryover.append(copied)
+    return carryover
+
+
+def _qa_issue_identity(issue: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(issue.get("product_id") or ""),
+        str(issue.get("type") or ""),
+        str(issue.get("field_path") or ""),
+        re.sub(r"\s+", " ", str(issue.get("message") or "")).strip(),
+    )
+
+
+def _targeted_issue_resolved_by_current_text(
+    selected_issue: dict[str, Any],
+    current_product_by_id: dict[str, dict[str, Any]],
+    current_asset_by_id: dict[str, dict[str, Any]],
+) -> str | None:
+    quote = _extract_qa_problem_quote(str(selected_issue.get("message") or ""))
+    if not quote:
+        return None
+    product_id = str(selected_issue.get("product_id") or "")
+    field_path = str(selected_issue.get("field_path") or "")
+    product = current_product_by_id.get(product_id) or {}
+    asset = current_asset_by_id.get(product_id) or {}
+    current_value = _revision_current_value_for_field(product, asset, field_path)
+    current_text = str(current_value or "").strip()
+    if current_text and quote not in current_text:
+        return "problem_quote_removed_from_target_field"
+    return None
+
+
+def _targeted_issue_quote_for_current_text(
+    selected_issue: dict[str, Any],
+    current_product_by_id: dict[str, dict[str, Any]],
+    current_asset_by_id: dict[str, dict[str, Any]],
+) -> str | None:
+    product_id = str(selected_issue.get("product_id") or "")
+    field_path = str(selected_issue.get("field_path") or "")
+    product = current_product_by_id.get(product_id) or {}
+    asset = current_asset_by_id.get(product_id) or {}
+    current_value = _revision_current_value_for_field(product, asset, field_path)
+    current_text = str(current_value or "").strip()
+    if not current_text:
+        return None
+    original_quote = _extract_qa_problem_quote(str(selected_issue.get("message") or ""))
+    if original_quote and original_quote in current_text:
+        return original_quote
+    return current_text[:120]
+
+
+def _targeted_still_open_message(selected_issue: dict[str, Any], quote: str) -> str:
+    issue_type = _qa_issue_category(str(selected_issue.get("type") or ""), str(selected_issue.get("message") or ""))
+    location_label = _field_path_label(str(selected_issue.get("field_path") or ""))
+    if issue_type == "source_missing":
+        return f"{location_label}에 '{quote}'라고 명시되어 있으나, 이는 근거 문서에 명확히 확인되지 않는 주장입니다."
+    if issue_type == "operational_uncertainty":
+        return f"{location_label}에 '{quote}'라고 명시되어 있으나, 운영자가 확인해야 할 정보를 단정하고 있습니다."
+    if issue_type == "unsupported_claim":
+        return f"{location_label}에 '{quote}'라고 명시되어 있으나, 근거 없이 단정적인 주장으로 보입니다."
+    if issue_type == "avoid_rule":
+        return f"{location_label}에 '{quote}'라는 문구가 남아 있어 선택한 회피 조건과 충돌합니다."
+    return f"{location_label}에 '{quote}'라는 문제 문구가 아직 남아 있습니다."
+
+
+def _extract_qa_problem_quote(message: str) -> str | None:
+    patterns = [
+        r"문제 문구\s*['\"“”‘’]([^'\"“”‘’]+)['\"“”‘’]",
+        r"['\"“”‘’]([^'\"“”‘’]{3,})['\"“”‘’]",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, message)
+        if match:
+            quote = match.group(1).strip()
+            if quote:
+                return quote
+    return None
 
 
 def validate_research_synthesis(payload: dict[str, Any], state: GraphState) -> dict[str, Any]:
@@ -4151,7 +4535,6 @@ def _qa_prompt(
         "검수_항목": [
             "금지 표현 포함 여부",
             "출처 근거 누락 여부",
-            "존재하지 않는 source_id 참조 여부",
             "unresolved gap을 고객 노출 문구에서 단정 claim으로 바꾼 경우",
             "근거 없는 운영시간/요금/예약/안전/외국어/의료/웰니스 claim",
             *extra_checks,
@@ -4159,15 +4542,18 @@ def _qa_prompt(
         "규칙": [
             "사용자에게 보이는 모든 텍스트 필드는 반드시 한국어로 작성하세요. 영어 문장을 쓰지 마세요.",
             "QA 요약, 이슈 메시지, 수정 제안은 반드시 한국어로 작성하세요.",
-            "검수_항목에 있는 근거 기반 제한은 요청 avoid에 없더라도 반드시 검수하세요.",
+            "QA의 중심은 사용자가 지정한 avoid와 명백한 evidence risk입니다.",
+            "검수_항목에 있는 근거 기반 제한은 실제 운영/법무/신뢰 리스크가 있는 고객 노출 문구에만 적용하세요.",
             "검수 대상은 상품_목록과 마케팅_자산의 고객 노출 문구입니다. 근거_문서 자체의 메타데이터 품질 문제를 이슈로 만들지 마세요.",
-            "상품_목록의 not_to_claim과 assumptions는 내부 운영 참고 항목입니다. 이 항목 자체를 고객 노출 문구 위반으로 지적하지 마세요.",
+            "상품_목록의 not_to_claim, assumptions, needs_review는 내부 운영 참고 항목입니다. 이 항목 자체를 고객 노출 문구 위반으로 지적하지 마세요.",
+            "source_id, field_path, needs_review, missing_pet_policy 같은 내부 필드명이나 gap type은 message/suggested_fix에 쓰지 마세요.",
             "sales_copy.disclaimer의 '운영자가 최종 확정해야 합니다', '확인 필요', '변동될 수 있습니다' 같은 문구는 단정 표현이 아니라 안전한 완화 문구입니다.",
             "FAQ에서 '~수 있습니다', '확인 필요', '문의 필요', '현장 상황에 따라', '사전에 확인'은 단정 표현이 아니라 불확실성/확인 필요 표현입니다. 이 표현만으로 이슈를 만들지 마세요.",
             "우천, 기상, 현장 상황에 따라 취소/변경/중단될 수 있다는 문구는 정상적인 리스크 안내입니다. 이 표현만으로 이슈를 만들지 마세요.",
             "'환상적인', '아름다운', '특별한', '여유로운', '만끽하세요', '감상하세요', '즐겨보세요', '기대할 수 있습니다' 같은 일반 홍보 표현은 금지 표현이 아닙니다.",
             "금지 표현은 실제 운영 리스크가 분명한 표현만 의미합니다. 예: '항상 운영', '예약 즉시 확정', '반드시 이용 가능', '가격은 N원입니다', '무료입니다', '100% 안전', '최저가 보장', '무조건 만족'.",
             "출처 근거 누락은 구체적 사실 주장에만 적용하세요. 분위기, 감상, 추천형 홍보 문구만으로 출처 누락 이슈를 만들지 마세요.",
+            "문구가 짧다, 매력이 부족하다, 상세 설명이 약하다는 copy 품질 평가는 QA issue로 만들지 마세요. 이 평가는 별도 Marketing hardening 범위입니다.",
             "명확한 법무/운영 리스크가 없거나 단순 문체 선호에 가까우면 issue를 만들지 마세요.",
             "근거_문서의 event_start_date, event_end_date가 비어 있다는 이유만으로 이슈를 만들지 마세요.",
             "source document나 근거 문서를 업데이트하라는 수정 제안은 하지 마세요. 필요한 경우 상품 문구에 '운영자 확인 필요'를 추가하라고 제안하세요.",
@@ -4190,11 +4576,11 @@ def _revision_patch_prompt(
     assets: list[dict[str, Any]],
     revision_context: dict[str, Any],
 ) -> str:
+    targets = _revision_patch_targets_for_prompt(products, assets, revision_context)
     context = {
-        "현재_상품": products,
-        "현재_마케팅_자산": assets,
+        "현재_상품_요약": _revision_product_summaries(products),
+        "수정_대상": targets,
         "선택된_QA_이슈": revision_context.get("qa_issues", []),
-        "수정_요청": revision_context.get("requested_changes", []),
         "검토_코멘트": revision_context.get("comment"),
         "QA_설정": revision_context.get("qa_settings", {}),
         "출력_형식": {
@@ -4231,15 +4617,191 @@ def _revision_patch_prompt(
         },
         "규칙": [
             "전체 상품이나 전체 마케팅 자산을 다시 생성하지 마세요.",
-            "선택된_QA_이슈와 수정_요청을 해결하는 데 필요한 최소 필드만 patch에 포함하세요.",
+            "수정_대상에 있는 product_id와 field_path만 수정하세요.",
+            "선택된_QA_이슈를 해결하는 데 필요한 최소 문구만 patch에 포함하세요.",
             "수정이 필요 없는 product_id는 product_patches와 marketing_patches에 포함하지 마세요.",
             "수정하지 않는 기존 값은 출력하지 마세요. 기존 값은 서버가 그대로 유지합니다.",
+            "source_ids, evidence, claim_limits, needs_review, retrieved_documents는 수정하지 마세요.",
+            "field_path가 sales_copy.sections[n].body이면 해당 index의 body만 출력하세요. 다른 섹션이나 FAQ, SNS는 출력하지 마세요.",
+            "field_path가 faq[n].answer이면 해당 index의 answer만 출력하세요. 다른 FAQ나 sales copy는 출력하지 마세요.",
             "index는 현재_마케팅_자산 배열 내부 faq/sections의 0부터 시작하는 위치입니다.",
             "사용자에게 보이는 모든 텍스트는 한국어로 작성하세요.",
             "가격, 운영 시간, 예약 가능 여부, 외국어 지원을 단정하지 마세요.",
         ],
     }
     return json.dumps(context, ensure_ascii=False)
+
+
+def _targeted_revision_qa_prompt(
+    original_products: list[dict[str, Any]],
+    original_assets: list[dict[str, Any]],
+    current_products: list[dict[str, Any]],
+    current_assets: list[dict[str, Any]],
+    selected_issues: list[Any],
+    qa_settings: dict[str, Any],
+) -> str:
+    context = {
+        "역할": "AI 수정 후 선택된 QA 이슈만 다시 확인합니다.",
+        "QA_설정": qa_settings,
+        "재검수_대상": _targeted_qa_items_for_prompt(
+            original_products,
+            original_assets,
+            current_products,
+            current_assets,
+            selected_issues,
+        ),
+        "출력_형식": {
+            "summary": "선택된 QA 이슈 재검수 요약",
+            "items": [
+                {
+                    "original_issue_index": 0,
+                    "status": "resolved 또는 still_open",
+                    "message": "still_open일 때만 현재 남은 문제 설명",
+                    "suggested_fix": "still_open일 때만 추가 수정 방향",
+                }
+            ],
+        },
+        "규칙": [
+            "재검수_대상에 들어온 원래 QA 이슈만 판단하세요.",
+            "새로운 QA 이슈를 찾거나 만들지 마세요.",
+            "다른 필드, 다른 상품, 다른 근거 공백은 평가하지 마세요.",
+            "original_value와 current_value를 비교해서 원래 지적된 문제가 사라졌는지만 판단하세요.",
+            "원래 문제 문구가 current_value에 없고 같은 위험이 남아 있지 않으면 status=resolved로 쓰세요.",
+            "같은 위험이 current_value에 남아 있으면 status=still_open으로 쓰고, 현재 문제 문구를 짧게 인용하세요.",
+            "message와 suggested_fix에는 source_id, field_path, needs_review 같은 내부 용어를 쓰지 마세요.",
+            "모든 출력 텍스트는 한국어로 작성하세요.",
+        ],
+    }
+    return json.dumps(context, ensure_ascii=False)
+
+
+def _targeted_qa_items_for_prompt(
+    original_products: list[dict[str, Any]],
+    original_assets: list[dict[str, Any]],
+    current_products: list[dict[str, Any]],
+    current_assets: list[dict[str, Any]],
+    selected_issues: list[Any],
+) -> list[dict[str, Any]]:
+    original_product_by_id = {str(product.get("id")): product for product in original_products if isinstance(product, dict)}
+    original_asset_by_id = {str(asset.get("product_id")): asset for asset in original_assets if isinstance(asset, dict)}
+    current_product_by_id = {str(product.get("id")): product for product in current_products if isinstance(product, dict)}
+    current_asset_by_id = {str(asset.get("product_id")): asset for asset in current_assets if isinstance(asset, dict)}
+    items: list[dict[str, Any]] = []
+    for index, issue in enumerate(selected_issues):
+        if not isinstance(issue, dict):
+            continue
+        product_id = str(issue.get("product_id") or "").strip()
+        field_path = str(issue.get("field_path") or "").strip()
+        items.append(
+            {
+                "original_issue_index": index,
+                "product_id": product_id,
+                "product_title": (current_product_by_id.get(product_id) or original_product_by_id.get(product_id) or {}).get("title"),
+                "field_path": field_path,
+                "original_issue": {
+                    "type": issue.get("type"),
+                    "severity": issue.get("severity"),
+                    "message": issue.get("message"),
+                    "suggested_fix": issue.get("suggested_fix"),
+                },
+                "original_value": _revision_current_value_for_field(
+                    original_product_by_id.get(product_id) or {},
+                    original_asset_by_id.get(product_id) or {},
+                    field_path,
+                ),
+                "current_value": _revision_current_value_for_field(
+                    current_product_by_id.get(product_id) or {},
+                    current_asset_by_id.get(product_id) or {},
+                    field_path,
+                ),
+            }
+        )
+    return items
+
+
+def _revision_product_summaries(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        summaries.append(
+            {
+                "id": product.get("id"),
+                "title": product.get("title"),
+                "one_liner": product.get("one_liner"),
+                "not_to_claim": product.get("not_to_claim", []),
+            }
+        )
+    return summaries
+
+
+def _revision_patch_targets_for_prompt(
+    products: list[dict[str, Any]],
+    assets: list[dict[str, Any]],
+    revision_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    issues = revision_context.get("qa_issues") if isinstance(revision_context, dict) else []
+    if not isinstance(issues, list):
+        return []
+    product_by_id = {str(product.get("id")): product for product in products if isinstance(product, dict)}
+    asset_by_id = {str(asset.get("product_id")): asset for asset in assets if isinstance(asset, dict)}
+    targets: list[dict[str, Any]] = []
+    for index, issue in enumerate(issues):
+        if not isinstance(issue, dict):
+            continue
+        product_id = str(issue.get("product_id") or "").strip()
+        if not product_id:
+            continue
+        field_path = str(issue.get("field_path") or "").strip()
+        current_value = _revision_current_value_for_field(
+            product_by_id.get(product_id) or {},
+            asset_by_id.get(product_id) or {},
+            field_path,
+        )
+        targets.append(
+            {
+                "issue_index": index,
+                "product_id": product_id,
+                "product_title": (product_by_id.get(product_id) or {}).get("title"),
+                "field_path": field_path,
+                "current_value": current_value,
+                "issue_message": issue.get("message"),
+                "suggested_fix": issue.get("suggested_fix"),
+            }
+        )
+    return targets
+
+
+def _revision_current_value_for_field(product: dict[str, Any], asset: dict[str, Any], field_path: str) -> Any:
+    if not field_path:
+        return None
+    if field_path in product:
+        return product.get(field_path)
+    sales_copy = asset.get("sales_copy") if isinstance(asset.get("sales_copy"), dict) else {}
+    if field_path.startswith("sales_copy."):
+        remainder = field_path.removeprefix("sales_copy.")
+        section_match = re.match(r"sections\[(\d+)\]\.(title|body)$", remainder)
+        if section_match:
+            sections = sales_copy.get("sections") if isinstance(sales_copy.get("sections"), list) else []
+            index = int(section_match.group(1))
+            key = section_match.group(2)
+            if 0 <= index < len(sections) and isinstance(sections[index], dict):
+                return sections[index].get(key)
+        return sales_copy.get(remainder)
+    faq_match = re.match(r"faq\[(\d+)\]\.(question|answer)$", field_path)
+    if faq_match:
+        faq = asset.get("faq") if isinstance(asset.get("faq"), list) else []
+        index = int(faq_match.group(1))
+        key = faq_match.group(2)
+        if 0 <= index < len(faq) and isinstance(faq[index], dict):
+            return faq[index].get(key)
+    sns_match = re.match(r"sns_posts\[(\d+)\]$", field_path)
+    if sns_match:
+        posts = asset.get("sns_posts") if isinstance(asset.get("sns_posts"), list) else []
+        index = int(sns_match.group(1))
+        if 0 <= index < len(posts):
+            return posts[index]
+    return None
 
 
 def _prompt_revision_context(revision_context: dict[str, Any] | None) -> dict[str, Any]:
@@ -4483,28 +5045,6 @@ def _compact_ui_highlights(value: Any, limit: int = 5) -> list[dict[str, Any]]:
     return compact
 
 
-def _rule_based_generation_meta(agent_name: str, purpose: str) -> dict[str, Any]:
-    return {
-        "agent": agent_name,
-        "purpose": purpose,
-        "provider": "rule_based",
-        "model": "rule-based-v1",
-        "cost_usd": 0.0,
-        "paid_tier_equivalent_cost_usd": 0.0,
-    }
-
-
-def _offline_generation_meta(agent_name: str, purpose: str) -> dict[str, Any]:
-    return {
-        "agent": agent_name,
-        "purpose": purpose,
-        "provider": "offline_compat",
-        "model": "gemini-required-offline-compat-v1",
-        "cost_usd": 0.0,
-        "paid_tier_equivalent_cost_usd": 0.0,
-    }
-
-
 def _gemini_generation_meta(agent_name: str, purpose: str, result: GeminiJsonResult) -> dict[str, Any]:
     return {
         "agent": agent_name,
@@ -4522,42 +5062,6 @@ def _gemini_generation_meta(agent_name: str, purpose: str, result: GeminiJsonRes
 
 def _append_agent_execution(state: GraphState, meta: dict[str, Any]) -> list[dict[str, Any]]:
     return [*state.get("agent_execution", []), meta]
-
-
-def _offline_fusion_highlights(
-    base_fusion: dict[str, Any],
-    enrichment_summary: dict[str, Any],
-) -> list[dict[str, Any]]:
-    coverage = base_fusion.get("data_coverage") if isinstance(base_fusion.get("data_coverage"), dict) else {}
-    unresolved = base_fusion.get("unresolved_gaps") if isinstance(base_fusion.get("unresolved_gaps"), list) else []
-    summary = enrichment_summary.get("summary") if isinstance(enrichment_summary.get("summary"), dict) else {}
-    executed_calls = int(summary.get("executed_calls") or 0)
-    failed_calls = int(summary.get("failed_calls") or 0)
-    highlights: list[dict[str, Any]] = [
-        {
-            "title": "근거 공백 요약",
-            "body": f"현재 상품화 전에 확인해야 할 공백이 {len(unresolved)}개 남아 있습니다.",
-            "severity": "warning" if unresolved else "success",
-            "related_gap_types": sorted({str(gap.get("gap_type")) for gap in unresolved if isinstance(gap, dict)}),
-        },
-        {
-            "title": "선택 보강 실행",
-            "body": f"실행된 보강 호출 {executed_calls}개, 실패한 호출 {failed_calls}개입니다.",
-            "severity": "warning" if failed_calls else "info",
-            "related_gap_types": [],
-        },
-    ]
-    if coverage:
-        image_coverage = round(float(coverage.get("image_coverage") or 0.0) * 100)
-        highlights.append(
-            {
-                "title": "이미지 근거",
-                "body": f"이미지 근거 커버리지는 약 {image_coverage}%입니다. 게시 전 출처와 사용 조건 확인이 필요합니다.",
-                "severity": "info",
-                "related_gap_types": ["missing_image_asset"],
-            }
-        )
-    return highlights
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:
@@ -4647,6 +5151,53 @@ def _normalize_qa_suggested_fix(issue: dict[str, Any]) -> str:
     return "운영자가 확인 가능한 표현으로 바꾸고 출처 근거를 함께 표시하세요."
 
 
+def _is_internal_diagnostic_issue(issue_type: str, message: str, suggested_fix: str) -> bool:
+    text = f"{issue_type} {message} {suggested_fix}".lower()
+    raw_terms = [
+        "source_id",
+        "source id",
+        "doc_id",
+        "field_path",
+        "needs_review",
+        "missing_pet_policy",
+        "fallback",
+        "correction",
+        "server correction",
+    ]
+    korean_terms = [
+        "서버가 사용 가능한 근거를 보정",
+        "실제 근거 목록에 없는",
+        "근거 id",
+        "근거 문서 id",
+        "내부 문서",
+        "서버 보정",
+    ]
+    return any(term in text for term in raw_terms) or any(term in message or term in suggested_fix for term in korean_terms)
+
+
+def _qa_internal_diagnostic(
+    issue: dict[str, Any],
+    message: str,
+    suggested_fix: str,
+    product_ids: set[str],
+    products: list[dict[str, Any]],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    product_id = issue.get("product_id")
+    inferred_product_id = _infer_issue_product_id(message, products)
+    return _qa_issue(
+        product_id if product_id in product_ids else inferred_product_id,
+        "info",
+        "internal_diagnostic",
+        message,
+        suggested_fix,
+        field_path=str(issue.get("field_path") or ""),
+        user_visible=False,
+        details={"reason": reason, "original_type": issue.get("type")},
+    )
+
+
 def _is_non_actionable_source_metadata_issue(message: str, suggested_fix: str) -> bool:
     text = f"{message} {suggested_fix}"
     if "근거 문서" not in text and "source document" not in text.lower():
@@ -4728,6 +5279,53 @@ def _is_marketing_tone_only_issue(message: str, suggested_fix: str) -> bool:
     return not any(term in text for term in actionable_terms)
 
 
+def _is_copy_quality_only_issue(message: str, suggested_fix: str) -> bool:
+    text = f"{message} {suggested_fix}"
+    copy_quality_terms = [
+        "매력이 부족",
+        "상품의 매력",
+        "상세히 설명",
+        "상세 설명이 부족",
+        "고객의 이해",
+        "특징과 장점",
+        "문구가 짧",
+        "구체성이 부족",
+        "홍보 효과",
+        "전환",
+    ]
+    if not any(term in text for term in copy_quality_terms):
+        return False
+    risk_terms = [
+        "가격",
+        "운영시간",
+        "상시 운영",
+        "예약",
+        "안전",
+        "외국어",
+        "의료",
+        "웰니스",
+        "효능",
+        "반려동물",
+        "100%",
+        "최저가",
+        "보장",
+    ]
+    return not any(term in text for term in risk_terms)
+
+
+def _qa_issue_has_problem_quote(message: str) -> bool:
+    return bool(re.search(r"['\"“”‘’][^'\"“”‘’]{2,}['\"“”‘’]", message))
+
+
+def _is_allowed_unquoted_qa_issue(issue_type: str, message: str) -> bool:
+    normalized_type = str(issue_type or "").lower()
+    if normalized_type in {"source_missing", "content_format"}:
+        return True
+    if "제목" in message and "불필요한 문자" in message:
+        return True
+    return False
+
+
 def _infer_issue_product_id(message: str, products: list[dict[str, Any]]) -> str | None:
     for product in products:
         title = str(product.get("title") or "").strip()
@@ -4799,9 +5397,16 @@ def _strip_internal_field_paths(text: str) -> str:
         "assumptions": "운영 가정",
         "sales_copy": "판매 문구",
         "marketing_assets": "마케팅 문구",
+        "source_id": "근거 문서",
+        "source_ids": "근거 문서",
+        "doc_id": "근거 문서",
+        "field_path": "문제 위치",
+        "needs_review": "운영자 확인 항목",
+        "missing_pet_policy": "반려동물 동반 조건 확인",
     }
     for field_name, label in labels.items():
         text = re.sub(rf"\b{re.escape(field_name)}\b", label, text)
+    text = re.sub(r"\bsource id\b", "근거 문서", text, flags=re.IGNORECASE)
     return text
 
 
@@ -4956,54 +5561,16 @@ def step_log(db: Session, run_id: str, agent_name: str, step_type: str, input_pa
         db.commit()
 
 
-def record_rule_based_llm_call(db: Session, run_id: str, step_id: str, purpose: str, input_payload: Any, output_payload: Any) -> None:
-    input_tokens = _estimate_tokens(input_payload)
-    output_tokens = _estimate_tokens(output_payload)
-    call = models.LLMCall(
-        run_id=run_id,
-        step_id=step_id,
-        provider="rule_based",
-        model="rule-based-v1",
-        purpose=purpose,
-        prompt_tokens=input_tokens,
-        completion_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
-        cost_usd=0,
-        latency_ms=0,
-        cache_hit=False,
-    )
-    db.add(call)
-    db.commit()
-    db.refresh(call)
-    safe_write_llm_usage_log(
-        run_id=run_id,
-        step_id=step_id,
-        call_id=call.id,
-        provider="rule_based",
-        model="rule-based-v1",
-        purpose=purpose,
-        prompt_tokens=input_tokens,
-        completion_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
-        cost_usd=0,
-        paid_tier_equivalent_cost_usd=0,
-        latency_ms=0,
-        request_hash=None,
-    )
-
-
 def _cost_summary(db: Session, run_id: str) -> dict[str, Any]:
     calls = db.query(models.LLMCall).filter(models.LLMCall.run_id == run_id).all()
     providers = sorted({call.provider for call in calls})
     gemini_calls = sum(1 for call in calls if call.provider == "gemini")
-    rule_based_calls = sum(1 for call in calls if call.provider == "rule_based")
     return {
         "estimated_cost_usd": float(sum(call.cost_usd or 0 for call in calls)),
         "llm_calls": len(calls),
         "gemini_calls": gemini_calls,
-        "rule_based_calls": rule_based_calls,
         "providers": providers,
-        "mode": "gemini" if gemini_calls else "rule_based",
+        "mode": "gemini",
     }
 
 
