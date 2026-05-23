@@ -31,6 +31,7 @@ import { notifications } from "@mantine/notifications";
 import {
   IconCheck,
   IconAlertCircle,
+  IconArrowUpRight,
   IconChevronDown,
   IconChevronUp,
   IconDownload,
@@ -210,6 +211,8 @@ export function RunDetail({
   const [posterImageCandidateLimit, setPosterImageCandidateLimit] = useState(POSTER_IMAGE_CANDIDATE_PAGE_SIZE);
   const [previewPosterZoomed, setPreviewPosterZoomed] = useState(false);
   const [posterInputImagePreviewZoomed, setPosterInputImagePreviewZoomed] = useState(false);
+  const [evidenceImagePreview, setEvidenceImagePreview] = useState<EvidenceImageCandidate | null>(null);
+  const [evidenceImagePreviewZoomed, setEvidenceImagePreviewZoomed] = useState(false);
   const [posterExpandedSections, setPosterExpandedSections] = useState<PosterIncludedSection[]>([]);
 
   async function loadRunDetail(options: { silent?: boolean } = {}) {
@@ -323,13 +326,15 @@ export function RunDetail({
 
   const selectedEvidenceRows = useMemo(() => {
     if (!result) return [];
-    const selectedSourceIds = stringListFromUnknown(selectedProduct?.source_ids);
+    const selectedSourceIds = Array.from(
+      new Set(result.products.flatMap((product) => stringListFromUnknown(product.source_ids)))
+    );
     if (!showSelectedProductEvidenceOnly || selectedSourceIds.length === 0) {
       return result.retrieved_documents;
     }
     const sourceIds = new Set(selectedSourceIds);
     return result.retrieved_documents.filter((doc) => sourceIds.has(doc.doc_id));
-  }, [result, selectedProduct, showSelectedProductEvidenceOnly]);
+  }, [result, showSelectedProductEvidenceOnly]);
 
   const canReview = run?.status === "awaiting_approval" || run?.status === "changes_requested";
   const canCreateRevision = Boolean(run?.final_output && (result?.products.length ?? 0) > 0 && !isActiveRun);
@@ -1062,6 +1067,7 @@ export function RunDetail({
                       onDeletePoster={deleteRunDetailPoster}
                       deletingPosterIds={deletingPosterIds}
                       onPreviewPoster={setPreviewPoster}
+                      onPreviewEvidenceImage={(candidate) => setEvidenceImagePreview(candidate)}
                     />
                   ) : (
                     <Text c="dimmed">생성된 상품이 없습니다.</Text>
@@ -1102,15 +1108,15 @@ export function RunDetail({
                   <Text fw={700} size="sm">근거와 보강 데이터</Text>
                   <Text size="sm" c="dimmed">
                     상품 생성과 QA 검수에 사용된 근거입니다. {selectedEvidenceRows.length} / {result.retrieved_documents.length}건 표시 중입니다.
-                    {showSelectedProductEvidenceOnly && selectedProduct
-                      ? ` 선택한 상품: ${selectedProduct.title}`
+                    {showSelectedProductEvidenceOnly
+                      ? " 전체 상품에 연결된 근거만 표시 중입니다."
                       : ""}
                   </Text>
                 </div>
                 <Checkbox
                   checked={showSelectedProductEvidenceOnly}
-                  disabled={stringListFromUnknown(selectedProduct?.source_ids).length === 0}
-                  label="Selected product only"
+                  disabled={result.products.every((product) => stringListFromUnknown(product.source_ids).length === 0)}
+                  label="Selected evidence only"
                   onChange={(event) => setShowSelectedProductEvidenceOnly(event.currentTarget.checked)}
                 />
               </Group>
@@ -1184,6 +1190,7 @@ export function RunDetail({
         position="right"
         size="lg"
         title={selectedEvidence?.title ?? "Evidence"}
+        closeOnEscape={evidenceImagePreview === null}
       >
         {selectedEvidence ? (
           <Stack gap="sm">
@@ -1194,7 +1201,10 @@ export function RunDetail({
               <EvidenceDetailBadge row={selectedEvidence} />
             </Group>
             <Text size="sm" c="dimmed">{evidenceSourceDescription(selectedEvidence)}</Text>
-            <EvidenceImageCandidates row={selectedEvidence} />
+            <EvidenceImageCandidates
+              row={selectedEvidence}
+              onPreviewImage={(candidate) => setEvidenceImagePreview(candidate)}
+            />
             <EvidenceMetadataSummary row={selectedEvidence} />
             <Text size="sm">{selectedEvidence.content}</Text>
             <Accordion variant="contained">
@@ -1523,6 +1533,31 @@ export function RunDetail({
             alt={posterInputImagePreview.title || "참조 이미지 후보"}
             zoomed={posterInputImagePreviewZoomed}
             onToggleZoom={() => setPosterInputImagePreviewZoomed((value) => !value)}
+          />
+        ) : null}
+      </Modal>
+
+      <Modal
+        opened={evidenceImagePreview !== null}
+        onClose={() => {
+          setEvidenceImagePreview(null);
+          setEvidenceImagePreviewZoomed(false);
+        }}
+        withCloseButton={false}
+        padding={0}
+        size="auto"
+        centered
+        styles={{
+          content: { background: "transparent", boxShadow: "none", maxHeight: "none", overflow: "visible" },
+          body: { padding: 0, overflow: "visible" },
+        }}
+      >
+        {evidenceImagePreview ? (
+          <ZoomImage
+            src={evidenceImagePreview.image_url}
+            alt={evidenceImagePreview.title || "근거 이미지 후보"}
+            zoomed={evidenceImagePreviewZoomed}
+            onToggleZoom={() => setEvidenceImagePreviewZoomed((value) => !value)}
           />
         ) : null}
       </Modal>
@@ -2287,6 +2322,8 @@ function DeveloperDebugPanel({
 function RetrievalDiagnosticsPanel({ diagnostics }: { diagnostics?: Record<string, unknown> }) {
   const record = recordOrNull(diagnostics);
   if (!record || Object.keys(record).length === 0) return null;
+  const vectorSearch = recordOrNull(record.vector_search);
+  const retrievedReasons = Array.isArray(record.retrieved_document_reasons) ? record.retrieved_document_reasons : [];
   const rows = [
     ["TourAPI raw collected", record.tourapi_raw_collected_count],
     ["Geo-filtered items", record.geo_filtered_item_count],
@@ -2294,6 +2331,10 @@ function RetrievalDiagnosticsPanel({ diagnostics }: { diagnostics?: Record<strin
     ["Indexed documents", record.indexed_document_count],
     ["Vector search results", record.vector_search_result_count],
     ["Post geo-filter results", record.post_geo_filter_result_count],
+    ["RAG query", vectorSearch?.query],
+    ["RAG filter result count", vectorSearch?.result_count],
+    ["Fallback applied", vectorSearch?.fallback_applied],
+    ["Scope expansion applied", vectorSearch?.scope_expansion_applied],
     ["Reason", record.reason],
   ].filter(([, value]) => value !== undefined && value !== null && value !== "");
   return (
@@ -2308,6 +2349,33 @@ function RetrievalDiagnosticsPanel({ diagnostics }: { diagnostics?: Record<strin
             </div>
           ))}
         </SimpleGrid>
+        {vectorSearch ? (
+          <Accordion variant="separated">
+            <Accordion.Item value="rag-filters">
+              <Accordion.Control>RAG query/filter details</Accordion.Control>
+              <Accordion.Panel>
+                <Code block>
+                  {JSON.stringify(
+                    {
+                      filters: vectorSearch.filters,
+                      matching_signal_summary: vectorSearch.matching_signal_summary,
+                    },
+                    null,
+                    2
+                  )}
+                </Code>
+              </Accordion.Panel>
+            </Accordion.Item>
+            {retrievedReasons.length > 0 ? (
+              <Accordion.Item value="rag-reasons">
+                <Accordion.Control>Returned document matching signals</Accordion.Control>
+                <Accordion.Panel>
+                  <Code block>{JSON.stringify(retrievedReasons, null, 2)}</Code>
+                </Accordion.Panel>
+              </Accordion.Item>
+            ) : null}
+          </Accordion>
+        ) : null}
       </Stack>
     </Paper>
   );
@@ -2878,6 +2946,7 @@ function ProductDetail({
   onDeletePoster,
   deletingPosterIds,
   onPreviewPoster,
+  onPreviewEvidenceImage,
 }: {
   product: ProductIdea;
   marketing: MarketingAsset | null;
@@ -2888,6 +2957,7 @@ function ProductDetail({
   onDeletePoster: (poster: PosterAsset) => void;
   deletingPosterIds: string[];
   onPreviewPoster: (poster: PosterAsset) => void;
+  onPreviewEvidenceImage: (candidate: EvidenceImageCandidate) => void;
 }) {
   const needsReview = stringListFromUnknown(product.needs_review);
   const claimLimits = stringListFromUnknown(product.claim_limits);
@@ -2905,11 +2975,12 @@ function ProductDetail({
   const countedPosterCount = posters.filter((item) => isCountedPosterStatus(item.status)).length;
   const atPosterLimit = countedPosterCount >= maxPostersPerProduct;
   const activePosterCount = posters.filter((item) => isActivePosterStatus(item.status)).length;
+  const displayedVisualCandidates = visualCandidates.slice(0, 4);
 
   return (
     <Stack gap="md">
       <Group justify="space-between" align="flex-start">
-        <div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <Title order={4}>{product.title}</Title>
           <Text size="sm" c="dimmed">{product.one_liner}</Text>
         </div>
@@ -2919,6 +2990,7 @@ function ProductDetail({
           leftSection={<IconPhotoPlus size={16} />}
           onClick={onCreatePoster}
           disabled={atPosterLimit}
+          style={{ flexShrink: 0 }}
         >
           포스터 만들기
         </Button>
@@ -2985,38 +3057,65 @@ function ProductDetail({
           {evidenceSummary ? <Text size="sm">{evidenceSummary}</Text> : null}
 
           {visualCandidates.length > 0 ? (
-            <SimpleGrid cols={{ base: 1, sm: 2 }}>
-              {visualCandidates.slice(0, 2).map((candidate) => (
-                <Paper key={candidate.image_url} withBorder p="xs">
-                  <Group align="flex-start" wrap="nowrap">
-                    <Image
-                      src={candidate.thumbnail_url || candidate.image_url}
-                      alt={candidate.title || product.title}
-                      w={96}
-                      h={72}
-                      fit="cover"
-                      radius="sm"
-                    />
-                    <Stack gap={4}>
-                      <Text size="xs" fw={700} lineClamp={1}>
-                        {candidate.title || "이미지 후보"}
-                      </Text>
-                      <Text size="xs" c="dimmed" lineClamp={2}>
-                        게시 확정 이미지가 아니라 상품 검토용 후보입니다.
-                      </Text>
-                      <Group gap={6}>
-                        <Badge size="xs" variant="light" color="yellow">
-                          사용권 확인 필요
-                        </Badge>
-                        <Badge size="xs" variant="light">
-                          {candidate.source || "Visual API"}
-                        </Badge>
-                      </Group>
-                    </Stack>
-                  </Group>
-                </Paper>
-              ))}
-            </SimpleGrid>
+            <Stack gap="xs">
+              <Text size="xs" c="dimmed">
+                이미지 후보 {visualCandidates.length}개 중 상품 근거와 직접 연결된 후보를 먼저 표시합니다.
+              </Text>
+              <SimpleGrid cols={{ base: 1, sm: 2 }}>
+                {displayedVisualCandidates.map((candidate) => (
+                  <Paper key={candidate.image_url} withBorder p="xs">
+                    <Group align="flex-start" wrap="nowrap">
+                      <button
+                        type="button"
+                        className={classes.evidenceImageButton}
+                        onClick={() => onPreviewEvidenceImage(candidate)}
+                        aria-label={`${candidate.title || product.title} 이미지 크게 보기`}
+                      >
+                        <Image
+                          src={candidate.thumbnail_url || candidate.image_url}
+                          alt={candidate.title || product.title}
+                          w={96}
+                          h={72}
+                          fit="cover"
+                          radius="sm"
+                        />
+                      </button>
+                      <Stack gap={4}>
+                        <Text size="xs" fw={700} lineClamp={1}>
+                          {candidate.title || "이미지 후보"}
+                        </Text>
+                        <Text size="xs" c="dimmed" lineClamp={2}>
+                          게시 확정 이미지가 아니라 상품 검토용 후보입니다.
+                        </Text>
+                        <Group gap={6}>
+                          <Badge size="xs" variant="light" color="yellow">
+                            사용권 확인 필요
+                          </Badge>
+                          <Tooltip label="원본 이미지 열기">
+                            <ActionIcon
+                              component="a"
+                              href={candidate.image_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              size="xs"
+                              variant="subtle"
+                              aria-label={`${candidate.title || product.title} 원본 이미지 열기`}
+                            >
+                              <IconArrowUpRight size={14} />
+                            </ActionIcon>
+                          </Tooltip>
+                        </Group>
+                      </Stack>
+                    </Group>
+                  </Paper>
+                ))}
+              </SimpleGrid>
+              {visualCandidates.length > displayedVisualCandidates.length ? (
+                <Text size="xs" c="dimmed">
+                  나머지 {visualCandidates.length - displayedVisualCandidates.length}개 후보는 Evidence + QA에서 확인하세요.
+                </Text>
+              ) : null}
+            </Stack>
           ) : null}
 
           <SimpleGrid cols={{ base: 1, md: 3 }}>
@@ -4037,7 +4136,13 @@ function EvidenceMetadataSummary({ row }: { row: EvidenceDocument }) {
   );
 }
 
-function EvidenceImageCandidates({ row }: { row: EvidenceDocument }) {
+function EvidenceImageCandidates({
+  row,
+  onPreviewImage,
+}: {
+  row: EvidenceDocument;
+  onPreviewImage: (candidate: EvidenceImageCandidate) => void;
+}) {
   const candidates = evidenceImageCandidates(row);
   if (candidates.length === 0) return null;
 
@@ -4048,13 +4153,20 @@ function EvidenceImageCandidates({ row }: { row: EvidenceDocument }) {
         {candidates.slice(0, 4).map((candidate) => (
           <Paper key={candidate.image_url} withBorder p="xs">
             <Stack gap={6}>
-              <Image
-                src={candidate.thumbnail_url || candidate.image_url}
-                alt={candidate.title || row.title}
-                h={120}
-                fit="cover"
-                radius="sm"
-              />
+              <button
+                type="button"
+                className={classes.evidenceImageButton}
+                onClick={() => onPreviewImage(candidate)}
+                aria-label={`${candidate.title || row.title} 이미지 크게 보기`}
+              >
+                <Image
+                  src={candidate.thumbnail_url || candidate.image_url}
+                  alt={candidate.title || row.title}
+                  h={120}
+                  fit="cover"
+                  radius="sm"
+                />
+              </button>
               <Text size="xs" fw={600} lineClamp={1}>
                 {candidate.title || row.title}
               </Text>
@@ -4062,9 +4174,24 @@ function EvidenceImageCandidates({ row }: { row: EvidenceDocument }) {
                 <Badge size="xs" variant="light" color="yellow">
                   {candidate.usage_status || "candidate"}
                 </Badge>
-                <Badge size="xs" variant="light">
-                  {candidate.source || "TourAPI"}
-                </Badge>
+                {evidenceImageSourceLabel(candidate.source) ? (
+                  <Badge size="xs" variant="light">
+                    {evidenceImageSourceLabel(candidate.source)}
+                  </Badge>
+                ) : null}
+                <Tooltip label="원본 이미지 열기">
+                  <ActionIcon
+                    component="a"
+                    href={candidate.image_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    size="xs"
+                    variant="subtle"
+                    aria-label={`${candidate.title || row.title} 원본 이미지 열기`}
+                  >
+                    <IconArrowUpRight size={14} />
+                  </ActionIcon>
+                </Tooltip>
               </Group>
             </Stack>
           </Paper>
@@ -4106,6 +4233,22 @@ function evidenceImageCandidates(row: EvidenceDocument): EvidenceImageCandidate[
         },
       ]
     : [];
+}
+
+function evidenceImageSourceLabel(source: string | undefined) {
+  const normalized = String(source || "").trim();
+  if (!normalized) return null;
+  const technicalSources = new Set([
+    "detailImage",
+    "detailImage2",
+    "detail_common",
+    "detailCommon",
+    "detailCommon2",
+    "detail_image",
+    "detail_image2",
+  ]);
+  if (technicalSources.has(normalized)) return null;
+  return sourceFamilyLabel(normalized);
 }
 
 function productVisualCandidates(

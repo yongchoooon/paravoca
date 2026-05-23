@@ -321,6 +321,19 @@
   cursor: zoom-in;
 }
 
+.evidenceImageButton {
+  display: block;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.evidenceImageButton :global(.mantine-Image-root) {
+  display: block;
+}
+
 .zoomPreviewFrame {
   position: relative;
   width: fit-content;
