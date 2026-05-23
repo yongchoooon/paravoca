@@ -14,8 +14,6 @@ import {
   Image,
   Loader,
   Modal,
-  MultiSelect,
-  NumberInput,
   Paper,
   ScrollArea,
   Select,
@@ -100,7 +98,6 @@ import classes from "./RunDetail.module.css";
 import {
   ACTIVE_RUN_STATUSES,
   arrayOrEmpty,
-  avoidOptions,
   cloneJson,
   errorMessage,
   formatIssueType,
@@ -109,10 +106,8 @@ import {
   formatSuggestedFix,
   joinLines,
   normalizeWorkflowResult,
-  preferenceOptions,
   qaIssueKey,
   qaIssueKeys,
-  qaIssueRevisionText,
   revisionModeLabel,
   revisionQaSettingsFromRun,
   RevisionQaSettings,
@@ -187,7 +182,6 @@ export function RunDetail({
   const [revisionModalOpen, setRevisionModalOpen] = useState(false);
   const [revisionMode, setRevisionMode] = useState<RevisionMode>("manual_edit");
   const [revisionComment, setRevisionComment] = useState("");
-  const [revisionRequestedChanges, setRevisionRequestedChanges] = useState("");
   const [revisionQaSettings, setRevisionQaSettings] = useState<RevisionQaSettings>(() =>
     revisionQaSettingsFromRun(null)
   );
@@ -420,6 +414,30 @@ export function RunDetail({
     [run, result]
   );
 
+  const revisionModalTitle =
+    revisionMode === "qa_only"
+      ? "QA 재검수 실행"
+      : revisionMode === "llm_partial_rewrite"
+        ? "AI 수정 실행"
+        : "직접 수정";
+  const revisionModalDescription =
+    revisionMode === "manual_edit"
+      ? "QA 이슈 전체를 참고하면서 상품과 마케팅 문구를 직접 수정하고 새 Revision으로 저장합니다."
+      : revisionMode === "qa_only"
+        ? "상품 내용은 바꾸지 않고 선택한 QA 이슈가 해결됐는지만 다시 확인합니다."
+        : "선택한 QA 이슈와 요청 배경을 바탕으로 필요한 필드만 AI가 수정합니다.";
+  const revisionPrimaryLabel =
+    revisionMode === "manual_edit"
+      ? "저장 후 QA 재검수"
+      : revisionMode === "qa_only"
+        ? "QA 재검수 실행"
+        : "AI 수정 실행";
+  const revisionSubmitDisabled = revisionMode !== "manual_edit" && selectedQaIssues.length === 0;
+  const revisionDisabledReason =
+    revisionMode !== "manual_edit" && selectedQaIssues.length === 0
+      ? "실행하려면 Evidence + QA 탭에서 확인할 QA 이슈를 먼저 선택해야 합니다."
+      : null;
+
   function openApprovalModal(action: ApprovalAction) {
     const config = actionConfig[action];
     setApprovalComment("");
@@ -472,34 +490,10 @@ export function RunDetail({
     }
   }
 
-  function requestChangesFromHistory() {
-    const changes: string[] = [];
-    for (const approval of approvals) {
-      if (approval.decision !== "request_changes") continue;
-      const metadataChanges = approval.approval_metadata.requested_changes;
-      if (Array.isArray(metadataChanges)) {
-        changes.push(...metadataChanges.map(String).filter((item) => item.trim()));
-      }
-      if (approval.comment?.trim()) {
-        changes.push(approval.comment.trim());
-      }
-    }
-    return changes;
-  }
-
-  function openRevisionModal(mode: Exclude<RevisionMode, "manual_save">, requested?: string[]) {
+  function openRevisionModal(mode: Exclude<RevisionMode, "manual_save">) {
     if (!result) return;
-    const historyChanges = requestChangesFromHistory();
     setRevisionMode(mode);
     setRevisionComment(mode === "qa_only" ? "QA 재검수" : "");
-    setRevisionRequestedChanges(
-      (requested && requested.length > 0
-        ? requested
-        : mode === "qa_only"
-          ? ["현재 결과를 유지하고 QA/Compliance 검수만 다시 실행"]
-          : historyChanges
-      ).join("\n")
-    );
     setRevisionQaSettings(revisionQaSettingsFromRun(run));
     setEditableProducts(cloneJson(result.products));
     setEditableMarketingAssets(cloneJson(result.marketing_assets));
@@ -509,15 +503,7 @@ export function RunDetail({
 
   function openAiRevisionFromQaIssues() {
     if (!result || selectedQaIssues.length === 0) return;
-    const requested = selectedQaIssues.map((issue) => {
-      const index = result.qa_report.issues.indexOf(issue);
-      return qaIssueRevisionText(issue, index >= 0 ? index : 0, productTitleById);
-    });
-    openRevisionModal("llm_partial_rewrite", requested);
-  }
-
-  function resetRevisionQaSettings() {
-    setRevisionQaSettings(revisionQaSettingsFromRun(run));
+    openRevisionModal("llm_partial_rewrite");
   }
 
   function toggleQaIssue(issue: QAIssue, index: number) {
@@ -741,13 +727,15 @@ export function RunDetail({
 
   async function submitRevision(modeOverride?: RevisionMode) {
     if (!run || !result) return;
-    const requested = splitLines(revisionRequestedChanges);
     const mode = modeOverride ?? revisionMode;
+    const shouldSendSelectedQaIssues =
+      mode === "llm_partial_rewrite" || mode === "manual_edit" || mode === "qa_only";
+    const qaIssuesForRevision = mode === "manual_edit" ? result.qa_report.issues : selectedQaIssues;
     const payload = {
       revision_mode: mode,
       comment: revisionComment.trim() || null,
-      requested_changes: requested,
-      qa_issues: mode === "llm_partial_rewrite" ? selectedQaIssues : [],
+      requested_changes: [],
+      qa_issues: shouldSendSelectedQaIssues ? qaIssuesForRevision : [],
       qa_settings: revisionQaSettings,
       ...(mode === "manual_save" || mode === "manual_edit"
         ? {
@@ -923,14 +911,24 @@ export function RunDetail({
                 실행 중지
               </Button>
             ) : null}
-            <Button
-              variant="light"
-              leftSection={<IconGitBranch size={16} />}
-              disabled={!canCreateRevision || selectedQaIssues.length === 0}
-              onClick={openAiRevisionFromQaIssues}
+            <Tooltip
+              label={
+                selectedQaIssues.length === 0
+                  ? "AI 수정하려면 먼저 QA 이슈를 선택하세요."
+                  : "선택한 QA 이슈를 AI가 수정합니다."
+              }
             >
-              AI 수정
-            </Button>
+              <span>
+                <Button
+                  variant="light"
+                  leftSection={<IconGitBranch size={16} />}
+                  disabled={!canCreateRevision || selectedQaIssues.length === 0}
+                  onClick={openAiRevisionFromQaIssues}
+                >
+                  AI 수정
+                </Button>
+              </span>
+            </Tooltip>
             <Button
               variant="light"
               disabled={!canCreateRevision}
@@ -938,14 +936,24 @@ export function RunDetail({
             >
               직접 수정
             </Button>
-            <Button
-              variant="subtle"
-              disabled={!canCreateRevision}
-              loading={revisionSubmitting && !revisionModalOpen}
-              onClick={() => openRevisionModal("qa_only")}
+            <Tooltip
+              label={
+                selectedQaIssues.length === 0
+                  ? "QA 재검수하려면 먼저 확인할 QA 이슈를 선택하세요."
+                  : "선택한 QA 이슈만 다시 확인합니다."
+              }
             >
-              QA 재검수
-            </Button>
+              <span>
+                <Button
+                  variant="subtle"
+                  disabled={!canCreateRevision || selectedQaIssues.length === 0}
+                  loading={revisionSubmitting && !revisionModalOpen}
+                  onClick={() => openRevisionModal("qa_only")}
+                >
+                  QA 재검수
+                </Button>
+              </span>
+            </Tooltip>
             <Button
               variant="light"
               leftSection={<IconDownload size={16} />}
@@ -1114,6 +1122,7 @@ export function RunDetail({
                 report={result.qa_report}
                 products={result.products}
                 avoidRules={qaAvoidRules}
+                qaDiffSummary={qaDiffSummaryFromRevision(result.revision)}
                 selectedIssueKeys={selectedQaIssueKeys}
                 onToggleIssue={toggleQaIssue}
                 onToggleAll={toggleAllQaIssues}
@@ -1564,60 +1573,32 @@ export function RunDetail({
       <Modal
         opened={revisionModalOpen}
         onClose={() => setRevisionModalOpen(false)}
-        title={revisionModeLabel[revisionMode] ?? "Revision"}
-        size="90%"
+        title={revisionModalTitle}
+        size="min(1180px, calc(100vw - 32px))"
+        classNames={{
+          body: classes.revisionModalBody,
+          content: classes.revisionModalContent,
+        }}
       >
-        <Stack gap="md">
-          <Alert color={revisionMode === "manual_edit" ? "gray" : "blue"}>
-            {revisionMode === "manual_edit"
-              ? "수정한 내용을 새 Revision으로 기록합니다. QA 재검수를 선택하면 아래 검수 설정으로 다시 확인합니다."
-              : revisionMode === "qa_only"
-                ? "상품 내용은 바꾸지 않고 아래 검수 설정으로 QA만 다시 실행합니다."
-                : "선택한 QA 이슈와 추가 요청을 바탕으로 필요한 필드만 AI가 수정합니다. 선택되지 않은 내용은 그대로 유지합니다."}
-          </Alert>
+        <div className={classes.revisionModalShell}>
+          <section className={classes.revisionModalHeader} aria-label="Revision summary">
+            <Group justify="space-between" align="flex-start" gap="md">
+              <div className={classes.revisionHeaderCopy}>
+                <Text fw={700}>{revisionModalTitle}</Text>
+                <Text size="sm" c="dimmed">
+                  {revisionModalDescription}
+                </Text>
+              </div>
+            </Group>
+          </section>
 
-          <Textarea
-            label="Comment"
-            placeholder={
-              revisionMode === "manual_edit"
-                ? "직접 수정한 이유나 확인해야 할 내용을 적습니다. 예: 제목의 불필요한 숫자를 제거함"
-                : revisionMode === "qa_only"
-                  ? "이번 재검수에서 확인할 배경을 적습니다. 예: 고객 노출 문구만 다시 확인"
-                  : "AI 수정 요청의 배경을 적습니다. 예: QA에서 지적된 과장 표현을 먼저 정리"
-            }
-            minRows={4}
-            value={revisionComment}
-            onChange={(event) => setRevisionComment(event.currentTarget.value)}
-          />
-
-          <RevisionQaSettingsPanel
-            settings={revisionQaSettings}
-            onChange={(patch) =>
-              setRevisionQaSettings((current) => ({ ...current, ...patch }))
-            }
-            onReset={resetRevisionQaSettings}
-          />
-
-          <Textarea
-            label="Requested changes"
-            placeholder={
-              revisionMode === "manual_edit"
-                ? "직접 수정 후에도 QA가 다시 확인해야 할 내용을 적습니다. 예: 제목 수정 후 과장 표현 재검수"
-                : revisionMode === "qa_only"
-                  ? "QA가 다시 확인해야 할 기준을 한 줄에 하나씩 적습니다. 예: 가격/일정 확정 표현만 확인"
-                  : "AI가 반영해야 할 수정 지시를 한 줄에 하나씩 적습니다. 예: 선택된 QA 이슈의 suggested fix를 반영하되 운영 시간은 단정하지 않기"
-            }
-            minRows={6}
-            value={revisionRequestedChanges}
-            onChange={(event) => setRevisionRequestedChanges(event.currentTarget.value)}
-          />
-
-          {revisionMode === "llm_partial_rewrite" ? (
-            <SelectedQaIssuesPreview issues={selectedQaIssues} productTitleById={productTitleById} />
-          ) : revisionMode === "qa_only" ? null : (
-            <Stack gap="sm">
-              <div className={classes.revisionEditGrid}>
-                <Paper withBorder p="sm" className={classes.productList}>
+          {revisionMode === "manual_edit" ? (
+            <div className={`${classes.revisionModalMain} ${classes.revisionManualMain}`}>
+              <section
+                className={`${classes.revisionModalColumn} ${classes.revisionManualContextColumn}`}
+                aria-label="작업 컨텍스트"
+              >
+                <Paper withBorder p="sm" className={`${classes.productList} ${classes.revisionProductList}`}>
                   <Stack gap="xs">
                     <Text fw={700} size="sm">Products</Text>
                     {editableProducts.map((product) => (
@@ -1633,7 +1614,28 @@ export function RunDetail({
                     ))}
                   </Stack>
                 </Paper>
-                <Paper withBorder p="md" className={classes.panel}>
+                <RevisionQaIssuesReference
+                  issues={result.qa_report.issues}
+                  productTitleById={productTitleById}
+                />
+                <Paper withBorder p="md" className={classes.revisionManualNote}>
+                  <Stack gap="sm">
+                    <Textarea
+                      label="Revision note"
+                      placeholder="직접 수정한 이유나 확인해야 할 내용을 적습니다. 예: 제목의 불필요한 숫자를 제거함"
+                      minRows={5}
+                      value={revisionComment}
+                      onChange={(event) => setRevisionComment(event.currentTarget.value)}
+                    />
+                    <Text size="sm" c="dimmed">
+                      편집 내용은 원본 run을 덮어쓰지 않고 새 revision으로 저장됩니다.
+                    </Text>
+                  </Stack>
+                </Paper>
+              </section>
+
+              <section className={`${classes.revisionModalColumn} ${classes.revisionEditorColumn}`} aria-label="직접 수정 편집 영역">
+                <Paper withBorder p="md" className={`${classes.panel} ${classes.revisionEditorPanel}`}>
                   {editableProduct && editableMarketing ? (
                     <RevisionEditor
                       product={editableProduct}
@@ -1652,15 +1654,37 @@ export function RunDetail({
                     <Text c="dimmed">수정 가능한 상품 결과가 없습니다.</Text>
                   )}
                 </Paper>
-              </div>
-            </Stack>
+              </section>
+            </div>
+          ) : (
+            <div className={`${classes.revisionModalMain} ${classes.revisionReviewMain}`}>
+              <section className={classes.revisionModalColumn} aria-label="입력 정보">
+                <RevisionExecutionPanel
+                  revisionMode={revisionMode}
+                  revisionComment={revisionComment}
+                  onCommentChange={setRevisionComment}
+                  revisionQaSettings={revisionQaSettings}
+                  revisionDisabledReason={revisionDisabledReason}
+                />
+              </section>
+
+              <section className={classes.revisionModalColumn} aria-label="QA 이슈 선택">
+                <RevisionQaIssuesSelector
+                  issues={result.qa_report.issues}
+                  selectedIssueKeys={selectedQaIssueKeys}
+                  productTitleById={productTitleById}
+                  onToggleIssue={toggleQaIssue}
+                  onToggleAll={toggleAllQaIssues}
+                />
+              </section>
+            </div>
           )}
 
-          <Group justify="space-between">
-            <Text size="sm" c="dimmed">
-              원본 결과는 그대로 두고 새 Revision으로 기록합니다.
+          <footer className={classes.revisionModalFooter}>
+            <Text size="sm" c={revisionDisabledReason ? "yellow.9" : "dimmed"} className={classes.revisionFooterNote}>
+              {revisionDisabledReason ?? "원본 결과는 그대로 두고 새 Revision으로 기록합니다."}
             </Text>
-            <Group>
+            <Group className={classes.revisionFooterActions}>
               <Button variant="subtle" onClick={() => setRevisionModalOpen(false)}>
                 Cancel
               </Button>
@@ -1673,16 +1697,16 @@ export function RunDetail({
                   저장
                 </Button>
               ) : null}
-              <Button loading={revisionSubmitting} onClick={() => void submitRevision()}>
-                {revisionMode === "manual_edit"
-                  ? "저장 후 QA 재검수"
-                  : revisionMode === "qa_only"
-                    ? "QA 재검수 실행"
-                    : "AI 수정 실행"}
+              <Button
+                loading={revisionSubmitting}
+                disabled={revisionSubmitDisabled}
+                onClick={() => void submitRevision()}
+              >
+                {revisionPrimaryLabel}
               </Button>
             </Group>
-          </Group>
-        </Stack>
+          </footer>
+        </div>
       </Modal>
     </Paper>
   );
@@ -1960,11 +1984,18 @@ function RevisionMeta({
   childRuns: WorkflowRun[];
   onSelectRun?: (runId: string) => void;
 }) {
+  const latestRevision = childRuns.length > 0 ? childRuns[childRuns.length - 1] : null;
+  const currentRunId = latestRevision?.id ?? (parentRun ? parentRun.id : run.id);
+  const historyRuns = [
+    ...[...childRuns].reverse(),
+    ...(parentRun ? [parentRun] : []),
+  ].filter((item) => item.id !== run.id);
+
   return (
     <Stack gap={4} mt={6}>
       <Group gap="xs">
         <Badge variant={run.revision_number > 0 ? "light" : "outline"} color="opsBlue">
-          {run.revision_number > 0 ? `Revision #${run.revision_number}` : "Original run"}
+          {run.revision_number > 0 ? `Rev ${run.revision_number}` : "Original"}
         </Badge>
         {run.revision_mode ? (
           <Badge variant="light" color="gray">
@@ -1972,25 +2003,17 @@ function RevisionMeta({
           </Badge>
         ) : null}
       </Group>
-      {parentRun ? (
+      {historyRuns.length > 0 ? (
         <Group gap="xs">
-          <Text size="xs" c="dimmed">Parent</Text>
-          <Button size="compact-xs" variant="subtle" onClick={() => onSelectRun?.(parentRun.id)}>
-            {parentRun.id}
-          </Button>
-        </Group>
-      ) : null}
-      {childRuns.length > 0 ? (
-        <Group gap="xs">
-          <Text size="xs" c="dimmed">Revisions</Text>
-          {childRuns.map((child) => (
+          <Text size="xs" c="dimmed">History</Text>
+          {historyRuns.map((historyRun) => (
             <Button
-              key={child.id}
+              key={historyRun.id}
               size="compact-xs"
               variant="subtle"
-              onClick={() => onSelectRun?.(child.id)}
+              onClick={() => onSelectRun?.(historyRun.id)}
             >
-              Rev {child.revision_number}
+              {historyRun.revision_number > 0 ? `Rev ${historyRun.revision_number}` : "Original"}
             </Button>
           ))}
         </Group>
@@ -3442,7 +3465,9 @@ function RevisionEditor({
           />
           <Textarea
             label="One-liner"
+            autosize
             minRows={4}
+            maxRows={8}
             value={product.one_liner}
             onChange={(event) => onProductChange({ one_liner: event.currentTarget.value })}
           />
@@ -3474,7 +3499,9 @@ function RevisionEditor({
           />
           <Textarea
             label="Subheadline"
+            autosize
             minRows={4}
+            maxRows={8}
             value={marketing.sales_copy.subheadline}
             onChange={(event) => onSalesCopyChange({ subheadline: event.currentTarget.value })}
           />
@@ -3490,7 +3517,9 @@ function RevisionEditor({
                 />
                 <Textarea
                   label={`Section ${index + 1} body`}
-                  minRows={6}
+                  autosize
+                  minRows={7}
+                  maxRows={14}
                   value={section.body}
                   onChange={(event) =>
                     onSalesCopySectionChange(index, { body: event.currentTarget.value })
@@ -3501,7 +3530,9 @@ function RevisionEditor({
           ))}
           <Textarea
             label="Disclaimer"
+            autosize
             minRows={4}
+            maxRows={8}
             value={marketing.sales_copy.disclaimer}
             onChange={(event) => onSalesCopyChange({ disclaimer: event.currentTarget.value })}
           />
@@ -3520,7 +3551,9 @@ function RevisionEditor({
                 />
                 <Textarea
                   label={`Answer ${index + 1}`}
-                  minRows={5}
+                  autosize
+                  minRows={6}
+                  maxRows={11}
                   value={item.answer}
                   onChange={(event) => onFaqChange(index, { answer: event.currentTarget.value })}
                 />
@@ -3534,7 +3567,9 @@ function RevisionEditor({
         <SimpleGrid cols={{ base: 1, md: 2 }}>
           <Textarea
             label="SNS posts"
-            minRows={12}
+            autosize
+            minRows={11}
+            maxRows={21}
             value={joinLines(marketing.sns_posts)}
             onChange={(event) =>
               onMarketingChange({ sns_posts: splitLines(event.currentTarget.value) })
@@ -3542,7 +3577,9 @@ function RevisionEditor({
           />
           <Textarea
             label="Search keywords"
-            minRows={12}
+            autosize
+            minRows={11}
+            maxRows={21}
             value={joinLines(marketing.search_keywords)}
             onChange={(event) =>
               onMarketingChange({ search_keywords: splitLines(event.currentTarget.value) })
@@ -3555,13 +3592,17 @@ function RevisionEditor({
         <SimpleGrid cols={{ base: 1, md: 2 }}>
           <Textarea
             label="Assumptions"
-            minRows={12}
+            autosize
+            minRows={11}
+            maxRows={21}
             value={joinLines(product.assumptions)}
             onChange={(event) => onProductChange({ assumptions: splitLines(event.currentTarget.value) })}
           />
           <Textarea
             label="Do not claim"
-            minRows={12}
+            autosize
+            minRows={11}
+            maxRows={21}
             value={joinLines(product.not_to_claim)}
             onChange={(event) => onProductChange({ not_to_claim: splitLines(event.currentTarget.value) })}
           />
@@ -3571,100 +3612,263 @@ function RevisionEditor({
   );
 }
 
-function RevisionQaSettingsPanel({
-  settings,
-  onChange,
-  onReset,
+function RevisionExecutionPanel({
+  revisionMode,
+  revisionComment,
+  onCommentChange,
+  revisionQaSettings,
+  revisionDisabledReason,
 }: {
-  settings: RevisionQaSettings;
-  onChange: (patch: Partial<RevisionQaSettings>) => void;
-  onReset: () => void;
+  revisionMode: RevisionMode;
+  revisionComment: string;
+  onCommentChange: (value: string) => void;
+  revisionQaSettings: RevisionQaSettings;
+  revisionDisabledReason: string | null;
 }) {
   return (
-    <Paper withBorder p="md">
-      <Stack gap="sm">
-        <Group justify="space-between" align="flex-start">
-          <div>
-            <Text fw={700}>Run settings</Text>
+    <Paper withBorder p="md" className={classes.revisionExecutionCard}>
+      <Stack gap="md">
+        <Textarea
+          label="Comment"
+          placeholder={
+            revisionMode === "manual_edit"
+              ? "직접 수정한 이유나 확인해야 할 내용을 적습니다. 예: 제목의 불필요한 숫자를 제거함"
+              : revisionMode === "qa_only"
+                ? "이번 재검수에서 확인할 배경을 적습니다. 예: 고객 노출 문구만 다시 확인"
+                : "AI 수정 요청의 배경을 적습니다. 예: QA에서 지적된 과장 표현을 먼저 정리"
+          }
+          minRows={4}
+          value={revisionComment}
+          onChange={(event) => onCommentChange(event.currentTarget.value)}
+        />
+
+        <RevisionQaSettingsPanel settings={revisionQaSettings} />
+
+        <Paper withBorder p="sm" className={classes.revisionRunSummary}>
+          <Stack gap="xs">
+            <Text fw={700} size="sm">실행 요약</Text>
             <Text size="sm" c="dimmed">
-              처음 run 생성 시 사용한 설정입니다. 그대로 실행하거나 필요한 값만 수정할 수 있습니다.
+              원본 run은 그대로 두고 새 revision run으로 기록합니다.
             </Text>
-          </div>
-          <Button size="xs" variant="subtle" onClick={onReset}>
-            초기 설정으로 되돌리기
-          </Button>
-        </Group>
-        <SimpleGrid cols={{ base: 1, md: 3 }}>
-          <TextInput
-            label="Period"
-            type="month"
-            value={settings.period}
-            onChange={(event) => onChange({ period: event.currentTarget.value })}
-          />
-          <TextInput
-            label="Target"
-            value={settings.target_customer}
-            onChange={(event) => onChange({ target_customer: event.currentTarget.value })}
-          />
-          <NumberInput
-            label="Product count"
-            min={1}
-            max={20}
-            value={settings.product_count}
-            onChange={(value) => onChange({ product_count: Math.min(Number(value) || 1, 20) })}
-          />
-        </SimpleGrid>
-        <SimpleGrid cols={{ base: 1, md: 2 }}>
-          <MultiSelect
-            label="Preferences"
-            data={[...new Set([...preferenceOptions, ...settings.preferences])]}
-            value={settings.preferences}
-            searchable
-            onChange={(value) => onChange({ preferences: value })}
-          />
-          <MultiSelect
-            label="Avoid"
-            data={[...new Set([...avoidOptions, ...settings.avoid])]}
-            value={settings.avoid}
-            searchable
-            onChange={(value) => onChange({ avoid: value })}
-          />
-        </SimpleGrid>
+            {revisionDisabledReason ? (
+              <Text size="sm" c="yellow.9">
+                {revisionDisabledReason}
+              </Text>
+            ) : (
+              <ul className={classes.revisionSummaryList}>
+                <li>선택한 QA 이슈가 해결됐는지 다시 확인합니다.</li>
+                <li>근거 없는 단정, 과장 표현, 출처 연결 오류를 확인합니다.</li>
+                <li>Avoid 조건과 사용자 요청 제한이 지켜졌는지 봅니다.</li>
+              </ul>
+            )}
+          </Stack>
+        </Paper>
       </Stack>
     </Paper>
   );
 }
 
-function SelectedQaIssuesPreview({
+function RevisionQaSettingsPanel({
+  settings,
+}: {
+  settings: RevisionQaSettings;
+}) {
+  return (
+    <Paper withBorder p="md">
+      <Stack gap="sm">
+        <div>
+          <Text fw={700}>Run settings</Text>
+        </div>
+        <SimpleGrid cols={{ base: 1, md: 3 }}>
+          <RevisionSettingValue label="Period" value={settings.period || "-"} />
+          <RevisionSettingValue label="Target" value={settings.target_customer || "-"} />
+          <RevisionSettingValue label="Product count" value={String(settings.product_count || "-")} />
+        </SimpleGrid>
+        <div className={classes.revisionSettingTagGrid}>
+          <RevisionSettingTags label="Preferences" values={settings.preferences} />
+          <RevisionSettingTags label="Avoid" values={settings.avoid} />
+        </div>
+      </Stack>
+    </Paper>
+  );
+}
+
+function RevisionSettingValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className={classes.revisionSettingValue}>
+      <Text size="xs" c="dimmed" fw={700}>{label}</Text>
+      <Text size="sm">{value}</Text>
+    </div>
+  );
+}
+
+function RevisionSettingTags({ label, values }: { label: string; values: string[] }) {
+  const items = values.map((value) => value.trim()).filter(Boolean);
+  return (
+    <div className={classes.revisionSettingTags}>
+      <Text size="xs" c="dimmed" fw={700}>{label}</Text>
+      {items.length > 0 ? (
+        <Group gap={6} mt={6}>
+          {items.map((value) => (
+            <Badge key={value} variant="light" color="gray" radius="sm">
+              {value}
+            </Badge>
+          ))}
+        </Group>
+      ) : (
+        <Text size="sm" c="dimmed" mt={4}>없음</Text>
+      )}
+    </div>
+  );
+}
+
+function RevisionQaIssuesSelector({
+  issues,
+  selectedIssueKeys,
+  productTitleById,
+  onToggleIssue,
+  onToggleAll,
+}: {
+  issues: QAIssue[];
+  selectedIssueKeys: string[];
+  productTitleById: Map<string, string>;
+  onToggleIssue: (issue: QAIssue, index: number) => void;
+  onToggleAll: (checked: boolean) => void;
+}) {
+  const selected = new Set(selectedIssueKeys);
+  const selectedCount = issues.filter((issue, index) => selected.has(qaIssueKey(issue, index))).length;
+  const allSelected = issues.length > 0 && selectedCount === issues.length;
+  const partiallySelected = selectedCount > 0 && selectedCount < issues.length;
+
+  return (
+    <Paper withBorder p="sm" className={classes.selectedQaIssuesPanel}>
+      <Stack gap="xs" className={classes.selectedQaIssuesContent}>
+        <Group justify="space-between" align="flex-start" gap="xs">
+          <div>
+            <Text fw={700} size="sm">QA 이슈 선택</Text>
+            <Text size="xs" c="dimmed">
+              이 창에서도 재검수하거나 AI가 반영할 이슈를 추가하거나 해제할 수 있습니다.
+            </Text>
+          </div>
+          <Checkbox
+            checked={allSelected}
+            indeterminate={partiallySelected}
+            disabled={issues.length === 0}
+            label={`${selectedCount}/${issues.length}`}
+            onChange={(event) => onToggleAll(event.currentTarget.checked)}
+          />
+        </Group>
+
+        {issues.length === 0 ? (
+          <div className={classes.selectedQaIssuesEmpty}>
+            <Text fw={700} size="sm">선택된 QA 이슈가 없습니다.</Text>
+            <Text size="sm" c="dimmed">
+              Evidence + QA 탭에서 재검수하거나 수정할 이슈를 체크한 뒤 다시 실행하세요.
+            </Text>
+          </div>
+        ) : (
+          <div className={classes.selectedQaIssueList} role="list">
+            {issues.map((issue, index) => {
+              const key = qaIssueKey(issue, index);
+              const checked = selected.has(key);
+              const titleId = `revision-qa-issue-${index}`;
+              return (
+                <article
+                  key={key}
+                  className={classes.selectedQaIssueCard}
+                  aria-labelledby={titleId}
+                  role="listitem"
+                >
+                  <Group align="flex-start" gap="xs" wrap="nowrap">
+                    <Checkbox
+                      checked={checked}
+                      onChange={() => onToggleIssue(issue, index)}
+                      aria-label={`${issue.product_id ? productTitleById.get(issue.product_id) ?? issue.product_id : "전체"} QA 이슈 선택`}
+                    />
+                    <div className={classes.selectedQaIssueTitle}>
+                      <Group gap={6} align="center" wrap="nowrap">
+                        <Text id={titleId} size="sm" fw={700} lineClamp={1}>
+                          {issue.product_id ? productTitleById.get(issue.product_id) ?? issue.product_id : "전체"}
+                        </Text>
+                        <Badge size="xs" variant="light" color={severityColor(issue.severity)}>
+                          {formatSeverity(issue.severity)}
+                        </Badge>
+                      </Group>
+                    </div>
+                  </Group>
+                  <div className={classes.selectedQaIssueFields}>
+                    <div>
+                      <Text size="xs" fw={700} c="dimmed">메시지</Text>
+                      <Text size="sm">{formatQaMessage(issue)}</Text>
+                    </div>
+                    <div>
+                      <Text size="xs" fw={700} c="dimmed">수정 방향</Text>
+                      <Text size="sm" c="dimmed">{formatSuggestedFix(issue)}</Text>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </Stack>
+    </Paper>
+  );
+}
+
+function RevisionQaIssuesReference({
   issues,
   productTitleById,
 }: {
   issues: QAIssue[];
   productTitleById: Map<string, string>;
 }) {
-  if (issues.length === 0) {
-    return (
-      <Alert color="yellow">
-        AI가 반영할 QA 이슈가 선택되지 않았습니다. QA Review에서 수정할 이슈를 체크한 뒤 다시 실행하세요.
-      </Alert>
-    );
-  }
-
   return (
-    <Paper withBorder p="sm">
-      <Stack gap="xs">
-        <Text fw={700} size="sm">선택한 QA 이슈</Text>
-        {issues.map((issue, index) => (
-          <Paper key={`${issue.type}-${index}`} withBorder p="sm">
-            <Text size="sm" fw={600}>
-              {issue.product_id ? productTitleById.get(issue.product_id) ?? issue.product_id : "전체"}
-            </Text>
-            <Text size="sm">{formatQaMessage(issue)}</Text>
-            <Text size="sm" c="dimmed">
-              수정 방향: {formatSuggestedFix(issue)}
-            </Text>
-          </Paper>
-        ))}
+    <Paper withBorder p="sm" className={`${classes.selectedQaIssuesPanel} ${classes.revisionQaReferencePanel}`}>
+      <Stack gap="xs" className={classes.selectedQaIssuesContent}>
+        <div>
+          <Text fw={700} size="sm">QA 이슈 전체</Text>
+          <Text size="xs" c="dimmed">
+            아래 이슈들을 참고해서 오른쪽에서 필요한 내용을 한 번에 수정하세요.
+          </Text>
+        </div>
+        {issues.length === 0 ? (
+          <div className={classes.selectedQaIssuesEmpty}>
+            <Text size="sm" c="dimmed">표시할 QA 이슈가 없습니다.</Text>
+          </div>
+        ) : (
+          <div className={classes.selectedQaIssueList} role="list">
+            {issues.map((issue, index) => (
+              <article
+                key={qaIssueKey(issue, index)}
+                className={classes.selectedQaIssueCard}
+                role="listitem"
+              >
+                <Group gap={6} align="center" wrap="nowrap">
+                  <Text size="sm" fw={700} lineClamp={1}>
+                    {issue.product_id ? productTitleById.get(issue.product_id) ?? issue.product_id : "전체"}
+                  </Text>
+                  <Badge size="xs" variant="light" color={severityColor(issue.severity)}>
+                    {formatSeverity(issue.severity)}
+                  </Badge>
+                  <Badge size="xs" variant="light" color="gray">
+                    {formatIssueType(issue.type)}
+                  </Badge>
+                </Group>
+                <div className={classes.selectedQaIssueFields}>
+                  <div>
+                    <Text size="xs" fw={700} c="dimmed">메시지</Text>
+                    <Text size="sm">{formatQaMessage(issue)}</Text>
+                  </div>
+                  <div>
+                    <Text size="xs" fw={700} c="dimmed">수정 방향</Text>
+                    <Text size="sm" c="dimmed">{formatSuggestedFix(issue)}</Text>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </Stack>
     </Paper>
   );
@@ -4013,10 +4217,63 @@ function ReviewQaSummary({
   );
 }
 
+type QaDiffSummary = {
+  qa_recheck_mode?: string | null;
+  counts: Record<string, number>;
+};
+
+const qaDiffLabels: Record<string, string> = {
+  resolved: "해결됨",
+  still_open: "계속 확인 필요",
+};
+
+function qaDiffSummaryFromRevision(revision: Record<string, unknown> | undefined): QaDiffSummary | null {
+  const rawSummary = revision?.qa_diff_summary;
+  if (!rawSummary || typeof rawSummary !== "object" || Array.isArray(rawSummary)) return null;
+  const summary = rawSummary as Record<string, unknown>;
+  const rawCounts = summary.counts;
+  if (!rawCounts || typeof rawCounts !== "object" || Array.isArray(rawCounts)) return null;
+  const counts: Record<string, number> = {};
+  Object.entries(rawCounts as Record<string, unknown>).forEach(([key, value]) => {
+    if (typeof value === "number" && value > 0) counts[key] = value;
+  });
+  if (Object.keys(counts).length === 0) return null;
+  return {
+    qa_recheck_mode: typeof summary.qa_recheck_mode === "string" ? summary.qa_recheck_mode : null,
+    counts,
+  };
+}
+
+function QaDiffSummaryPanel({ summary }: { summary: QaDiffSummary }) {
+  const modeLabel =
+    summary.qa_recheck_mode === "ai_partial_rewrite_recheck"
+      ? "AI 수정 후 재검수"
+      : summary.qa_recheck_mode === "qa_only_recheck"
+      ? "QA 재검수"
+      : "재검수";
+  return (
+    <Paper withBorder p="sm" mt="sm">
+      <Group justify="space-between" align="center">
+        <Text size="sm" fw={600}>{modeLabel} 결과 변화</Text>
+        <Group gap="xs">
+          {Object.entries(qaDiffLabels).map(([key, label]) =>
+            summary.counts[key] ? (
+              <Badge key={key} variant="light" color={key === "new_issue" ? "yellow" : "gray"}>
+                {label} {summary.counts[key]}
+              </Badge>
+            ) : null
+          )}
+        </Group>
+      </Group>
+    </Paper>
+  );
+}
+
 function QASection({
   report,
   products,
   avoidRules,
+  qaDiffSummary,
   selectedIssueKeys,
   onToggleIssue,
   onToggleAll,
@@ -4026,6 +4283,7 @@ function QASection({
   report: QAReport;
   products: ProductIdea[];
   avoidRules: string[];
+  qaDiffSummary: QaDiffSummary | null;
   selectedIssueKeys: string[];
   onToggleIssue: (issue: QAIssue, index: number) => void;
   onToggleAll: (checked: boolean) => void;
@@ -4061,6 +4319,7 @@ function QASection({
           {report.overall_status}
         </Badge>
       </Group>
+      {qaDiffSummary ? <QaDiffSummaryPanel summary={qaDiffSummary} /> : null}
       <Group justify="space-between" mt="sm">
         <Group gap="xs">
           {report.issues.length > 0 ? (
@@ -4099,11 +4358,11 @@ function QASection({
             <Table.Thead>
               <Table.Tr>
                 <Table.Th className={classes.qaSelectColumn}></Table.Th>
-                <Table.Th className={classes.qaProductColumn}>Product</Table.Th>
-                <Table.Th className={classes.qaSeverityColumn}>Severity</Table.Th>
-                <Table.Th className={classes.qaTypeColumn}>Type</Table.Th>
-                <Table.Th className={classes.qaMessageColumn}>Message</Table.Th>
-                <Table.Th className={classes.qaFixColumn}>Suggested fix</Table.Th>
+                <Table.Th className={classes.qaProductColumn}>상품</Table.Th>
+                <Table.Th className={classes.qaSeverityColumn}>중요도</Table.Th>
+                <Table.Th className={classes.qaTypeColumn}>분류</Table.Th>
+                <Table.Th className={classes.qaMessageColumn}>문제 내용</Table.Th>
+                <Table.Th className={classes.qaFixColumn}>수정 제안</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>

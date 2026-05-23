@@ -3,6 +3,7 @@ import { useDisclosure } from "@mantine/hooks";
 import type { ReactNode } from "react";
 import {
   IconAdjustments,
+  IconBrandGithub,
   IconBrush,
   IconChartBar,
   IconCoins,
@@ -90,30 +91,44 @@ export function AppShellLayout({
       </AppShell.Header>
 
       <AppShell.Navbar p="xs">
-        <Stack gap={4}>
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <Button
-                key={item.label}
-                className={classes.navButton}
-                variant={item.id === activeSection ? "light" : "subtle"}
-                color="opsBlue"
-                leftSection={<Icon size={17} />}
-                rightSection={
-                  item.planned ? (
-                    <Badge size="xs" variant="light" color="gray">
-                      예정
-                    </Badge>
-                  ) : undefined
-                }
-                onClick={() => selectSection(item.id)}
-              >
-                {item.label}
-              </Button>
-            );
-          })}
-        </Stack>
+        <div className={classes.navbarInner}>
+          <Stack gap={4}>
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              return (
+                <Button
+                  key={item.label}
+                  className={classes.navButton}
+                  variant={item.id === activeSection ? "light" : "subtle"}
+                  color="opsBlue"
+                  leftSection={<Icon size={17} />}
+                  rightSection={
+                    item.planned ? (
+                      <Badge size="xs" variant="light" color="gray">
+                        예정
+                      </Badge>
+                    ) : undefined
+                  }
+                  onClick={() => selectSection(item.id)}
+                >
+                  {item.label}
+                </Button>
+              );
+            })}
+          </Stack>
+          <Button
+            component="a"
+            href="https://github.com/yongchoooon/paravoca"
+            target="_blank"
+            rel="noreferrer"
+            className={classes.navButton}
+            variant="subtle"
+            color="gray"
+            leftSection={<IconBrandGithub size={17} />}
+          >
+            GitHub
+          </Button>
+        </div>
       </AppShell.Navbar>
 
       <AppShell.Main className={classes.main}>{children}</AppShell.Main>

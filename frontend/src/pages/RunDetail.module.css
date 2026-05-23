@@ -10,6 +10,207 @@
   gap: 16px;
 }
 
+.revisionModalContent {
+  height: min(92dvh, 900px);
+  max-height: min(92dvh, 900px);
+}
+
+.revisionModalBody {
+  padding: 0;
+}
+
+.revisionModalShell {
+  display: flex;
+  flex-direction: column;
+  height: calc(min(92dvh, 900px) - 64px);
+  min-height: 0;
+}
+
+.revisionModalHeader {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--mantine-color-gray-3);
+  background: var(--mantine-color-white);
+}
+
+.revisionHeaderCopy {
+  min-width: 0;
+  max-width: 720px;
+}
+
+.revisionModalMain {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(360px, 0.9fr) minmax(420px, 1.1fr);
+  gap: 16px;
+  min-height: 0;
+  padding: 16px 20px;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+.revisionReviewMain {
+  grid-template-columns: minmax(320px, 0.76fr) minmax(480px, 1.24fr);
+}
+
+.revisionManualMain {
+  grid-template-columns: minmax(360px, 0.48fr) minmax(620px, 1.52fr);
+}
+
+.revisionModalColumn {
+  display: flex;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.revisionProductList {
+  flex: 0 0 auto;
+  max-height: min(28dvh, 260px);
+  overflow: auto;
+}
+
+.revisionManualContextColumn .revisionProductList {
+  max-height: none;
+  overflow: visible;
+}
+
+.revisionManualNote,
+.revisionEditorPanel {
+  min-width: 0;
+}
+
+.revisionEditorColumn {
+  min-width: 0;
+  overflow: hidden;
+  padding-right: 0;
+}
+
+.revisionEditorPanel {
+  flex: 1;
+  overflow: auto;
+}
+
+.revisionExecutionCard,
+.revisionRunSummary,
+.selectedQaIssuesPanel {
+  min-width: 0;
+}
+
+.selectedQaIssuesPanel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  flex: 1 1 auto;
+}
+
+.revisionQaReferencePanel {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.selectedQaIssuesContent {
+  flex: 1;
+  min-height: 0;
+}
+
+.revisionQaReferencePanel .selectedQaIssuesContent {
+  flex: 0 0 auto;
+}
+
+.selectedQaIssueList {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  gap: 8px;
+  align-content: start;
+  padding-right: 4px;
+}
+
+.revisionQaReferencePanel .selectedQaIssueList {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.selectedQaIssueCard {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--mantine-color-gray-3);
+  border-radius: 8px;
+  background: var(--mantine-color-white);
+}
+
+.selectedQaIssueTitle {
+  flex: 1;
+  min-width: 0;
+}
+
+.selectedQaIssueFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.selectedQaIssuesEmpty {
+  padding: 14px;
+  border: 1px dashed var(--mantine-color-yellow-5);
+  border-radius: 8px;
+  background: var(--mantine-color-yellow-0);
+}
+
+.revisionModalFooter {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--mantine-color-gray-3);
+  background: var(--mantine-color-white);
+}
+
+.revisionFooterNote {
+  min-width: 0;
+}
+
+.revisionFooterActions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+
+.revisionSettingValue {
+  min-width: 0;
+}
+
+.revisionSettingTags {
+  min-width: 0;
+}
+
+.revisionSettingTagGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.revisionSummaryList {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--mantine-color-gray-7);
+  font-size: var(--mantine-font-size-sm);
+  line-height: 1.45;
+}
+
+.revisionSummaryList li + li {
+  margin-top: 4px;
+}
+
 .productList {
   overflow: hidden;
 }
@@ -264,6 +465,75 @@
 @media (max-width: 900px) {
   .detailGrid,
   .revisionEditGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1099px) {
+  .revisionModalMain {
+    grid-template-columns: minmax(280px, 0.85fr) minmax(360px, 1.15fr);
+  }
+
+  .revisionReviewMain {
+    grid-template-columns: minmax(280px, 0.78fr) minmax(420px, 1.22fr);
+  }
+
+  .revisionManualMain {
+    grid-template-columns: minmax(340px, 0.48fr) minmax(480px, 1.52fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .revisionModalContent {
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+
+  .revisionModalShell {
+    height: calc(100dvh - 54px);
+  }
+
+  .revisionModalHeader,
+  .revisionModalMain,
+  .revisionModalFooter {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+.revisionModalMain {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .revisionProductList {
+    max-height: none;
+  }
+
+  .revisionModalColumn,
+  .revisionEditorColumn {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .revisionEditorPanel {
+    overflow: visible;
+  }
+
+  .revisionModalFooter {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .revisionFooterActions {
+    width: 100%;
+  }
+
+  .revisionFooterActions > * {
+    flex: 1;
+  }
+
+  .revisionSettingTagGrid {
     grid-template-columns: 1fr;
   }
 }

@@ -75,15 +75,19 @@ export type QAIssue = {
   product_id?: string;
   severity: string;
   type: string;
+  issue_category?: string;
+  user_visible?: boolean;
   message: string;
   field_path?: string;
   suggested_fix?: string;
+  details?: Record<string, unknown>;
 };
 
 export type QAReport = {
   overall_status: string;
   summary: string;
   issues: QAIssue[];
+  internal_diagnostics?: QAIssue[];
   dismissed_issues?: Array<Record<string, unknown>>;
   pass_count: number;
   needs_review_count: number;

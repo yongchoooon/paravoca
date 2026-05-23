@@ -15,6 +15,13 @@
   justify-content: flex-start;
 }
 
+.navbarInner {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
 .navButton :global(.mantine-Button-inner) {
   width: 100%;
   justify-content: flex-start;

@@ -1,6 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#1d5aa3"/>
-  <path d="M14 17h36v8H36v25h-8V25H14z" fill="#fff"/>
-  <path d="M39 33h11v7H39z" fill="#7dd3fc"/>
-  <path d="M14 42h11v7H14z" fill="#34d399"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PARAVOCA">
+  <defs>
+    <linearGradient id="bg" x1="12" y1="6" x2="52" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4f90e8"/>
+      <stop offset="1" stop-color="#1d5aa3"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#bg)"/>
+  <path
+    d="M20 49V15h17.5c7.1 0 12.5 5 12.5 11.7S44.6 38.4 37.5 38.4H29v10.6h-9z"
+    fill="#f8fbff"
+  />
+  <path
+    d="M29 23.3v7.8h8c2.5 0 4.1-1.5 4.1-3.9s-1.6-3.9-4.1-3.9h-8z"
+    fill="#1d5aa3"
+  />
+  <path
+    d="M16 44.5c8.2-6.6 18.6-7.3 31-2.2"
+    fill="none"
+    stroke="#7dd3fc"
+    stroke-width="4"
+    stroke-linecap="round"
+  />
+  <circle cx="48" cy="43" r="3.6" fill="#34d399"/>
 </svg>

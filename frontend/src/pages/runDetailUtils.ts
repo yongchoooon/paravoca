@@ -179,6 +179,11 @@ const severityConfig: Record<string, { label: string; color: string }> = {
 
 const issueTypeLabel: Record<string, string> = {
   general: "일반",
+  avoid_rule: "Avoid 위반",
+  unsupported_claim: "근거 없는 단정",
+  operational_uncertainty: "운영 확인",
+  internal_diagnostic: "내부 진단",
+  content_format: "문구 형식",
   prohibited_phrase: "금지 표현",
   source_missing: "출처 누락",
   source_evidence: "출처 근거",
@@ -304,7 +309,14 @@ export function stripInternalFieldPaths(text: string) {
     .replace(/\bnot_to_claim\b/g, "운영 주의사항")
     .replace(/\bassumptions\b/g, "운영 가정")
     .replace(/\bsales_copy\b/g, "판매 문구")
-    .replace(/\bmarketing_assets\b/g, "마케팅 문구");
+    .replace(/\bmarketing_assets\b/g, "마케팅 문구")
+    .replace(/\bsource_id\b/g, "근거 문서")
+    .replace(/\bsource_ids\b/g, "근거 문서")
+    .replace(/\bsource id\b/gi, "근거 문서")
+    .replace(/\bdoc_id\b/g, "근거 문서")
+    .replace(/\bfield_path\b/g, "문제 위치")
+    .replace(/\bneeds_review\b/g, "운영자 확인 항목")
+    .replace(/\bmissing_pet_policy\b/g, "반려동물 동반 조건 확인");
 }
 
 export function fieldPathLabel(path: string) {
@@ -365,6 +377,7 @@ export function normalizeQaReport(value: unknown): QAReport {
       overall_status: "pass",
       summary: "QA 검수 완료. 차단 수준의 이슈가 없습니다.",
       issues: [],
+      internal_diagnostics: arrayOrEmpty<QAIssue>(report.internal_diagnostics),
       dismissed_issues: arrayOrEmpty<Record<string, unknown>>(report.dismissed_issues),
       pass_count: typeof report.pass_count === "number" ? report.pass_count : 0,
       needs_review_count: 0,
@@ -376,6 +389,7 @@ export function normalizeQaReport(value: unknown): QAReport {
     overall_status: rawStatus,
     summary: typeof report.summary === "string" ? report.summary : "이 run에서 확인할 수 있는 QA report가 없습니다.",
     issues,
+    internal_diagnostics: arrayOrEmpty<QAIssue>(report.internal_diagnostics),
     dismissed_issues: arrayOrEmpty<Record<string, unknown>>(report.dismissed_issues),
     pass_count: typeof report.pass_count === "number" ? report.pass_count : 0,
     needs_review_count: rawNeedsReviewCount,

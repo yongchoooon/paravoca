@@ -689,7 +689,7 @@ function recordOrNull(value: unknown): Record<string, unknown> | null {
 
 function RunTableRow({
   run,
-  selectedRunId,
+  selected,
   selectedForDelete,
   posterCount,
   indent = false,
@@ -701,7 +701,7 @@ function RunTableRow({
   canSelectForDelete,
 }: {
   run: WorkflowRun;
-  selectedRunId: string | null;
+  selected: boolean;
   selectedForDelete: boolean;
   posterCount: number;
   indent?: boolean;
@@ -712,6 +712,8 @@ function RunTableRow({
   onToggleRunSelection: (runId: string, checked: boolean) => void;
   canSelectForDelete: boolean;
 }) {
+  const historyLabel = run.revision_number > 0 ? `Rev ${run.revision_number}` : "Original";
+
   return (
     <Table.Tr className={indent ? classes.revisionRow : undefined}>
       <Table.Td className={classes.selectCell}>
@@ -729,7 +731,7 @@ function RunTableRow({
           <Text fw={600} size="sm" lineClamp={1}>
             {getRunTitle(run)}
           </Text>
-          {run.revision_number > 0 ? (
+          {run.revision_number > 0 && indent ? (
             <Badge size="xs" variant="light" color="opsBlue">
               Rev {run.revision_number}
             </Badge>
@@ -750,11 +752,11 @@ function RunTableRow({
       <Table.Td>
         {!indent && revisionCount > 0 ? (
           <Button size="compact-xs" variant="subtle" onClick={onToggleRevisions}>
-            {isExpanded ? "Hide" : "Show"} {revisionCount}
+            {isExpanded ? "Hide" : "History"} {revisionCount}
           </Button>
         ) : indent ? (
           <Badge size="xs" variant="light" color="gray">
-            Revision
+            {historyLabel}
           </Badge>
         ) : (
           "-"
@@ -764,7 +766,7 @@ function RunTableRow({
       <Table.Td>
         <Button
           size="xs"
-          variant={selectedRunId === run.id ? "light" : "subtle"}
+          variant={selected ? "light" : "subtle"}
           leftSection={<IconEye size={14} />}
           onClick={() => onSelectRun(run.id)}
         >
@@ -898,14 +900,29 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
     ];
   }
 
+  function latestRunForRoot(rootRun: WorkflowRun) {
+    return (revisionsByParentId.get(rootRun.id) ?? [])[0] ?? rootRun;
+  }
+
+  function historyRunsForRoot(rootRun: WorkflowRun) {
+    const currentRun = latestRunForRoot(rootRun);
+    return [
+      ...(revisionsByParentId.get(rootRun.id) ?? []),
+      rootRun,
+    ].filter(
+      (run) => run.id !== currentRun.id
+    );
+  }
+
   const visibleRunIds = useMemo(() => {
     const ids: string[] = [];
     runs
       .filter((run) => !run.parent_run_id)
       .forEach((run) => {
-        ids.push(run.id);
+        const currentRun = latestRunForRoot(run);
+        ids.push(currentRun.id);
         if (!expandedRootIds.includes(run.id)) return;
-        (revisionsByParentId.get(run.id) ?? []).forEach((revision) => ids.push(revision.id));
+        historyRunsForRoot(run).forEach((historyRun) => ids.push(historyRun.id));
       });
     return ids;
   }, [expandedRootIds, revisionsByParentId, runs]);
@@ -1011,13 +1028,6 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
   }
 
   async function handleRevisionCreated(run: WorkflowRun) {
-    if (run.parent_run_id) {
-      setExpandedRootIds((current) =>
-        current.includes(run.parent_run_id as string)
-          ? current
-          : [...current, run.parent_run_id as string]
-      );
-    }
     setSelectedRunId(run.id);
     await loadData({ silent: true });
   }
@@ -1100,41 +1110,42 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
 
   const rows = runs
     .filter((run) => !run.parent_run_id)
-    .map((run) => {
-    const revisions = revisionsByParentId.get(run.id) ?? [];
-    const isExpanded = expandedRootIds.includes(run.id);
-    return (
-      <Fragment key={run.id}>
-        <RunTableRow
-          run={run}
-          selectedRunId={selectedRunId}
-          selectedForDelete={selectedDeleteRunIds.includes(run.id)}
-          posterCount={posterCountByRunId.get(run.id) ?? 0}
-          canSelectForDelete={canSelectRunForDelete(run)}
-          revisionCount={revisions.length}
-          isExpanded={isExpanded}
-          onToggleRevisions={() => toggleRoot(run.id)}
-          onSelectRun={setSelectedRunId}
-          onToggleRunSelection={toggleRunSelection}
-        />
-        {isExpanded
-          ? revisions.map((revision) => (
-              <RunTableRow
-                key={revision.id}
-                run={revision}
-                selectedRunId={selectedRunId}
-                selectedForDelete={selectedDeleteRunIds.includes(revision.id)}
-                posterCount={posterCountByRunId.get(revision.id) ?? 0}
-                canSelectForDelete={canSelectRunForDelete(revision)}
-                indent
-                onSelectRun={setSelectedRunId}
-                onToggleRunSelection={toggleRunSelection}
-              />
-            ))
-          : null}
-      </Fragment>
-    );
-  });
+    .map((rootRun) => {
+      const currentRun = latestRunForRoot(rootRun);
+      const historyRuns = historyRunsForRoot(rootRun);
+      const isExpanded = expandedRootIds.includes(rootRun.id);
+      return (
+        <Fragment key={rootRun.id}>
+          <RunTableRow
+            run={currentRun}
+            selected={selectedRunId === currentRun.id}
+            selectedForDelete={selectedDeleteRunIds.includes(currentRun.id)}
+            posterCount={posterCountByRunId.get(currentRun.id) ?? 0}
+            canSelectForDelete={canSelectRunForDelete(currentRun)}
+            revisionCount={historyRuns.length}
+            isExpanded={isExpanded}
+            onToggleRevisions={() => toggleRoot(rootRun.id)}
+            onSelectRun={setSelectedRunId}
+            onToggleRunSelection={toggleRunSelection}
+          />
+          {isExpanded
+            ? historyRuns.map((historyRun) => (
+                <RunTableRow
+                  key={historyRun.id}
+                  run={historyRun}
+                  selected={selectedRunId === historyRun.id}
+                  selectedForDelete={selectedDeleteRunIds.includes(historyRun.id)}
+                  posterCount={posterCountByRunId.get(historyRun.id) ?? 0}
+                  canSelectForDelete={canSelectRunForDelete(historyRun)}
+                  indent
+                  onSelectRun={setSelectedRunId}
+                  onToggleRunSelection={toggleRunSelection}
+                />
+              ))
+            : null}
+        </Fragment>
+      );
+    });
 
   const sectionCopy: Record<AppSection, { title: string; description: string }> = {
     dashboard: {
@@ -1283,7 +1294,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
               <Table.Th className={classes.regionColumn}>Geo</Table.Th>
               <Table.Th className={classes.productsColumn}>Products</Table.Th>
               <Table.Th className={classes.postersColumn}>Posters</Table.Th>
-              <Table.Th className={classes.revisionsColumn}>Revisions</Table.Th>
+              <Table.Th className={classes.revisionsColumn}>History</Table.Th>
               <Table.Th className={classes.createdColumn}>Created</Table.Th>
               <Table.Th className={classes.actionColumn}>Action</Table.Th>
             </Table.Tr>
