@@ -260,14 +260,14 @@ Request:
 {
   "revision_mode": "llm_partial_rewrite",
   "comment": "선택한 QA 이슈 반영",
-  "requested_changes": ["과장 표현 완화", "집결지 안내 보강"],
   "qa_issues": [
     {
       "product_id": "product_1",
       "severity": "medium",
-      "type": "general",
-      "message": "상세 설명에 과장 표현이 있습니다.",
-      "suggested_fix": "완화된 표현으로 수정하세요."
+      "type": "source_missing",
+      "field_path": "sales_copy.sections[0].body",
+      "message": "상세 설명에 문제 문구 '예약 즉시 확정'이 있습니다. 예약 가능 여부를 단정하고 있습니다.",
+      "suggested_fix": "예약 확정 여부는 운영자 확인 후 안내한다고 수정하세요."
     }
   ],
   "qa_settings": {
@@ -287,11 +287,13 @@ Request:
 지원 모드:
 
 - `manual_save`: 수정한 결과를 새 revision run으로 저장하고 QA는 재실행하지 않습니다.
-- `manual_edit`: 수정한 결과를 새 revision run으로 저장하고 QA만 재실행합니다.
-- `llm_partial_rewrite`: 선택된 QA issue와 requested changes에 필요한 필드만 AI가 patch하고 QA를 재실행합니다.
-- `qa_only`: 결과는 유지하고 QA만 재실행합니다.
+- `manual_edit`: 수정한 결과를 새 revision run으로 저장하고 현재 QA issue 목록 기준으로 targeted QA 재검수합니다.
+- `llm_partial_rewrite`: 선택된 QA issue가 가리키는 필드만 AI가 patch하고 선택 issue만 targeted QA 재검수합니다.
+- `qa_only`: 결과는 유지하고 선택된 QA issue만 targeted QA 재검수합니다.
 
 모든 revision run은 최상위 원본 run을 `parent_run_id`로 가지며 `revision_number`가 증가합니다. 기존 run의 `final_output`은 직접 수정하지 않습니다.
+
+Targeted QA 재검수는 broad QA를 다시 실행해 새 issue를 찾지 않습니다. 선택하지 않은 기존 QA issue는 revision 결과에 carryover되어 계속 확인이 필요한 항목으로 남습니다.
 
 ### Poster Studio
 

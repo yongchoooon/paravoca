@@ -150,7 +150,7 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 - 모든 LLM 호출이 `llm_calls`에 저장
 - run total cost 계산
 - budget 초과 시 차단
-- rule-based LLM-off mode 지원
+- Gemini API key/check, retry, JSON validation, 실패 로그 정책 확인
 
 ## Phase 6: Frontend workflow/run UI
 
@@ -191,7 +191,7 @@ Codex는 아래 순서대로 구현합니다. 핵심은 "작동하는 얇은 end
 - 수정 방식 선택:
   - `manual_save`: 운영자가 수정한 결과를 저장하고 QA는 재실행하지 않음
   - `manual_edit`: 운영자가 products/marketing_assets 일부를 직접 수정하고 QA만 재실행
-  - `llm_partial_rewrite`: 선택한 QA issue와 requested changes를 바탕으로 필요한 필드만 AI patch
+  - `llm_partial_rewrite`: 선택한 QA issue가 가리키는 필드만 AI patch
   - `qa_only`: 기존 또는 수정된 결과로 QA/Compliance Agent만 다시 실행
 - 기존 source evidence, QA report, approval history를 revision context로 전달
 - revision 실행 전 create run 설정과 QA settings 확인/수정 UI 제공
@@ -429,7 +429,6 @@ Poster Studio 후속 확장.
 - 예쁜 chart
 - 인증
 - 실제 결제
-- Poster Studio 이미지 생성
 - 복잡한 권한
 - 대규모 데이터 sync
 - 웹 근거 보강/검색 grounding
@@ -466,7 +465,7 @@ MVP 완료는 다음 demo script가 성공하면 됩니다.
 
 - model tier
 - budget guard
-- rule-based LLM-off mode
+- eval sample size 제한
 - eval sample size 제한
 
 ### 생성 JSON 깨짐

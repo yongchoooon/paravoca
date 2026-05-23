@@ -853,7 +853,7 @@ DB에는 workflow run마다 prompt version을 저장합니다.
 
 - `manual_save`: 운영자가 수정한 products/marketing_assets를 새 revision run에 저장하고 QA는 다시 실행하지 않습니다.
 - `manual_edit`: 운영자가 products, marketing_assets, FAQ, SNS 문구를 직접 수정하고 QA/Compliance Agent만 다시 실행합니다.
-- `llm_partial_rewrite`: 선택한 QA issue와 requested changes를 바탕으로 필요한 필드만 AI가 patch합니다. Product/Marketing 전체 재생성은 하지 않습니다.
+- `llm_partial_rewrite`: 선택한 QA issue가 가리키는 field path만 AI가 patch합니다. Product/Marketing 전체 재생성은 하지 않습니다.
 - `qa_only`: 기존 결과 또는 직접 수정한 결과를 유지하고 QA/Compliance Agent만 다시 실행합니다.
 - `data_refresh_downstream`: 데이터가 오래되었거나 source evidence가 부족할 때 Data/RAG부터 downstream을 다시 실행합니다. 현재 MVP에서는 제외합니다.
 
@@ -862,14 +862,14 @@ Revision run 입력:
 ```json
 {
   "revision_mode": "llm_partial_rewrite",
-  "requested_changes": ["가격 단정 표현 제거", "집결지 안내 보강"],
   "qa_issues": [
     {
       "product_id": "product_1",
       "severity": "medium",
-      "type": "general",
-      "message": "상세 설명에 과장 표현이 있습니다.",
-      "suggested_fix": "완화된 표현으로 수정하세요."
+      "type": "source_missing",
+      "field_path": "sales_copy.sections[0].body",
+      "message": "상세 설명에 문제 문구 '예약 즉시 확정'이 있습니다. 예약 가능 여부를 단정하고 있습니다.",
+      "suggested_fix": "예약 확정 여부는 운영자 확인 후 안내한다고 수정하세요."
     }
   ],
   "qa_settings": {
@@ -893,7 +893,9 @@ Revision run 완료 조건:
 - revision run의 `parent_run_id`는 항상 최상위 원본 run id입니다.
 - revision run의 `revision_number`는 같은 최상위 원본 run 아래에서 증가합니다.
 - `qa_only`는 Product/Marketing 재생성 없이 QA/Compliance Agent만 다시 실행합니다.
-- `llm_partial_rewrite`는 RevisionPatchAgent가 선택한 QA issue와 requested changes에 필요한 필드만 patch하고, 나머지 값은 그대로 유지합니다.
+- `llm_partial_rewrite`는 RevisionPatchAgent가 선택한 QA issue의 field path만 patch하고, 나머지 값은 그대로 유지합니다.
+- `llm_partial_rewrite`, `manual_edit`, `qa_only`의 QA 재검수는 선택된 QA issue만 해결 여부를 확인하는 targeted recheck입니다. broad QA를 다시 실행해 새 issue를 찾는 흐름이 아닙니다.
+- 선택하지 않은 기존 QA issue는 revision 결과에 `revision_carryover`로 남기고, QA diff summary에서는 계속 확인이 필요한 항목으로 집계합니다.
 - 사용자는 원본 run과 revision history를 이동하면서 결과와 QA report를 확인할 수 있어야 합니다.
 
 ## Agent 평가 포인트

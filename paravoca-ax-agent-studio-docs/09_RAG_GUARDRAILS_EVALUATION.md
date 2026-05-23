@@ -36,7 +36,7 @@ MVP:
 
 - Chroma를 사용합니다.
 - source document는 실제 TourAPI 검색/상세 보강 결과로 생성됩니다.
-- embedding provider는 설정 기반이며, 빠른 개발용 `legacy_hash`와 로컬 `sentence-transformers` semantic embedding을 지원합니다.
+- embedding은 로컬 `sentence-transformers` semantic embedding을 사용합니다.
 - source document metadata에는 `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3`가 저장됩니다.
 - Data Enrichment 이후 보강된 source document가 재색인되고, EvidenceFusion 결과는 Product/Marketing/QA 입력의 근거 profile로 전달됩니다.
 - provider/model 또는 metadata schema 변경 후에는 `python -m app.rag.reindex --collection source_documents --reset`으로 재색인합니다.
@@ -196,7 +196,7 @@ Pre-generation:
 
 - 사용자가 poster prompt와 옵션을 확인했는지 확인
 - selected_content에 가격, 예약 가능 여부, 운영 시간 단정 표현이 없는지 확인
-- `not_to_claim`, QA issue, requested changes를 prompt constraint로 반영
+- `not_to_claim`과 선택한 QA issue를 prompt constraint로 반영
 - TourAPI 이미지를 참고하거나 재사용할 때 license note 확인
 - image generation budget과 run당 생성 횟수 확인
 
