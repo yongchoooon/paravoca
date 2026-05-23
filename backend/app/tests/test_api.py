@@ -165,7 +165,16 @@ def fake_workflow_gemini_result(**kwargs) -> GeminiJsonResult:
         )
     if purpose in {"product_generation", "product_generation_repair"}:
         products = []
-        for index, title in enumerate(["부산 야간 미식 투어", "광안리 야간 해변 산책", "부산 로컬 축제 체험"], start=1):
+        for index, title in enumerate(
+            [
+                "부산 야간 미식 투어",
+                "광안리 야간 해변 산책",
+                "부산 로컬 축제 체험",
+                "부산 역사 산책",
+                "부산 해변 액티비티",
+            ],
+            start=1,
+        ):
             products.append(
                 {
                     "id": f"product_{index}",
@@ -181,7 +190,7 @@ def fake_workflow_gemini_result(**kwargs) -> GeminiJsonResult:
                     "not_to_claim": ["가격 확정", "상시 운영"],
                     "evidence_summary": ["TourAPI 후보 근거 기반"],
                     "needs_review": ["가격", "운영시간"],
-                    "coverage_notes": ["사용 가능한 근거 데이터가 요청 상품 수보다 적어 서버가 가능한 개수만 생성했습니다."],
+                    "coverage_notes": ["직접 연결된 근거를 기준으로 게시 전 세부 정보를 확인합니다."],
                     "claim_limits": ["가격 확정 금지"],
                 }
             )
@@ -192,7 +201,16 @@ def fake_workflow_gemini_result(**kwargs) -> GeminiJsonResult:
         )
     if purpose in {"marketing_generation", "marketing_generation_repair"}:
         assets = []
-        for index, title in enumerate(["부산 야간 미식 투어", "광안리 야간 해변 산책", "부산 로컬 축제 체험"], start=1):
+        for index, title in enumerate(
+            [
+                "부산 야간 미식 투어",
+                "광안리 야간 해변 산책",
+                "부산 로컬 축제 체험",
+                "부산 역사 산책",
+                "부산 해변 액티비티",
+            ],
+            start=1,
+        ):
             assets.append(
                 {
                     "product_id": f"product_{index}",
@@ -1354,23 +1372,18 @@ def test_create_and_read_workflow_run(monkeypatch):
     assert fetched["status"] == "awaiting_approval"
     assert fetched["final_output"]["status"] == "awaiting_approval"
     assert fetched["id"] == created["id"]
-    assert 1 <= len(result["products"]) <= 5
-    if len(result["products"]) < 5:
-        assert any(
-            "사용 가능한 근거 데이터가" in note
-            for note in result["products"][0].get("coverage_notes", [])
-        )
-        assert {step["agent_name"] for step in steps} >= {
-            "PlannerAgent",
-            "GeoResolverAgent",
-            "BaselineDataAgent",
-            "DataGapProfilerAgent",
-            "ResearchSynthesisAgent",
-            "ProductAgent",
-            "MarketingAgent",
-            "QAComplianceAgent",
-            "HumanApprovalNode",
-        }
+    assert len(result["products"]) == 3
+    assert {step["agent_name"] for step in steps} >= {
+        "PlannerAgent",
+        "GeoResolverAgent",
+        "BaselineDataAgent",
+        "DataGapProfilerAgent",
+        "ResearchSynthesisAgent",
+        "ProductAgent",
+        "MarketingAgent",
+        "QAComplianceAgent",
+        "HumanApprovalNode",
+    }
     assert {call["tool_name"] for call in tool_calls} >= {
         "tourapi_search_keyword",
         "tourapi_search_festival",
@@ -1455,7 +1468,19 @@ def test_workflow_returns_insufficient_source_data_when_tourapi_has_no_items(mon
 
 def test_workflow_returns_insufficient_source_data_when_vector_search_is_empty(monkeypatch):
     use_test_tourapi_provider(monkeypatch)
-    monkeypatch.setattr("app.agents.workflow.search_source_documents", lambda **kwargs: [])
+    monkeypatch.setattr(
+        "app.agents.workflow.search_source_documents_with_diagnostics",
+        lambda **kwargs: {
+            "results": [],
+            "retrieval_diagnostics": {
+                "query": kwargs.get("query"),
+                "filters": kwargs.get("filters"),
+                "result_count": 0,
+                "fallback_applied": False,
+                "reason": "test_empty",
+            },
+        },
+    )
     payload = {
         "template_id": "default_product_planning",
         "input": {
@@ -1491,7 +1516,7 @@ def test_workflow_keeps_chroma_exception_as_system_error(monkeypatch):
     def fail_search(**kwargs):
         raise RuntimeError("chroma down")
 
-    monkeypatch.setattr("app.agents.workflow.search_source_documents", fail_search)
+    monkeypatch.setattr("app.agents.workflow.search_source_documents_with_diagnostics", fail_search)
     payload = {
         "template_id": "default_product_planning",
         "input": {
@@ -2295,6 +2320,17 @@ def test_gemini_retry_delay_respects_retry_after_header():
     response = httpx.Response(503, headers={"retry-after": "2"})
 
     assert _retry_delay_seconds(attempt=0, response=response, settings=settings) == 2
+
+
+def test_gemini_retry_settings_are_configurable():
+    settings = Settings(
+        gemini_max_retries=5,
+        gemini_retry_base_seconds=2,
+        gemini_retry_max_seconds=30,
+    )
+
+    assert settings.gemini_max_retries == 5
+    assert _retry_delay_seconds(attempt=4, response=None, settings=settings) <= 30
 
 
 def test_tourapi_request_retries_read_timeout(monkeypatch):

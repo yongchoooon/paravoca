@@ -106,6 +106,7 @@ class DataSourceDocumentPreview(BaseModel):
     title: str
     source: str
     source_family: str
+    source_role: str = "unknown"
     source_label: str
     source_item_id: str
     source_item_title: str | None = None
@@ -117,6 +118,7 @@ class DataSourceDocumentPreview(BaseModel):
     address: str | None = None
     origin_summary: str
     usage_summary: str
+    lifecycle_summary: str | None = None
     updated_at: datetime | None = None
 
 

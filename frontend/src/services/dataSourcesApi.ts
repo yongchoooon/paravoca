@@ -116,6 +116,7 @@ export type DataSourceDocumentPreview = {
   title: string;
   source: string;
   source_family: string;
+  source_role: string;
   source_label: string;
   source_item_id: string;
   source_item_title: string | null;
@@ -127,6 +128,7 @@ export type DataSourceDocumentPreview = {
   address: string | null;
   origin_summary: string;
   usage_summary: string;
+  lifecycle_summary: string | null;
   updated_at: string | null;
 };
 

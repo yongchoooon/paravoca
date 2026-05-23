@@ -168,7 +168,7 @@ export function DataSourcesPanel() {
         limit: 40,
       }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "AI 참고 자료를 불러오지 못했습니다.");
+      setError(err instanceof Error ? err.message : "RAG 검색 근거를 불러오지 못했습니다.");
     } finally {
       setDocumentsLoading(false);
     }
@@ -405,7 +405,7 @@ export function DataSourcesPanel() {
         <SummaryCard
           label="RAG 검색 근거 자료"
           value={formatNumber(overview.summary.source_document_count)}
-          description={`${formatNumber(overview.summary.indexed_document_count)}개가 RAG/AI 검색 가능한 상태입니다.`}
+          description={`${formatNumber(overview.summary.indexed_document_count)}개가 RAG 검색 가능한 상태입니다.`}
           icon={<IconFileSearch size={18} />}
         />
         <SummaryCard
@@ -417,9 +417,9 @@ export function DataSourcesPanel() {
       </SimpleGrid>
 
       <Paper withBorder p="md" className={classes.flowPanel}>
-        <Text fw={700} size="sm">AI 참고 자료가 쌓이고 쓰이는 방식</Text>
+        <Text fw={700} size="sm">RAG 검색 근거가 쌓이고 쓰이는 방식</Text>
         <Group gap="xs" mt="sm" className={classes.flowSteps}>
-          {["외부 관광 API 호출", "관광 데이터 DB 저장", "AI가 읽기 좋은 문서로 변환", "검색 준비 상태 확인", "상품 설명/추천/일정 구성 때 참고"].map((step, index) => (
+          {["외부 관광 API 호출", "관광 데이터 DB 저장", "RAG 검색용 문서로 변환", "검색 준비 상태 확인", "상품 설명/추천/일정 구성 때 참고"].map((step, index) => (
             <Group key={step} gap="xs" wrap="nowrap" className={classes.flowStep}>
               <Badge variant="filled" color="gray">{index + 1}</Badge>
               <Text size="sm" fw={600}>{step}</Text>
@@ -432,7 +432,7 @@ export function DataSourcesPanel() {
         <Tabs.List>
           <Tabs.Tab value="apis">데이터 API</Tabs.Tab>
           <Tabs.Tab value="items">실제 수집 데이터</Tabs.Tab>
-          <Tabs.Tab value="documents">AI 검색 근거 자료</Tabs.Tab>
+          <Tabs.Tab value="documents">RAG 검색 근거 자료</Tabs.Tab>
           <Tabs.Tab value="catalogs">지역/분류</Tabs.Tab>
           <Tabs.Tab value="purpose">목적별 보기</Tabs.Tab>
         </Tabs.List>
@@ -617,8 +617,8 @@ export function DataSourcesPanel() {
         <Tabs.Panel value="documents" pt="md">
           <Stack gap="md">
             <PanelHeader
-              title="AI 검색 근거 자료"
-              description="원본 API 응답을 AI가 검색하기 쉬운 짧은 문서로 바꾼 자료입니다. 검색 준비 상태가 완료되어야 상품 설명, 추천 이유, 일정 구성에서 AI가 찾을 수 있습니다."
+              title="RAG 검색 근거 자료"
+              description="원본 API 응답을 RAG 검색용 문서로 바꾼 자료입니다. 검색 준비 상태가 완료되어야 상품 설명, 추천 이유, 일정 구성에서 사용할 수 있습니다."
             />
             <FilterBar>
               <TextInput
@@ -680,7 +680,7 @@ export function DataSourcesPanel() {
                         </Table.Tr>
                       ))
                     ) : (
-                      <EmptyRow colSpan={6} text="조건에 맞는 AI 검색 근거 자료가 없습니다." />
+                      <EmptyRow colSpan={6} text="조건에 맞는 RAG 검색 근거 자료가 없습니다." />
                     )}
                   </Table.Tbody>
                 </Table>
@@ -856,7 +856,7 @@ export function DataSourcesPanel() {
       <Drawer
         opened={selectedDocument !== null}
         onClose={() => setSelectedDocument(null)}
-        title={selectedDocument?.title ?? "AI 검색 근거 자료"}
+        title={selectedDocument?.title ?? "RAG 검색 근거 자료"}
         position="right"
         size="lg"
         padding="md"
@@ -971,7 +971,7 @@ function SourceDetail({ source }: { source: DataSourceOverviewItem }) {
 
       <SimpleGrid cols={2}>
         <DrawerMetric label="실제 저장 데이터" value={source.stored_count} />
-        <DrawerMetric label="AI 검색 근거" value={source.evidence_count} />
+        <DrawerMetric label="RAG 검색 근거" value={source.evidence_count} />
         <DrawerMetric label="사진 자료" value={source.inventory.visual_assets} />
         <DrawerMetric label="경로/수요 신호" value={source.inventory.route_assets + source.inventory.signal_records} />
       </SimpleGrid>
@@ -1056,6 +1056,10 @@ function DocumentDetail({ document }: { document: DataSourceDocumentPreview }) {
       <Paper withBorder p="md">
         <Text fw={700} size="sm" mb="xs">어디서 축적됐나</Text>
         <Text size="sm">{document.origin_summary}</Text>
+        <Text size="sm" mt="xs">문서 역할: {sourceRoleLabel(document.source_role)}</Text>
+        {document.lifecycle_summary ? (
+          <Text size="xs" c="dimmed" mt="xs">{document.lifecycle_summary}</Text>
+        ) : null}
         <Text size="xs" c="dimmed" mt="xs">출처 API: {document.source_label}</Text>
       </Paper>
       <Paper withBorder p="md">
@@ -1631,7 +1635,7 @@ function statusOptions() {
 function documentStatusOptions() {
   return [
     { value: "all", label: "전체 검색 상태" },
-    { value: "indexed", label: "AI 검색 가능" },
+    { value: "indexed", label: "RAG 검색 가능" },
     { value: "pending", label: "색인 대기" },
     { value: "failed", label: "색인 실패" },
   ];
@@ -1688,6 +1692,19 @@ function documentTone(status: string): StatusTone {
   if (status === "failed") return "red";
   if (status === "pending") return "yellow";
   return "gray";
+}
+
+function sourceRoleLabel(role: string) {
+  const labels: Record<string, string> = {
+    runtime_run_evidence: "현재 run에서 수집된 근거",
+    existing_catalog: "기존 catalog 근거",
+    seed_catalog: "사전 색인 예정 근거",
+    manual_ingestion: "수동 수집 근거",
+    enrichment_result: "상세 보강 근거",
+    unknown: "분류되지 않은 기존 근거",
+    unclassified: "분류되지 않은 기존 근거",
+  };
+  return labels[role] ?? "분류되지 않은 기존 근거";
 }
 
 function formatNumber(value: number) {

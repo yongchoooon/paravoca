@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.responses import ok
 from app.db import models
 from app.db.session import get_db
+from app.rag.source_documents import source_document_role
 from app.schemas.enrichment import (
     DataSourceCapabilitiesResponse,
     DataSourceCatalogBrowserResponse,
@@ -64,7 +65,7 @@ SOURCE_API_PROFILES: dict[str, dict[str, Any]] = {
         "input_fields": ["지역 코드", "관광 타입", "키워드", "콘텐츠 ID", "페이지 번호"],
         "output_fields": ["관광지명", "주소", "좌표", "대표 이미지", "콘텐츠 ID", "소개문", "운영/요금/주차 정보"],
         "example_use": "상품 후보 장소 검색과 상세 설명 생성의 기본 데이터로 사용합니다.",
-        "origin_description": "TourAPI 목록/키워드/상세 API 응답을 tourism_items에 저장하고, AI 참고 자료로 변환합니다.",
+        "origin_description": "TourAPI 목록/키워드/상세 API 응답을 tourism_items에 저장하고, RAG 검색 근거로 변환합니다.",
         "purpose_tags": ["base", "event", "visual", "pet"],
     },
     "kto_photo_contest": {
@@ -72,7 +73,7 @@ SOURCE_API_PROFILES: dict[str, dict[str, Any]] = {
         "input_fields": ["지역 코드", "키워드", "사진 콘텐츠 ID"],
         "output_fields": ["사진 제목", "촬영 장소", "이미지 URL", "촬영자", "키워드", "이용 조건"],
         "example_use": "상품 카드나 포스터에 쓸 이미지 후보를 검토할 때 사용합니다.",
-        "origin_description": "사진 API 응답을 visual asset과 AI 참고 자료로 저장합니다.",
+        "origin_description": "사진 API 응답을 visual asset과 RAG 검색 근거로 저장합니다.",
         "purpose_tags": ["visual"],
     },
     "kto_tourism_photo": {
@@ -80,7 +81,7 @@ SOURCE_API_PROFILES: dict[str, dict[str, Any]] = {
         "input_fields": ["키워드", "지역", "사진 콘텐츠 ID"],
         "output_fields": ["이미지 URL", "사진 제목", "촬영 장소", "촬영 월", "사진가", "검색 키워드"],
         "example_use": "이미지가 없는 관광 상품에 대표 이미지 후보를 붙일 때 사용합니다.",
-        "origin_description": "관광사진 검색 결과를 tourism_visual_assets에 저장하고 AI 참고 자료로 변환합니다.",
+        "origin_description": "관광사진 검색 결과를 tourism_visual_assets에 저장하고 RAG 검색 근거로 변환합니다.",
         "purpose_tags": ["visual"],
     },
     "kto_pet": {
@@ -96,7 +97,7 @@ SOURCE_API_PROFILES: dict[str, dict[str, Any]] = {
         "input_fields": ["지역", "코스 ID", "키워드"],
         "output_fields": ["코스명", "경로명", "거리", "소요 시간", "시작/종료 지점", "GPX URL"],
         "example_use": "도보 여행, 트레킹, 산책형 상품의 이동 경로를 구성합니다.",
-        "origin_description": "두루누비 코스 응답을 route asset과 AI 참고 자료로 저장합니다.",
+        "origin_description": "두루누비 코스 응답을 route asset과 RAG 검색 근거로 저장합니다.",
         "purpose_tags": ["walking"],
     },
     "kto_wellness": {
@@ -136,7 +137,7 @@ SOURCE_API_PROFILES: dict[str, dict[str, Any]] = {
         "input_fields": ["지역 코드", "기간"],
         "output_fields": ["방문자 수", "기간", "지역", "증감 신호"],
         "example_use": "상품 우선순위나 시즌 수요 판단의 보조 신호로 사용합니다.",
-        "origin_description": "관광빅데이터 응답을 signal record와 AI 참고 자료로 저장합니다.",
+        "origin_description": "관광빅데이터 응답을 signal record와 RAG 검색 근거로 저장합니다.",
         "purpose_tags": ["demand"],
     },
     "kto_crowding_forecast": {
@@ -235,7 +236,7 @@ def get_data_source_overview(db: Session = Depends(get_db)) -> dict:
         purpose="운영자가 관광 데이터 API와 실제 저장 데이터를 확인하는 화면",
         purpose_detail=(
             "각 API가 어떤 입력을 받아 어떤 결과를 주는지, 실제로 DB에 어떤 관광 데이터와 "
-            "AI 참고 자료가 쌓였는지, 지역/관광 분류 기준표에는 무엇이 있는지 확인합니다."
+            "RAG 검색 근거가 쌓였는지, 지역/관광 분류 기준표에는 무엇이 있는지 확인합니다."
         ),
         summary=summary,
         sources=overview_sources,
@@ -523,7 +524,7 @@ def _api_profile(source: KtoSourceCapability) -> dict[str, Any]:
         "input_fields": fallback_inputs or ["지역", "키워드"],
         "output_fields": ["제목", "주소", "소개", "상세 속성", "출처 정보"],
         "example_use": source.operations[0].purpose if source.operations else "상품 기획 보조 데이터로 사용합니다.",
-        "origin_description": "외부 API 응답을 운영 DB에 저장하고 필요한 경우 AI 참고 자료로 변환합니다.",
+        "origin_description": "외부 API 응답을 운영 DB에 저장하고 필요한 경우 RAG 검색 근거로 변환합니다.",
         "purpose_tags": [source.category],
     }
 
@@ -768,6 +769,7 @@ def _document_preview(
         title=document.title,
         source=document.source,
         source_family=source_family,
+        source_role=source_document_role(document),
         source_label=source_labels.get(source_family, source_family),
         source_item_id=document.source_item_id,
         source_item_title=source_item_title,
@@ -779,9 +781,10 @@ def _document_preview(
         address=address,
         origin_summary=_document_origin_summary(source_family),
         usage_summary=(
-            "상품 설명, 추천 이유, 일정 구성에서 AI가 사실 근거를 찾을 때 사용합니다. "
-            "색인 상태가 대기/실패이면 AI 검색 결과에 빠질 수 있습니다."
+            "상품 설명, 추천 이유, 일정 구성에서 RAG가 사실 근거를 찾을 때 사용합니다. "
+            "색인 상태가 대기/실패이면 RAG 검색 결과에 빠질 수 있습니다."
         ),
+        lifecycle_summary=_document_lifecycle_summary(metadata),
         updated_at=document.updated_at,
     )
 
@@ -978,12 +981,45 @@ def _document_origin_summary(source_family: str) -> str:
     profile = SOURCE_API_PROFILES.get(source_family)
     if profile:
         return str(profile["origin_description"])
-    return "외부/내부 데이터 응답을 AI가 검색하기 쉬운 문서 형태로 변환해 저장했습니다."
+    return "외부/내부 데이터 응답을 RAG 검색용 문서 형태로 변환해 저장했습니다."
+
+
+def _document_lifecycle_summary(metadata: dict[str, Any]) -> str:
+    role = _source_role_label(str(metadata.get("source_role") or "unknown"))
+    method = _ingestion_method_label(str(metadata.get("ingestion_method") or "unknown"))
+    first_seen = metadata.get("first_seen_run_id") or "없음"
+    last_seen = metadata.get("last_seen_run_id") or "없음"
+    return f"{role} / {method} / 최초 run {first_seen} / 최근 run {last_seen}"
+
+
+def _source_role_label(role: str) -> str:
+    return {
+        "runtime_run_evidence": "workflow 실행 중 수집",
+        "existing_catalog": "기존 catalog 근거",
+        "seed_catalog": "사전 색인 catalog 근거",
+        "manual_ingestion": "수동 수집 근거",
+        "enrichment_result": "상세 보강 근거",
+        "unknown": "분류되지 않은 기존 근거",
+        "unclassified": "분류되지 않은 기존 근거",
+    }.get(role, "분류되지 않은 기존 근거")
+
+
+def _ingestion_method_label(method: str) -> str:
+    return {
+        "workflow_baseline_tourapi": "기본 TourAPI 수집",
+        "workflow_detail_enrichment": "상세정보 보강",
+        "visual_api_enrichment": "이미지 후보 보강",
+        "route_signal_enrichment": "동선/수요 신호 보강",
+        "theme_api_enrichment": "테마 근거 보강",
+        "manual_data_search_api": "수동 검색",
+        "manual_detail_enrichment_api": "수동 상세 보강",
+        "rag_ingest_existing_tourism_items": "기존 관광 item 색인",
+    }.get(method, method or "확인 필요")
 
 
 def _embedding_status_label(status: str) -> str:
     if status == "indexed":
-        return "AI 검색 가능"
+        return "RAG 검색 가능"
     if status == "pending":
         return "색인 대기"
     if status == "failed":

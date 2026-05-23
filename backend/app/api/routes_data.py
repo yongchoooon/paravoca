@@ -16,7 +16,7 @@ from app.schemas.tourism import (
     TourismVisualAssetRead,
 )
 from app.rag.chroma_store import index_source_documents
-from app.rag.source_documents import upsert_source_documents_from_items
+from app.rag.source_documents import SOURCE_ROLE_MANUAL, upsert_source_documents_from_items
 from app.tools.tourism import (
     TourismItem,
     get_tourism_provider,
@@ -126,7 +126,12 @@ def search_tourism(
             limit=min(detail_limit, len(items)),
         )
         items = detail_enrichment["items"]
-    source_documents = upsert_source_documents_from_items(db, items)
+    source_documents = upsert_source_documents_from_items(
+        db,
+        items,
+        source_role=SOURCE_ROLE_MANUAL,
+        ingestion_method="manual_data_search_api",
+    )
     indexed_count = index_source_documents(db, source_documents)
     data = [TourismItemRead.model_validate(item).model_dump(mode="json") for item in items]
     return ok(
@@ -164,7 +169,12 @@ def enrich_tourism_details(
         run_id=payload.run_id,
         limit=payload.limit,
     )
-    source_documents = upsert_source_documents_from_items(db, result["items"])
+    source_documents = upsert_source_documents_from_items(
+        db,
+        result["items"],
+        source_role=SOURCE_ROLE_MANUAL,
+        ingestion_method="manual_detail_enrichment_api",
+    )
     indexed_count = index_source_documents(db, source_documents)
     response = TourismDetailEnrichmentResult(
         items=[TourismItemRead.model_validate(item) for item in result["items"]],
