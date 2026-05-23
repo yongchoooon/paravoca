@@ -32,12 +32,14 @@ MVP:
 
 - Chroma
 
-현재 Phase 10 코드:
+현재 구현:
 
 - Chroma를 사용합니다.
 - source document는 실제 TourAPI 검색/상세 보강 결과로 생성됩니다.
 - embedding은 로컬 `sentence-transformers` semantic embedding을 사용합니다.
-- source document metadata에는 `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3`가 저장됩니다.
+- source document metadata에는 `source_role`, `source_family`, `content_id`, `source_item_id`, `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3`, `first_seen_run_id`, `last_seen_run_id`, `ingestion_method`가 저장됩니다.
+- RAG 검색은 지역, theme, content type, target customer, narrow keyword를 query/search context/filter에 반영합니다.
+- 검색 결과가 부족하면 상위 지역/전국/generic evidence로 자동 확장하지 않고 `retrieval_diagnostics`에 부족 이유를 남깁니다.
 - Data Enrichment 이후 보강된 source document가 재색인되고, EvidenceFusion 결과는 Product/Marketing/QA 입력의 근거 profile로 전달됩니다.
 - provider/model 또는 metadata schema 변경 후에는 `python -m app.rag.reindex --collection source_documents --reset`으로 재색인합니다.
 
@@ -50,10 +52,11 @@ P1:
 ```text
 User request
   → query normalization
+  → source role / lifecycle metadata 확인
   → metadata filter
   → vector search
-  → keyword search
-  → reranking
+  → matching signal / relevance score 계산
+  → retrieval diagnostics 기록
   → context pack
   → generation
 ```
@@ -76,14 +79,15 @@ metadata filter:
 
 ```json
 {
-  "region_code": "6",
-  "content_type": ["attraction", "event", "accommodation"],
-  "date_overlap": {
-    "start": "2026-05-01",
-    "end": "2026-05-31"
-  }
+  "source": "tourapi",
+  "source_family": "kto_tourapi_kor",
+  "ldong_regn_cd": "26",
+  "ldong_signgu_cd": "110",
+  "content_type": ["attraction", "event", "accommodation"]
 }
 ```
+
+검색 결과에는 `matching_signals`와 `relevance_score`가 포함됩니다. 같은 시군구 코드, 요청 theme text match, narrow keyword match, content type match가 어떤 결과에 붙었는지 Developer/debug에서 확인할 수 있습니다.
 
 ### Context pack 형식
 

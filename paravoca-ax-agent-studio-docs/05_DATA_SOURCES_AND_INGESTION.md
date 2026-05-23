@@ -178,6 +178,14 @@ RAG와 출처 표시를 위한 normalized document입니다.
   "content": "주소: ... 개요: ... 이용시간: ...",
   "metadata": {
     "region_code": "6",
+    "ldong_regn_cd": "26",
+    "ldong_signgu_cd": "110",
+    "source_family": "kto_tourapi_kor",
+    "source_role": "runtime_run_evidence",
+    "first_seen_run_id": "run_...",
+    "last_seen_run_id": "run_...",
+    "ingestion_method": "workflow_baseline_tourapi",
+    "detail_enriched": true,
     "content_type": "attraction",
     "content_id": "12345",
     "license_type": "공공누리",
@@ -188,10 +196,14 @@ RAG와 출처 표시를 위한 normalized document입니다.
     "detail_info_count": 3,
     "detail_image_count": 5,
     "visual_asset_count": 5,
-    "image_candidates": []
+    "image_candidates": [],
+    "dedupe_key": "kto_tourapi_kor:12345",
+    "stale_status": "not_evaluated"
   }
 }
 ```
+
+`source_role`은 문서가 어디서 들어왔는지 구분하기 위한 필드입니다. 현재 값은 `runtime_run_evidence`, `existing_catalog`, `seed_catalog`, `manual_ingestion`, `enrichment_result`, `unknown`을 사용합니다. 기존 row처럼 role이 없는 문서는 `unknown`으로 취급하고, workflow가 좋은 근거처럼 우선 사용하지 않습니다.
 
 ### WebEvidenceDocument
 
@@ -335,7 +347,7 @@ def normalize_yyyymmdd(value: str | None) -> date | None:
 - image/license chunk
 - event/date chunk
 
-현재 Phase 10 구현에서는 item 단위 source document를 유지하되, document content에 상세 소개와 이용정보를 함께 넣습니다. source document metadata에는 `ldong/lcls`, `source_family`, `trust_level`, `retrieved_at`, detail/image coverage 필드를 저장하고, 상세 소개/반복 정보가 충분히 길어지는 경우 chunk 분리는 후속 retrieval 품질 개선에서 조정합니다.
+현재 구현에서는 item 단위 source document를 유지하되, document content에 상세 소개와 이용정보를 함께 넣습니다. source document metadata에는 `ldong/lcls`, `source_family`, `source_role`, `first_seen_run_id`, `last_seen_run_id`, `ingestion_method`, `trust_level`, `retrieved_at`, detail/image coverage 필드를 저장합니다. 상세 소개/반복 정보가 충분히 길어지는 경우 chunk 분리는 후속 retrieval 품질 개선에서 조정합니다.
 
 ### Embedding text template
 
@@ -442,7 +454,7 @@ TourAPI provider는 실제 API 호출만 수행합니다.
 - API 4xx/5xx/timeout은 실패로 기록합니다.
 - TourAPI response의 top-level 또는 header result code가 성공이 아니면 실패로 기록합니다.
 - 실패한 호출은 `tool_calls.status=failed`, `tool_calls.error`, workflow run error, FastAPI 로그로 확인합니다.
-- RAG 검색은 현재 run에서 수집된 `source=tourapi` 문서만 근거로 사용합니다.
+- RAG 검색은 `ldong/lcls`, `source_family`, `content_type` 같은 확인된 metadata filter를 사용합니다. 검색 결과가 부족해도 상위 지역이나 전국으로 자동 확장하지 않고, 사용한 query/filter와 부족 이유를 retrieval diagnostics에 남깁니다.
 
 Phase 9 상세 보강 정책:
 

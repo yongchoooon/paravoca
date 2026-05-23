@@ -108,6 +108,8 @@ Poster Studio의 run/product 선택은 텍스트 편집형 dropdown이 아니라
 - Chroma 기반 vector index/search
 - 로컬 `sentence-transformers` semantic embedding provider
 - source document 재색인 command
+- source document role/origin/lifecycle metadata
+- RAG query/filter/retrieval diagnostics
 - KTO API capability catalog
 - source family, trust level, license note, data quality metadata 저장 구조
 - KTO 데이터 보강용 DB 모델 기본 구조
@@ -258,10 +260,10 @@ GEMINI_API_KEY=
 GEMINI_CHECK_MODEL=gemini-2.5-flash-lite
 GEMINI_GENERATION_MODEL=gemini-2.5-flash-lite
 GEMINI_TIMEOUT_SECONDS=60
-GEMINI_MAX_RETRIES=3
+GEMINI_MAX_RETRIES=5
 GEMINI_JSON_MAX_RETRIES=2
-GEMINI_RETRY_BASE_SECONDS=1.5
-GEMINI_RETRY_MAX_SECONDS=12
+GEMINI_RETRY_BASE_SECONDS=2
+GEMINI_RETRY_MAX_SECONDS=30
 LLM_USAGE_LOG_DIR=logs
 LLM_PROMPT_DEBUG_LOG_ENABLED=false
 LLM_PROMPT_DEBUG_LOG_DIR=logs/prompt_debug
@@ -334,6 +336,8 @@ EMBEDDING_BATCH_SIZE=32
 ```
 
 `EMBEDDING_MODEL` 또는 vector dimension이 바뀌면 Chroma collection과 충돌할 수 있습니다. 모델 변경 후에는 reset reindex를 실행합니다.
+
+Source document는 `runtime_run_evidence`, `existing_catalog`, `seed_catalog`, `manual_ingestion`, `enrichment_result`, `unknown` 역할로 구분됩니다. RAG 검색은 확인된 지역 code, source family, content type, theme, target customer, narrow keyword를 반영하고, 검색 결과가 부족해도 상위 지역/전국/generic evidence로 자동 확장하지 않습니다. 사용한 query/filter/result count/matching signal은 `retrieval_diagnostics`에서 확인합니다.
 
 ```bash
 conda activate paravoca-ax-agent-studio
@@ -532,8 +536,13 @@ curl -X POST http://localhost:8000/api/rag/search \
   -H "Content-Type: application/json" \
   -d '{
     "query": "광안리 야경 외국인 액티비티",
-    "filters": {"ldong_regn_cd": "26"},
-    "top_k": 5
+    "filters": {"source": "tourapi", "source_family": "kto_tourapi_kor", "ldong_regn_cd": "26"},
+    "top_k": 5,
+    "search_context": {
+      "target_customer": "외국인",
+      "preferred_themes": ["야경", "해변"],
+      "narrow_keywords": ["광안리"]
+    }
   }'
 ```
 
@@ -695,7 +704,7 @@ PATH="$CONDA_PREFIX/bin:$PATH" npm run build
 
 Phase 10에서는 기존 Data 단계를 `BaselineDataAgent`로 분리하고, 수집된 TourAPI evidence의 공백을 분석한 뒤 필요한 KorService2 상세/이미지 보강만 선택적으로 실행하도록 변경했습니다. Phase 10.2에서는 `DataGapProfilerAgent`, `ApiCapabilityRouterAgent`, 4개 API family planner, `EvidenceFusionAgent`를 Gemini prompt + JSON schema 기반으로 전환했습니다. Baseline raw 후보는 `TOURAPI_CANDIDATE_SHORTLIST_LIMIT` 기준 shortlist로 줄인 뒤 Agent에 입력하고, KorService2 상세 보강은 shortlist 안에서 실행 가능한 `contentId` 대상을 임의 budget 6개로 자르지 않고 처리합니다. Router는 gap을 planner lane으로만 분배하고, `TourApiDetailPlannerAgent`, `VisualDataPlannerAgent`, `RouteSignalPlannerAgent`, `ThemeDataPlannerAgent`가 각자 필요한 짧은 입력만 보고 계획을 만듭니다. Phase 12.0에서는 `DataGapProfilerAgent`가 반복적인 `missing_overview`를 후보마다 길게 펼치지 않도록 `missing_detail_info`로 통합하고, item-level gap을 후보당 최대 1개, 전체 gap을 최대 24개로 제한했습니다. Phase 12.1에서는 `VisualDataPlannerAgent`가 활성화된 `kto_tourism_photo`/`kto_photo_contest` source family에 한해 실제 visual API call을 계획하고, `EnrichmentExecutor`가 이미지 후보를 `tourism_visual_assets`와 `source_documents`에 저장합니다. Phase 12.2에서는 `RouteSignalPlannerAgent`가 활성화된 `kto_durunubi`, `kto_related_places`, `kto_tourism_bigdata`, `kto_crowding_forecast`, `kto_regional_tourism_demand` source family에 한해 route/signal API call을 계획하고, `EnrichmentExecutor`가 코스 후보와 보조 신호를 `tourism_route_assets`, `tourism_signal_records`, `source_documents`에 저장합니다. Phase 12.3에서는 `ThemeDataPlannerAgent`가 활성화된 `kto_wellness`, `kto_pet`, `kto_audio`, `kto_eco`, `kto_medical` source family에 한해 theme API call을 계획하고, `EnrichmentExecutor`가 테마 후보를 `tourism_entities`, `tourism_visual_assets`, `source_documents`에 저장합니다. 의료관광은 `ALLOW_MEDICAL_API=true`일 때만 실제 호출합니다. 보강 결과는 `enrichment_runs`, `enrichment_tool_calls`, `tourism_entities`, `tourism_visual_assets`, `tourism_route_assets`, `tourism_signal_records`, `source_documents`에 남고, `EvidenceFusionAgent`는 전체 evidence profile을 다시 복사하지 않되 후보별 `candidate_evidence_cards`를 생성해 사용할 수 있는 사실, 이미지 후보, route/signal 보조 근거, theme 후보, 경험 hook, 상품화 각도, 제한 claim, 운영자 확인 항목을 분리합니다.
 
-Run 생성 전에는 `PreflightValidationAgent`가 요청 범위와 상품 개수 상한을 먼저 확인합니다. 자연어 요청이 관광 상품 기획과 무관하거나, 자연어에서 21개 이상 상품 생성을 요구하면 workflow run을 만들지 않고 생성 modal에서 바로 안내합니다. 상품 생성은 최대 20개까지 허용하되, 실제 사용 가능한 근거 데이터가 부족하면 ProductAgent가 가능한 개수까지만 만들고 부족 사유를 `needs_review`/`coverage_notes`에 남깁니다.
+Run 생성 전에는 `PreflightValidationAgent`가 요청 범위와 상품 개수 상한을 먼저 확인합니다. 자연어 요청이 관광 상품 기획과 무관하거나, 자연어에서 21개 이상 상품 생성을 요구하면 workflow run을 만들지 않고 생성 modal에서 바로 안내합니다. 상품 생성은 최대 20개까지 허용하며, 직접 연결 가능한 근거 데이터가 요청 수보다 적어도 상품 개수를 줄이지 않습니다. 직접 근거가 부족한 상품은 `source_ids`를 빈 배열로 두고 부족 사유를 `needs_review`/`coverage_notes`에 남깁니다.
 
 Phase 10.1 AppShell Navbar and Global Navigation은 구현 완료되었습니다. 현재 frontend는 Mantine `AppShell.Header`/`AppShell.Navbar` 기반 전역 navigation shell을 사용합니다. Dashboard는 기존처럼 summary와 Runs table을 함께 보여주고, Workflow Preview는 전역 Navbar에서 독립적으로 접근합니다. Evaluation은 Phase 13에서 실제 화면으로 전환되었고, Poster Studio는 Phase 14에서 실제 생성 화면으로 전환되었습니다. Costs와 Settings는 아직 실제 기능이 연결되지 않은 `향후 연결 예정` placeholder입니다.
 
@@ -719,4 +728,6 @@ Phase 15 Quality Audit은 완료되었습니다. 지정된 9개 run을 기준으
 
 Phase 16 QA Quality Hardening도 구현 완료되었습니다. QA는 사용자 `avoid`와 명백한 evidence risk 중심으로 좁히고, copy 품질 평가는 QA evidence-risk 검수에서 제외합니다. 사용자-facing QA message는 실제 문제 문구를 인용하도록 보정하고, `source_id`, `field_path`, `missing_pet_policy`, source-id correction 같은 내부 진단은 기본 QA 목록에서 분리합니다. AI 수정/QA 재검수는 선택한 QA issue만 targeted recheck하며, 선택하지 않은 기존 issue는 revision에서 그대로 유지됩니다. 직접 수정 modal은 왼쪽에서 전체 QA issue를 참고하고 오른쪽에서 전체 상품/마케팅 내용을 편집하는 구조입니다.
 
-다음 Phase 17은 Marketing Output Hardening입니다. 이후 Phase 18 RAG/Evidence Pipeline Hardening, Phase 19 Evidence and Visual Evidence UX Redesign, Phase 20 UI Copy and Product Surface Polish, Phase 21 Costs Dashboard, Phase 22 Deployment / Demo Hardening 순서로 진행합니다.
+Phase 17.1 Source/RAG Structure Cleanup도 구현 완료되었습니다. Source document role/origin/lifecycle metadata를 추가하고, RAG 검색에 지역/theme/content type/target customer/narrow keyword를 반영하며, 검색 부족 시 자동 fallback 없이 retrieval diagnostics에 query/filter/result count/reason을 남깁니다.
+
+다음 순서는 Phase 17.2 Product-level Evidence Bundle, Phase 17.3 source_id 검증과 Revision 안정화입니다. 이후 Phase 18 Evidence and Visual Evidence UX Redesign, Phase 19 Marketing Output Hardening, Phase 20 UI Copy and Product Surface Polish, Phase 21 Costs Dashboard, Phase 22 Deployment / Demo Hardening 순서로 진행합니다.

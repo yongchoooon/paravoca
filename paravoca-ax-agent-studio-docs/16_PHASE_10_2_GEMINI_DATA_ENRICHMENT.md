@@ -59,7 +59,7 @@ Run 생성 modal에서 workflow run을 만들기 전에 `PreflightValidationAgen
 - 국내 관광 데이터 지원 범위 확인
 - 자연어에 21개 이상 상품 생성 요청이 들어오면 차단
 - schema의 `product_count`도 최대 20개로 제한
-- 실제 사용 가능한 근거 데이터가 요청 수보다 적으면 가능한 개수까지만 생성하고 부족 사유를 `needs_review`/`coverage_notes`에 남김
+- 직접 연결 가능한 근거 데이터가 요청 수보다 적어도 상품 개수는 줄이지 않고, 근거 부족 상품은 `source_ids`를 빈 배열로 두고 부족 사유를 `needs_review`/`coverage_notes`에 남김
 
 Preflight 실패는 run review 단계로 넘어가지 않습니다. 생성 화면에서 사용자에게 안내만 표시합니다.
 
