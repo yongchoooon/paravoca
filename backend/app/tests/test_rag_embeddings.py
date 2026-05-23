@@ -28,20 +28,7 @@ def ensure_db_initialized():
     reset_embedding_settings_cache()
 
 
-def test_legacy_hash_embedding_provider_is_available():
-    reset_embedding_settings_cache()
-
-    provider = get_embedding_provider()
-    vector = provider.embed_query("부산 야경 관광")
-
-    assert provider.name == "legacy_hash"
-    assert provider.model == "legacy_hash_128"
-    assert provider.dimension == 128
-    assert len(vector) == 128
-    assert sum(value * value for value in vector) > 0
-
-
-def test_local_embedding_provider_routes_to_sentence_transformer(monkeypatch):
+def test_embedding_provider_uses_sentence_transformer(monkeypatch):
     class FakeSentenceTransformer:
         def get_sentence_embedding_dimension(self):
             return 3
@@ -61,7 +48,6 @@ def test_local_embedding_provider_routes_to_sentence_transformer(monkeypatch):
             assert show_progress_bar is False
             return [[1.0, 0.0, 0.0] if "부산" in text else [0.0, 1.0, 0.0] for text in texts]
 
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "local")
     monkeypatch.setenv("EMBEDDING_MODEL", "fake-local-model")
     monkeypatch.setenv("EMBEDDING_DEVICE", "cpu")
     monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "7")
@@ -85,7 +71,26 @@ def test_local_embedding_provider_routes_to_sentence_transformer(monkeypatch):
         reset_embedding_settings_cache()
 
 
-def test_rag_retrieval_smoke_with_legacy_hash_provider():
+def test_rag_retrieval_smoke_with_semantic_provider(monkeypatch):
+    class DirectionalProvider:
+        name = "local"
+        model = "test-directional"
+        dimension = 3
+
+        def _embed(self, text: str):
+            if "드론" in text:
+                return [1.0, 0.0, 0.0]
+            if "시장" in text:
+                return [0.0, 1.0, 0.0]
+            return [0.0, 0.0, 1.0]
+
+        def embed_documents(self, texts):
+            return [self._embed(text) for text in texts]
+
+        def embed_query(self, text):
+            return self._embed(text)
+
+    monkeypatch.setattr(chroma_store, "get_embedding_provider", lambda: DirectionalProvider())
     reset_embedding_settings_cache()
     delete_source_documents_collection()
 

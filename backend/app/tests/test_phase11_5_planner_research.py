@@ -42,7 +42,6 @@ def _create_run(db, input_payload: dict) -> models.WorkflowRun:
 
 
 def test_planner_agent_uses_gemini_schema_caps_count_and_does_not_resolve_region(monkeypatch):
-    monkeypatch.setenv("LLM_ENABLED", "true")
     get_settings.cache_clear()
 
     def fake_call_gemini_json(**kwargs):
@@ -123,7 +122,6 @@ def test_planner_validation_preserves_explicit_wellness_theme_over_default_prefe
 
 
 def test_research_synthesis_preserves_candidate_card_detail(monkeypatch):
-    monkeypatch.setenv("LLM_ENABLED", "true")
     get_settings.cache_clear()
 
     def fake_call_gemini_json(**kwargs):
@@ -214,7 +212,6 @@ def test_research_synthesis_preserves_candidate_card_detail(monkeypatch):
 
 
 def test_research_synthesis_retries_with_compact_prompt_after_timeout(monkeypatch):
-    monkeypatch.setenv("LLM_ENABLED", "true")
     get_settings.cache_clear()
 
     calls: list[dict] = []

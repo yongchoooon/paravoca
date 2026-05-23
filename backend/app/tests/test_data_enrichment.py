@@ -1868,7 +1868,6 @@ def test_enrichment_execution_records_failed_call_without_raising():
 
 
 def test_phase10_2_agents_use_gemini_schema_outputs(monkeypatch):
-    monkeypatch.setenv("LLM_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     monkeypatch.setenv("TOURAPI_SERVICE_KEY", "test-key")
     get_settings.cache_clear()
@@ -1952,11 +1951,6 @@ def test_phase10_2_agents_use_gemini_schema_outputs(monkeypatch):
     }
     assert expected_purposes <= purposes
     assert not {"visual_data_planning", "route_signal_planning", "theme_data_planning"} & purposes
-    assert not any(
-        call.provider == "rule_based"
-        and call.purpose in expected_purposes
-        for call in calls
-    )
     assert {step.model for step in steps} == {"gemini-test"}
     assert state["data_gap_report"]["gaps"][0]["gap_type"] == "missing_detail_info"
     assert state["capability_routing"]["family_routes"][0]["planner"] == "tourapi_detail"

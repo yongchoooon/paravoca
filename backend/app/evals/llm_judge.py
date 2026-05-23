@@ -102,8 +102,8 @@ def run_llm_judges(
     settings: Settings | None = None,
 ) -> list[Metric]:
     settings = settings or get_settings()
-    if not settings.llm_enabled or not settings.gemini_api_key:
-        return [_skipped_metric(definition, "LLM judge requires LLM_ENABLED=true and GEMINI_API_KEY.") for definition in JUDGE_DEFINITIONS]
+    if not settings.gemini_api_key:
+        return [_skipped_metric(definition, "LLM judge requires GEMINI_API_KEY.") for definition in JUDGE_DEFINITIONS]
 
     final_output = _dict(context.get("final_output"))
     if not _list(final_output.get("products")):

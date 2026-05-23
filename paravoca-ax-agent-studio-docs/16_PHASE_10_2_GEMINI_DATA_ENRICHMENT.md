@@ -367,7 +367,6 @@ logs/prompt_debug/<run_id>/<timestamp>__<agent>__<purpose>__<step_id>__retry-<n>
 Phase 10.2 관련 주요 설정:
 
 ```env
-LLM_ENABLED=true
 GEMINI_API_KEY=
 GEMINI_GENERATION_MODEL=gemini-2.5-flash-lite
 GEMINI_JSON_MAX_RETRIES=2

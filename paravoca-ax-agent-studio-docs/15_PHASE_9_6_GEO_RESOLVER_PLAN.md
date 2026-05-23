@@ -22,7 +22,7 @@ Phase 9까지 PARAVOCA는 TourAPI 검색, 상세 보강, source document, Chroma
 Phase 9.6 구현 결과는 다음과 같습니다.
 
 - `GeoResolverAgent`가 Planner 다음에 실행됩니다.
-- `LLM_ENABLED=true`이면 GeoResolver가 Gemini를 호출해 장소 span, 복수 지역 여부, 해외 목적지 여부를 추출하고, Phase 12.0부터는 TourAPI `ldong` catalog 후보 중 실제 검색에 사용할 `resolved_locations`도 선택합니다.
+- GeoResolver가 Gemini를 호출해 장소 span, 복수 지역 여부, 해외 목적지 여부를 추출하고, Phase 12.0부터는 TourAPI `ldong` catalog 후보 중 실제 검색에 사용할 `resolved_locations`도 선택합니다.
 - 최종 코드는 Gemini 선택 결과를 그대로 믿지 않고, Python resolver가 공식 `ldong` catalog에 실제 존재하는 code인지와 confidence를 검증합니다.
 - Run 생성 UI는 별도 Region 입력을 받지 않고 자연어 request를 source of truth로 사용합니다.
 - TourAPI v4.4 `ldongCode2?lDongListYn=Y` 전체 paging sync와 `lclsSystmCode2` sync를 `python -m app.tools.sync_tourapi_catalogs`로 제공합니다.
@@ -45,7 +45,7 @@ Phase 9.6의 목표는 다음입니다.
 4. `areaCode` 중심 조회를 `lDongRegnCd`, `lDongSignguCd`, `lclsSystm1/2/3` 중심으로 전환한다.
 5. 지역 코드를 못 찾았을 때 전국 검색으로 조용히 fallback하지 않는다.
 6. Evidence가 사용자가 요청한 지역 scope 밖의 데이터를 포함하지 않도록 DataAgent와 RAG filter를 강화한다.
-7. 기존 mock/dummy provider 테스트를 실제 v4.4 구조에 맞는 fake provider로 교체한다.
+7. 테스트 provider도 TourAPI v4.4 응답 구조와 동일한 shape로 검증한다.
 
 ## 비목표
 
@@ -610,19 +610,17 @@ Phase 11에서 확장:
    - GeoResolverAgent가 애매하다고 판단하면 사용자에게 선택 UI 제공.
    - 예: "중구"는 서울/부산/대구/인천/대전/울산 등 여러 후보가 있습니다.
 
-## 실제 데이터 전환 체크리스트
+## 실제 데이터 체크리스트
 
-현재 더미/구형 데이터 의존 지점:
-
-| 영역 | 현재 상태 | Phase 9.6 수정 |
-|---|---|---|
-| 지역 입력 | `region` field 중심 | message 기반 GeoResolverAgent |
-| 지역 코드 | `areaCode2`, `areaCode`, `region_code` | `ldongCode2`, `lDongRegnCd`, `lDongSignguCd` |
-| 분류 | `contentTypeId` 중심 | `contentTypeId` + `lclsSystm1/2/3` |
-| 테스트 provider | 부산 더미 중심 | 대전/영종도/가덕도/울릉도/양산 fake v4.4 provider |
-| RAG metadata | `region_code` | `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3` |
-| UI | Region 입력 필드 | 자연어 prompt 중심 + resolved geo 표시 |
-| Chroma | 기존 metadata로 색인 | reset reindex 필요 |
+| 영역 | 기준 |
+|---|---|
+| 지역 입력 | message 기반 GeoResolverAgent |
+| 지역 코드 | `ldongCode2`, `lDongRegnCd`, `lDongSignguCd` |
+| 분류 | `contentTypeId` + `lclsSystm1/2/3` |
+| 테스트 provider | TourAPI v4.4 response shape |
+| RAG metadata | `ldong_regn_cd`, `ldong_signgu_cd`, `lcls_systm_1/2/3` |
+| UI | 자연어 prompt 중심 + resolved geo 표시 |
+| Chroma | metadata schema 변경 시 reset reindex 필요 |
 
 ## 구현 단계
 

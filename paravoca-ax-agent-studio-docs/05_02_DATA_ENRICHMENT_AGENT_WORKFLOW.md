@@ -168,9 +168,8 @@ Approved or Reviewable Run
 
 구현 방식:
 
-- Phase 10.2부터 production 경로는 Gemini prompt + JSON schema 결과를 기준으로 한다.
-- `LLM_ENABLED=true`에서는 `llm_calls.provider=gemini`, `purpose=data_gap_profile`로 기록한다.
-- LLM이 꺼진 로컬 테스트 환경에서는 fake 결과를 꾸미지 않고 테스트 호환 계산만 수행한다.
+- DataGapProfilerAgent는 Gemini prompt + JSON schema 결과를 기준으로 한다.
+- 실행 결과는 `llm_calls.provider=gemini`, `purpose=data_gap_profile`로 기록한다.
 - QA issue에서 들어온 공백은 후속 revision enrichment에서 severity를 한 단계 올리는 방향으로 확장한다.
 
 ### 3. ApiCapabilityRouterAgent
@@ -1095,7 +1094,7 @@ Router가 배정한 gap과 해당 lane의 짧은 capability 요약만 보고 세
 
 완료 기준:
 
-- `LLM_ENABLED=true`에서 `llm_calls.provider=gemini`, `purpose=data_gap_profile`로 기록
+- `llm_calls.provider=gemini`, `purpose=data_gap_profile`로 기록
 - 이미지 없는 item에서 `missing_image_asset` 생성
 - 반려동물 요청에서 `missing_pet_policy` 생성
 - 도보 요청에서 `missing_route_asset` 생성
@@ -1111,7 +1110,7 @@ Router가 배정한 gap과 해당 lane의 짧은 capability 요약만 보고 세
 
 완료 기준:
 
-- `LLM_ENABLED=true`에서 `llm_calls.provider=gemini`, `purpose=api_capability_routing`으로 기록
+- `llm_calls.provider=gemini`, `purpose=api_capability_routing`으로 기록
 - gap type을 API family planner lane으로 변환
 - max call budget 적용
 - disabled source family skip

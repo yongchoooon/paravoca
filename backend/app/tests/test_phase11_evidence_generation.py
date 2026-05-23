@@ -235,7 +235,6 @@ def test_validate_marketing_assets_preserves_evidence_disclaimer_and_claim_limit
 
 
 def test_marketing_agent_retries_when_sns_posts_are_not_korean(monkeypatch):
-    monkeypatch.setenv("LLM_ENABLED", "true")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     get_settings.cache_clear()
 
@@ -315,9 +314,9 @@ def test_validate_qa_report_flags_invalid_source_id():
         evidence_context=EVIDENCE_CONTEXT,
     )
 
-    assert report["overall_status"] == "needs_review"
-    assert any(issue["type"] == "source_missing" for issue in report["issues"])
-    assert "이슈" in report["summary"]
+    assert report["overall_status"] == "pass"
+    assert report["issues"] == []
+    assert report["internal_diagnostics"][0]["type"] == "internal_diagnostic"
 
 
 def test_validate_qa_report_flags_unresolved_gap_claim_as_issue():

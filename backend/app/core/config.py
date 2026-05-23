@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     )
     vector_db: str = "chroma"
     chroma_path: str = "./data/chroma"
-    embedding_provider: str = "legacy_hash"
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_device: str = "cpu"
     embedding_batch_size: int = 32
@@ -69,7 +68,6 @@ class Settings(BaseSettings):
     gemini_json_max_retries: int = 2
     gemini_retry_base_seconds: float = 1.5
     gemini_retry_max_seconds: float = 12.0
-    llm_enabled: bool = False
     llm_usage_log_dir: str = "logs"
     llm_prompt_debug_log_enabled: bool = False
     llm_prompt_debug_log_dir: str = "logs/prompt_debug"

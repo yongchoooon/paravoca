@@ -53,7 +53,7 @@ Planner
 
 현재 TourAPI 사용 범위:
 
-- `areaCode2` backward compatibility
+- `areaCode2` 응답 해석
 - `ldongCode2`
 - `lclsSystmCode2`
 - `areaBasedList2`
@@ -179,7 +179,7 @@ Planner
 
 - 상세 정보를 가져오더라도 가격, 예약 가능 여부, 운영 여부를 확정 표현하지 않는다.
 - `detailImage2` 이미지는 바로 게시 가능으로 보지 않고 `candidate`로 저장한다.
-- 현재 hash 기반 embedding을 유지한 상태라면 source document만 풍부해지고 검색 품질 개선은 제한적일 수 있다.
+- source document가 보강되면 로컬 semantic embedding 재색인을 통해 검색 근거 품질을 함께 개선한다.
 - `categoryCode2`, `locationBasedList2`는 provider method와 capability에는 추가되어 있지만, 실제 route/candidate ranking workflow에는 Phase 10 이후 연결한다.
 
 완료 기준:
@@ -201,15 +201,13 @@ Planner
 
 목표:
 
-- 현재 임시 hash embedding을 실제 semantic embedding으로 교체한다.
-- 비용 부담을 줄이기 위해 우선 로컬 `sentence-transformers` 모델을 사용한다.
+- RAG 검색에 로컬 `sentence-transformers` semantic embedding을 사용한다.
+- Gemini/OpenAI embedding API 호출 없이 semantic retrieval을 수행한다.
 
 기본 방향:
 
-- Gemini embedding은 비용과 호출량을 확인하기 전까지 기본값으로 쓰지 않는다.
-- OpenAI embedding도 기본값으로 쓰지 않는다.
 - 한국어 관광 데이터 검색을 고려해 multilingual sentence-transformers 모델을 우선 검토한다.
-- Chroma는 유지하고 embedding 함수만 교체한다.
+- Chroma는 유지하고 source document를 semantic embedding으로 색인한다.
 
 후보 모델:
 
@@ -222,7 +220,6 @@ Planner
 설정:
 
 ```text
-EMBEDDING_PROVIDER=local
 EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 EMBEDDING_DEVICE=cpu
 EMBEDDING_BATCH_SIZE=32
@@ -230,11 +227,9 @@ EMBEDDING_BATCH_SIZE=32
 
 작업:
 
-- `backend/app/rag/embeddings.py` 추가
-- 기존 `hash` embedding을 `legacy_hash` provider로 분리
-- local sentence-transformers provider 구현
-- `index_source_documents`와 `search_source_documents`가 provider 설정을 사용하도록 변경
-- 기존 Chroma collection 재생성 명령 추가
+- `backend/app/rag/embeddings.py`에서 local sentence-transformers provider 구현
+- `index_source_documents`와 `search_source_documents`가 semantic embedding을 사용하도록 변경
+- Chroma collection 재생성 명령 추가
 - `source_documents.embedding_status`를 `pending/indexed/failed`로 관리
 - retrieval recall smoke test 추가
 - README에 로컬 embedding 설치와 재색인 방법 추가
@@ -247,9 +242,9 @@ python -m app.rag.reindex --collection source_documents --reset
 
 완료 기준:
 
-- `EMBEDDING_PROVIDER=local`에서 source document가 실제 semantic embedding으로 색인된다.
+- source document가 실제 semantic embedding으로 색인된다.
 - 기존 workflow run 생성이 정상 동작한다.
-- `/api/rag/search` 결과가 hash embedding이 아니라 local embedding 기반으로 반환된다.
+- `/api/rag/search` 결과가 local semantic embedding 기반으로 반환된다.
 - embedding API 비용이 발생하지 않는다.
 - 검색 실패나 모델 로딩 실패가 FastAPI log와 workflow error log에 남는다.
 
@@ -369,7 +364,7 @@ Agent별 역할:
 
 운영 기준:
 
-- `LLM_ENABLED=true`에서는 신규 DataGap/Router/Planner/Fusion agent가 Gemini를 호출한다.
+- 신규 DataGap/Router/Planner/Fusion agent가 Gemini를 호출한다.
 - schema validation이 실패하면 Gemini JSON retry 정책을 따르고, 최종 실패 시 workflow를 실패로 남긴다.
 - provider가 없는 99번 KTO API는 실제 호출한 것처럼 표시하지 않고 `skipped/future_provider_not_implemented`로 기록한다.
 - 의료관광 API는 `ALLOW_MEDICAL_API=true`가 아니면 planned call로 만들지 않는다.

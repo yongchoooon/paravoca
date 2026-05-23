@@ -506,7 +506,7 @@ def _should_skip_case(
         return True
     if case.get("requires_live_api", True) and not settings.tourapi_service_key:
         return True
-    if case.get("requires_llm", True) and settings.llm_enabled and not settings.gemini_api_key:
+    if case.get("requires_llm", True) and not settings.gemini_api_key:
         return True
     return False
 
@@ -516,8 +516,8 @@ def _skip_reason(case: dict[str, Any], *, no_live_api: bool, settings: Any) -> s
         return "--no-live-api is set and this case requires live KTO/TourAPI data."
     if case.get("requires_live_api", True) and not settings.tourapi_service_key:
         return "TOURAPI_SERVICE_KEY is not configured."
-    if case.get("requires_llm", True) and settings.llm_enabled and not settings.gemini_api_key:
-        return "GEMINI_API_KEY is required while LLM_ENABLED=true."
+    if case.get("requires_llm", True) and not settings.gemini_api_key:
+        return "GEMINI_API_KEY is required."
     return "Case skipped by evaluation runner."
 
 

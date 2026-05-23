@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import hashlib
-import math
-from dataclasses import dataclass
 from functools import lru_cache
 from typing import Protocol
 
 from app.core.config import Settings, get_settings
-
-LEGACY_HASH_DIMENSION = 128
 
 
 class EmbeddingProvider(Protocol):
@@ -24,22 +19,6 @@ class EmbeddingProvider(Protocol):
 
     def embed_query(self, text: str) -> list[float]:
         ...
-
-
-@dataclass
-class LegacyHashEmbeddingProvider:
-    model: str = "legacy_hash_128"
-    name: str = "legacy_hash"
-
-    @property
-    def dimension(self) -> int:
-        return LEGACY_HASH_DIMENSION
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [_legacy_hash_embedding(text) for text in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        return _legacy_hash_embedding(text)
 
 
 class LocalSentenceTransformerEmbeddingProvider:
@@ -86,7 +65,7 @@ class LocalSentenceTransformerEmbeddingProvider:
             from sentence_transformers import SentenceTransformer
         except Exception as exc:
             raise RuntimeError(
-                "sentence-transformers is required for EMBEDDING_PROVIDER=local. "
+                "sentence-transformers is required for local semantic embedding. "
                 'Install backend dependencies with `python -m pip install -e ".[dev]"`.'
             ) from exc
 
@@ -123,7 +102,6 @@ class LocalSentenceTransformerEmbeddingProvider:
 def get_embedding_provider(settings: Settings | None = None) -> EmbeddingProvider:
     settings = settings or get_settings()
     return _get_embedding_provider(
-        settings.embedding_provider,
         settings.embedding_model,
         settings.embedding_device,
         settings.embedding_batch_size,
@@ -136,35 +114,12 @@ def clear_embedding_provider_cache() -> None:
 
 @lru_cache
 def _get_embedding_provider(
-    provider_name: str,
     model: str,
     device: str,
     batch_size: int,
 ) -> EmbeddingProvider:
-    provider = provider_name.strip().lower()
-    if provider == "legacy_hash":
-        return LegacyHashEmbeddingProvider()
-    if provider == "local":
-        return LocalSentenceTransformerEmbeddingProvider(
-            model=model,
-            device=device,
-            batch_size=batch_size,
-        )
-    raise ValueError(
-        f"Unsupported EMBEDDING_PROVIDER={provider_name!r}. "
-        "Supported providers: legacy_hash, local."
+    return LocalSentenceTransformerEmbeddingProvider(
+        model=model,
+        device=device,
+        batch_size=batch_size,
     )
-
-
-def _legacy_hash_embedding(text: str) -> list[float]:
-    vector = [0.0] * LEGACY_HASH_DIMENSION
-    tokens = [token for token in text.lower().replace("\n", " ").split(" ") if token]
-    if not tokens:
-        tokens = ["empty"]
-    for token in tokens:
-        digest = hashlib.sha256(token.encode("utf-8")).digest()
-        index = int.from_bytes(digest[:4], "big") % LEGACY_HASH_DIMENSION
-        sign = 1.0 if digest[4] % 2 == 0 else -1.0
-        vector[index] += sign
-    norm = math.sqrt(sum(value * value for value in vector)) or 1.0
-    return [value / norm for value in vector]

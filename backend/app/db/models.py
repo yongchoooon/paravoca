@@ -191,8 +191,8 @@ class LLMCall(Base):
     step_id: Mapped[str | None] = mapped_column(
         String(120), ForeignKey("agent_steps.id"), nullable=True
     )
-    provider: Mapped[str] = mapped_column(String(80), default="rule_based", nullable=False)
-    model: Mapped[str] = mapped_column(String(160), default="rule-based-v1", nullable=False)
+    provider: Mapped[str] = mapped_column(String(80), default="gemini", nullable=False)
+    model: Mapped[str] = mapped_column(String(160), default="gemini-2.5-flash-lite", nullable=False)
     purpose: Mapped[str] = mapped_column(String(160), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
