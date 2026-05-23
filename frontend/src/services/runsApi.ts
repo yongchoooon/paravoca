@@ -123,6 +123,22 @@ export type WorkflowResult = {
   approval: Record<string, unknown>;
 };
 
+export type RevisionChangeDecision = {
+  change_id: string;
+  action: "accept" | "revert";
+};
+
+export type RevisionChangeDecisionPayload = {
+  decisions: RevisionChangeDecision[];
+};
+
+export type RevisionChangeDecisionResult = {
+  run: WorkflowRun;
+  result: WorkflowResult;
+  change_review: Record<string, unknown>;
+  qa_report: QAReport;
+};
+
 export type AgentStep = {
   id: string;
   run_id: string;
@@ -341,4 +357,8 @@ export function cancelWorkflowRun(runId: string) {
 
 export function deleteWorkflowRunQaIssues(runId: string, payload: QAIssueDeletePayload) {
   return apiPost<QAIssueDeleteResult>(`/workflow-runs/${runId}/qa-issues/delete`, payload);
+}
+
+export function decideRevisionChanges(runId: string, payload: RevisionChangeDecisionPayload) {
+  return apiPost<RevisionChangeDecisionResult>(`/workflow-runs/${runId}/revision-changes/decide`, payload);
 }

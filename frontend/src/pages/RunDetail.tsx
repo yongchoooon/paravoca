@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent } from "react";
+import type { PointerEvent, ReactNode } from "react";
 import {
   ActionIcon,
   Accordion,
@@ -53,6 +53,7 @@ import {
   approveWorkflowRun,
   cancelWorkflowRun,
   createWorkflowRevision,
+  decideRevisionChanges,
   deleteWorkflowRunQaIssues,
   EnrichmentRun,
   EvidenceDocument,
@@ -71,6 +72,7 @@ import {
   rejectWorkflowRun,
   requestWorkflowRunChanges,
   RevisionMode,
+  RevisionChangeDecision,
   ToolCall,
   WorkflowResult,
   WorkflowRun,
@@ -133,6 +135,18 @@ type RunDetailProps = {
   onRevisionCreated?: (run: WorkflowRun) => Promise<void> | void;
   relatedRuns?: WorkflowRun[];
   onSelectRun?: (runId: string) => void;
+};
+
+type RevisionChangeReviewItem = {
+  id: string;
+  entity: "product" | "marketing";
+  product_id: string;
+  field_path: string;
+  field_label: string;
+  before: unknown;
+  after: unknown;
+  status: "pending" | "accepted" | "reverted";
+  qa_issue?: QAIssue | null;
 };
 
 const POSTER_SECTION_ORDER = Object.keys(POSTER_SECTION_LABELS) as PosterIncludedSection[];
@@ -214,6 +228,7 @@ export function RunDetail({
   const [evidenceImagePreview, setEvidenceImagePreview] = useState<EvidenceImageCandidate | null>(null);
   const [evidenceImagePreviewZoomed, setEvidenceImagePreviewZoomed] = useState(false);
   const [posterExpandedSections, setPosterExpandedSections] = useState<PosterIncludedSection[]>([]);
+  const [revisionChangeDecisionIds, setRevisionChangeDecisionIds] = useState<string[]>([]);
 
   async function loadRunDetail(options: { silent?: boolean } = {}) {
     try {
@@ -329,7 +344,7 @@ export function RunDetail({
     const selectedSourceIds = Array.from(
       new Set(result.products.flatMap((product) => stringListFromUnknown(product.source_ids)))
     );
-    if (!showSelectedProductEvidenceOnly || selectedSourceIds.length === 0) {
+    if (!showSelectedProductEvidenceOnly) {
       return result.retrieved_documents;
     }
     const sourceIds = new Set(selectedSourceIds);
@@ -418,6 +433,18 @@ export function RunDetail({
     () => avoidRulesForQaReview(run, result),
     [run, result]
   );
+
+  const pendingRevisionChanges = useMemo(
+    () => revisionChangeReviewItemsFromRevision(result?.revision).filter((item) => item.status === "pending"),
+    [result]
+  );
+  const revisionChangeCountByProduct = useMemo(() => {
+    const counts = new Map<string, number>();
+    pendingRevisionChanges.forEach((item) => {
+      counts.set(item.product_id, (counts.get(item.product_id) ?? 0) + 1);
+    });
+    return counts;
+  }, [pendingRevisionChanges]);
 
   const revisionModalTitle =
     revisionMode === "qa_only"
@@ -547,6 +574,35 @@ export function RunDetail({
       });
     } finally {
       setQaIssueDeleting(false);
+    }
+  }
+
+  async function submitRevisionChangeDecision(changeId: string, action: RevisionChangeDecision["action"]) {
+    if (!run) return;
+    try {
+      setRevisionChangeDecisionIds((current) => [...current, changeId]);
+      const response = await decideRevisionChanges(run.id, {
+        decisions: [{ change_id: changeId, action }],
+      });
+      setRun(response.run);
+      setResult(normalizeWorkflowResult(response.result));
+      notifications.show({
+        title: action === "accept" ? "AI 수정 유지" : "이전 내용 복원",
+        message:
+          action === "accept"
+            ? "선택한 변경을 현재 revision에 확정했습니다."
+            : "선택한 변경을 이전 내용으로 되돌렸습니다. 연결된 QA 이슈가 있으면 다시 표시됩니다.",
+        color: action === "accept" ? "green" : "red",
+      });
+      await onStatusChanged();
+    } catch (err) {
+      notifications.show({
+        title: "변경 검토 저장 실패",
+        message: err instanceof Error ? err.message : String(err),
+        color: "red",
+      });
+    } finally {
+      setRevisionChangeDecisionIds((current) => current.filter((id) => id !== changeId));
     }
   }
 
@@ -1049,7 +1105,10 @@ export function RunDetail({
                         color="opsBlue"
                         onClick={() => setSelectedProductId(product.id)}
                       >
-                        <span className={classes.productButtonLabel}>{product.title}</span>
+                        <span className={classes.productButtonContent}>
+                          <span className={classes.productButtonLabel}>{product.title}</span>
+                          <ChangeCountDot count={revisionChangeCountByProduct.get(product.id) ?? 0} />
+                        </span>
                       </Button>
                     ))}
                   </Stack>
@@ -1068,6 +1127,16 @@ export function RunDetail({
                       deletingPosterIds={deletingPosterIds}
                       onPreviewPoster={setPreviewPoster}
                       onPreviewEvidenceImage={(candidate) => setEvidenceImagePreview(candidate)}
+                      revisionChanges={pendingRevisionChanges.filter(
+                        (item) => item.product_id === selectedProduct.id
+                      )}
+                      decidingRevisionChangeIds={revisionChangeDecisionIds}
+                      onAcceptRevisionChange={(changeId) =>
+                        void submitRevisionChangeDecision(changeId, "accept")
+                      }
+                      onRevertRevisionChange={(changeId) =>
+                        void submitRevisionChangeDecision(changeId, "revert")
+                      }
                     />
                   ) : (
                     <Text c="dimmed">생성된 상품이 없습니다.</Text>
@@ -1109,14 +1178,13 @@ export function RunDetail({
                   <Text size="sm" c="dimmed">
                     상품 생성과 QA 검수에 사용된 근거입니다. {selectedEvidenceRows.length} / {result.retrieved_documents.length}건 표시 중입니다.
                     {showSelectedProductEvidenceOnly
-                      ? " 전체 상품에 연결된 근거만 표시 중입니다."
+                      ? " 전체 상품 기획에 실제 연결된 근거만 표시 중입니다."
                       : ""}
                   </Text>
                 </div>
                 <Checkbox
                   checked={showSelectedProductEvidenceOnly}
-                  disabled={result.products.every((product) => stringListFromUnknown(product.source_ids).length === 0)}
-                  label="Selected evidence only"
+                  label="선택 근거만 보기"
                   onChange={(event) => setShowSelectedProductEvidenceOnly(event.currentTarget.checked)}
                 />
               </Group>
@@ -2947,6 +3015,10 @@ function ProductDetail({
   deletingPosterIds,
   onPreviewPoster,
   onPreviewEvidenceImage,
+  revisionChanges,
+  decidingRevisionChangeIds,
+  onAcceptRevisionChange,
+  onRevertRevisionChange,
 }: {
   product: ProductIdea;
   marketing: MarketingAsset | null;
@@ -2958,6 +3030,10 @@ function ProductDetail({
   deletingPosterIds: string[];
   onPreviewPoster: (poster: PosterAsset) => void;
   onPreviewEvidenceImage: (candidate: EvidenceImageCandidate) => void;
+  revisionChanges: RevisionChangeReviewItem[];
+  decidingRevisionChangeIds: string[];
+  onAcceptRevisionChange: (changeId: string) => void;
+  onRevertRevisionChange: (changeId: string) => void;
 }) {
   const needsReview = stringListFromUnknown(product.needs_review);
   const claimLimits = stringListFromUnknown(product.claim_limits);
@@ -2976,13 +3052,42 @@ function ProductDetail({
   const atPosterLimit = countedPosterCount >= maxPostersPerProduct;
   const activePosterCount = posters.filter((item) => isActivePosterStatus(item.status)).length;
   const displayedVisualCandidates = visualCandidates.slice(0, 4);
+  const changeByPath = useMemo(() => {
+    const map = new Map<string, RevisionChangeReviewItem>();
+    revisionChanges.forEach((item) => {
+      map.set(`${item.entity}:${item.field_path}`, item);
+    });
+    return map;
+  }, [revisionChanges]);
+  const changeActions = {
+    decidingIds: decidingRevisionChangeIds,
+    onAccept: onAcceptRevisionChange,
+    onRevert: onRevertRevisionChange,
+  };
+  const tabChangeCounts = useMemo(() => {
+    const counts = { copy: 0, faq: 0, sns: 0, rules: 0 };
+    revisionChanges.forEach((item) => {
+      counts[revisionChangeTab(item)] += 1;
+    });
+    return counts;
+  }, [revisionChanges]);
 
   return (
     <Stack gap="md">
       <Group justify="space-between" align="flex-start">
         <div style={{ flex: 1, minWidth: 0 }}>
-          <Title order={4}>{product.title}</Title>
-          <Text size="sm" c="dimmed">{product.one_liner}</Text>
+          <RevisionChangeInline
+            change={changeByPath.get("product:title")}
+            actions={changeActions}
+          >
+            <Title order={4}>{product.title}</Title>
+          </RevisionChangeInline>
+          <RevisionChangeInline
+            change={changeByPath.get("product:one_liner")}
+            actions={changeActions}
+          >
+            <Text size="sm" c="dimmed">{product.one_liner}</Text>
+          </RevisionChangeInline>
         </div>
         <Button
           size="sm"
@@ -2996,9 +3101,17 @@ function ProductDetail({
         </Button>
       </Group>
       <Group gap="xs">
-        {product.core_value.map((value) => (
-          <Badge key={value} variant="light">{value}</Badge>
-        ))}
+        <RevisionChangeInline
+          change={changeByPath.get("product:core_value")}
+          actions={changeActions}
+          compact
+        >
+          <Group gap="xs">
+            {product.core_value.map((value) => (
+              <Badge key={value} variant="light">{value}</Badge>
+            ))}
+          </Group>
+        </RevisionChangeInline>
       </Group>
       <Alert color={activePosterCount > 0 ? "blue" : "gray"} variant="light">
         <Text size="sm">
@@ -3138,24 +3251,61 @@ function ProductDetail({
 
       <Tabs defaultValue="copy">
         <Tabs.List>
-          <Tabs.Tab value="copy">Sales Copy</Tabs.Tab>
-          <Tabs.Tab value="faq">FAQ</Tabs.Tab>
-          <Tabs.Tab value="sns">SNS</Tabs.Tab>
-          <Tabs.Tab value="rules">Claims</Tabs.Tab>
+          <Tabs.Tab value="copy">
+            <TabLabelWithCount label="Sales Copy" count={tabChangeCounts.copy} />
+          </Tabs.Tab>
+          <Tabs.Tab value="faq">
+            <TabLabelWithCount label="FAQ" count={tabChangeCounts.faq} />
+          </Tabs.Tab>
+          <Tabs.Tab value="sns">
+            <TabLabelWithCount label="SNS" count={tabChangeCounts.sns} />
+          </Tabs.Tab>
+          <Tabs.Tab value="rules">
+            <TabLabelWithCount label="Claims" count={tabChangeCounts.rules} />
+          </Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="copy" pt="sm">
           {marketing ? (
             <Stack gap="sm">
-              <Text fw={700}>{marketing.sales_copy.headline}</Text>
-              <Text size="sm">{marketing.sales_copy.subheadline}</Text>
-              {marketing.sales_copy.sections.map((section) => (
-                <Paper key={section.title} withBorder p="sm">
-                  <Text fw={700} size="sm">{section.title}</Text>
-                  <Text size="sm">{section.body}</Text>
+              <RevisionChangeInline
+                change={changeByPath.get("marketing:sales_copy.headline")}
+                actions={changeActions}
+              >
+                <Text fw={700}>{marketing.sales_copy.headline}</Text>
+              </RevisionChangeInline>
+              <RevisionChangeInline
+                change={changeByPath.get("marketing:sales_copy.subheadline")}
+                actions={changeActions}
+              >
+                <Text size="sm">{marketing.sales_copy.subheadline}</Text>
+              </RevisionChangeInline>
+              {marketing.sales_copy.sections.map((section, index) => (
+                <Paper key={`${section.title}-${index}`} withBorder p="sm">
+                  <RevisionChangeInline
+                    change={changeByPath.get(
+                      `marketing:sales_copy.sections[${index}].title`
+                    )}
+                    actions={changeActions}
+                  >
+                    <Text fw={700} size="sm">{section.title}</Text>
+                  </RevisionChangeInline>
+                  <RevisionChangeInline
+                    change={changeByPath.get(
+                      `marketing:sales_copy.sections[${index}].body`
+                    )}
+                    actions={changeActions}
+                  >
+                    <Text size="sm">{section.body}</Text>
+                  </RevisionChangeInline>
                 </Paper>
               ))}
-              <Alert color="gray">{marketing.sales_copy.disclaimer}</Alert>
+              <RevisionChangeInline
+                change={changeByPath.get("marketing:sales_copy.disclaimer")}
+                actions={changeActions}
+              >
+                <Alert color="gray">{marketing.sales_copy.disclaimer}</Alert>
+              </RevisionChangeInline>
             </Stack>
           ) : (
             <Text c="dimmed">생성된 마케팅 자산이 없습니다.</Text>
@@ -3165,10 +3315,17 @@ function ProductDetail({
         <Tabs.Panel value="faq" pt="sm">
           <Table verticalSpacing="sm">
             <Table.Tbody>
-              {(marketing?.faq ?? []).map((item) => (
+              {(marketing?.faq ?? []).map((item, index) => (
                 <Table.Tr key={item.question}>
                   <Table.Td w="35%"><Text fw={600} size="sm">{item.question}</Text></Table.Td>
-                  <Table.Td><Text size="sm">{item.answer}</Text></Table.Td>
+                  <Table.Td>
+                    <RevisionChangeInline
+                      change={changeByPath.get(`marketing:faq[${index}].answer`)}
+                      actions={changeActions}
+                    >
+                      <Text size="sm">{item.answer}</Text>
+                    </RevisionChangeInline>
+                  </Table.Td>
                 </Table.Tr>
               ))}
             </Table.Tbody>
@@ -3177,16 +3334,29 @@ function ProductDetail({
 
         <Tabs.Panel value="sns" pt="sm">
           <Stack gap="sm">
-            {(marketing?.sns_posts ?? []).map((post) => (
-              <Paper key={post} withBorder p="sm">
-                <Text size="sm">{post}</Text>
-              </Paper>
-            ))}
-            <Group gap="xs">
-              {(marketing?.search_keywords ?? []).map((keyword) => (
-                <Badge key={keyword} variant="outline">{keyword}</Badge>
-              ))}
-            </Group>
+            <RevisionChangeInline
+              change={changeByPath.get("marketing:sns_posts")}
+              actions={changeActions}
+            >
+              <Stack gap="sm">
+                {(marketing?.sns_posts ?? []).map((post) => (
+                  <Paper key={post} withBorder p="sm">
+                    <Text size="sm">{post}</Text>
+                  </Paper>
+                ))}
+              </Stack>
+            </RevisionChangeInline>
+            <RevisionChangeInline
+              change={changeByPath.get("marketing:search_keywords")}
+              actions={changeActions}
+              compact
+            >
+              <Group gap="xs">
+                {(marketing?.search_keywords ?? []).map((keyword) => (
+                  <Badge key={keyword} variant="outline">{keyword}</Badge>
+                ))}
+              </Group>
+            </RevisionChangeInline>
           </Stack>
         </Tabs.Panel>
 
@@ -3194,21 +3364,152 @@ function ProductDetail({
           <SimpleGrid cols={{ base: 1, sm: 2 }}>
             <Paper withBorder p="sm">
               <Text fw={700} size="sm">Assumptions</Text>
-              {product.assumptions.map((item) => (
-                <Text key={item} size="sm">- {item}</Text>
-              ))}
+              <RevisionChangeInline
+                change={changeByPath.get("product:assumptions")}
+                actions={changeActions}
+              >
+                {product.assumptions.map((item) => (
+                  <Text key={item} size="sm">- {item}</Text>
+                ))}
+              </RevisionChangeInline>
             </Paper>
             <Paper withBorder p="sm">
               <Text fw={700} size="sm">Do not claim</Text>
-              {product.not_to_claim.map((item) => (
-                <Text key={item} size="sm">- {item}</Text>
-              ))}
+              <RevisionChangeInline
+                change={changeByPath.get("product:not_to_claim")}
+                actions={changeActions}
+              >
+                {product.not_to_claim.map((item) => (
+                  <Text key={item} size="sm">- {item}</Text>
+                ))}
+              </RevisionChangeInline>
             </Paper>
           </SimpleGrid>
         </Tabs.Panel>
       </Tabs>
     </Stack>
   );
+}
+
+function RevisionChangeInline({
+  change,
+  actions,
+  compact = false,
+  children,
+}: {
+  change?: RevisionChangeReviewItem;
+  actions: {
+    decidingIds: string[];
+    onAccept: (changeId: string) => void;
+    onRevert: (changeId: string) => void;
+  };
+  compact?: boolean;
+  children: ReactNode;
+}) {
+  if (!change) return <>{children}</>;
+  return (
+    <Paper
+      withBorder
+      p={compact ? "xs" : "sm"}
+      className={classes.revisionChangeInline}
+    >
+      <Group justify="space-between" align="flex-start" gap="xs" wrap="nowrap">
+        <Text size="sm" fw={700}>{change.field_label}</Text>
+        <RevisionChangeActionIcons
+          change={change}
+          deciding={actions.decidingIds.includes(change.id)}
+          onAccept={actions.onAccept}
+          onRevert={actions.onRevert}
+        />
+      </Group>
+      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="xs" mt="xs">
+        <div className={classes.revisionChangeBefore}>
+          <Text size="xs" fw={700} c="red.8">이전</Text>
+          <Text size="sm">{formatRevisionChangeValue(change.before)}</Text>
+        </div>
+        <div className={classes.revisionChangeAfter}>
+          <Text size="xs" fw={700} c="green.8">현재</Text>
+          <Text size="sm">{formatRevisionChangeValue(change.after)}</Text>
+        </div>
+      </SimpleGrid>
+    </Paper>
+  );
+}
+
+function RevisionChangeActionIcons({
+  change,
+  deciding,
+  onAccept,
+  onRevert,
+}: {
+  change: RevisionChangeReviewItem;
+  deciding: boolean;
+  onAccept: (changeId: string) => void;
+  onRevert: (changeId: string) => void;
+}) {
+  return (
+    <Group gap={4} wrap="nowrap">
+      <Tooltip label="현재 AI 수정 내용 유지">
+        <ActionIcon
+          size="sm"
+          variant="light"
+          color="green"
+          aria-label="현재 AI 수정 내용 유지"
+          loading={deciding}
+          onClick={() => onAccept(change.id)}
+        >
+          <IconCheck size={15} />
+        </ActionIcon>
+      </Tooltip>
+      <Tooltip label="이전 내용으로 되돌리기">
+        <ActionIcon
+          size="sm"
+          variant="light"
+          color="red"
+          aria-label="이전 내용으로 되돌리기"
+          disabled={deciding}
+          onClick={() => onRevert(change.id)}
+        >
+          <IconX size={15} />
+        </ActionIcon>
+      </Tooltip>
+    </Group>
+  );
+}
+
+function formatRevisionChangeValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(", ");
+  }
+  if (value === null || value === undefined || value === "") {
+    return "(비어 있음)";
+  }
+  if (typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function ChangeCountDot({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return <span className={classes.changeCountDot}>{count}</span>;
+}
+
+function TabLabelWithCount({ label, count }: { label: string; count: number }) {
+  return (
+    <span className={classes.tabLabelWithCount}>
+      <span>{label}</span>
+      <ChangeCountDot count={count} />
+    </span>
+  );
+}
+
+function revisionChangeTab(change: RevisionChangeReviewItem): "copy" | "faq" | "sns" | "rules" {
+  const path = change.field_path;
+  if (path.startsWith("faq[")) return "faq";
+  if (path === "sns_posts" || path === "search_keywords") return "sns";
+  if (path === "assumptions" || path === "not_to_claim" || path === "claim_limits") return "rules";
+  return "copy";
 }
 
 function PosterDraftCard({
@@ -4385,6 +4686,42 @@ function qaDiffSummaryFromRevision(revision: Record<string, unknown> | undefined
     qa_recheck_mode: typeof summary.qa_recheck_mode === "string" ? summary.qa_recheck_mode : null,
     counts,
   };
+}
+
+function revisionChangeReviewItemsFromRevision(
+  revision: Record<string, unknown> | undefined
+): RevisionChangeReviewItem[] {
+  const rawReview = revision?.change_review;
+  if (!rawReview || typeof rawReview !== "object" || Array.isArray(rawReview)) return [];
+  const rawItems = (rawReview as Record<string, unknown>).items;
+  if (!Array.isArray(rawItems)) return [];
+  return rawItems
+    .map((item): RevisionChangeReviewItem | null => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const record = item as Record<string, unknown>;
+      const entity = record.entity === "product" || record.entity === "marketing" ? record.entity : null;
+      const status =
+        record.status === "accepted" || record.status === "reverted" || record.status === "pending"
+          ? record.status
+          : null;
+      if (!entity || !status) return null;
+      return {
+        id: String(record.id ?? ""),
+        entity,
+        product_id: String(record.product_id ?? ""),
+        field_path: String(record.field_path ?? ""),
+        field_label: String(record.field_label ?? record.field_path ?? "변경 항목"),
+        before: record.before,
+        after: record.after,
+        status,
+        qa_issue: record.qa_issue && typeof record.qa_issue === "object" && !Array.isArray(record.qa_issue)
+          ? (record.qa_issue as QAIssue)
+          : null,
+      };
+    })
+    .filter((item): item is RevisionChangeReviewItem =>
+      Boolean(item && item.id && item.product_id && item.field_path)
+    );
 }
 
 function QaDiffSummaryPanel({ summary }: { summary: QaDiffSummary }) {
