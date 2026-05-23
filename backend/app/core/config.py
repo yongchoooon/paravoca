@@ -64,10 +64,10 @@ class Settings(BaseSettings):
     gemini_check_model: str = "gemini-2.5-flash-lite"
     gemini_generation_model: str = "gemini-2.5-flash-lite"
     gemini_timeout_seconds: float = 60.0
-    gemini_max_retries: int = 3
+    gemini_max_retries: int = 5
     gemini_json_max_retries: int = 2
-    gemini_retry_base_seconds: float = 1.5
-    gemini_retry_max_seconds: float = 12.0
+    gemini_retry_base_seconds: float = 2.0
+    gemini_retry_max_seconds: float = 30.0
     llm_usage_log_dir: str = "logs"
     llm_prompt_debug_log_enabled: bool = False
     llm_prompt_debug_log_dir: str = "logs/prompt_debug"
