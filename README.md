@@ -59,7 +59,7 @@ Poster Studio의 run/product 선택은 텍스트 편집형 dropdown이 아니라
 - API 사용량, latency, 예상 비용을 기록해 운영 비용 감각을 보여줍니다.
 - 작은 여행사와 지역 관광사업자도 접근 가능한 API 기반 구조를 지향합니다.
 
-현재 구현 범위는 Phase 0부터 Phase 16까지입니다.
+현재 구현 범위는 Phase 0부터 Phase 18까지입니다.
 
 ## 현재 구현 범위
 
@@ -111,7 +111,7 @@ Poster Studio의 run/product 선택은 텍스트 편집형 dropdown이 아니라
 - source document role/origin/lifecycle metadata
 - RAG query/filter/retrieval diagnostics
 - KTO API capability catalog
-- source family, trust level, license note, data quality metadata 저장 구조
+- source family, 내부 trust/source confidence, license note, data quality metadata 저장 구조
 - KTO 데이터 보강용 DB 모델 기본 구조
 - `tourism_entities`, `tourism_visual_assets`, `tourism_route_assets`, `tourism_signal_records`
 - `enrichment_runs`, `enrichment_tool_calls`
@@ -141,8 +141,8 @@ Poster Studio의 run/product 선택은 텍스트 편집형 dropdown이 아니라
 - 이미지 후보는 게시 확정 이미지가 아니라 `needs_license_review` 상태로 표시
 - 보강된 source document를 Chroma에 재색인
 - evidence profile, productization advice, data coverage, unresolved gaps, UI highlights 생성
-- Run Detail Evidence에서 상세 정보와 이미지 후보 확인
-- Run Detail Data Coverage와 Recommended Data Calls panel
+- Run Detail Evidence에서 사용자용 근거 상세, 게시 전 확인 정보, 이미지 후보 확인
+- Run Detail Data Coverage와 추가 데이터 확인 내역 panel
 - Run Detail QA Review에서 최초 실행 또는 마지막 revision QA 설정의 Avoid 기준 표시
 - LangGraph workflow skeleton
 - Planner, Baseline Data, Gap Profiling, API Routing, Data Enrichment, Evidence Fusion, Research Synthesis, Product, Marketing, QA/Compliance Agent
@@ -338,6 +338,8 @@ EMBEDDING_BATCH_SIZE=32
 `EMBEDDING_MODEL` 또는 vector dimension이 바뀌면 Chroma collection과 충돌할 수 있습니다. 모델 변경 후에는 reset reindex를 실행합니다.
 
 Source document는 `runtime_run_evidence`, `existing_catalog`, `seed_catalog`, `manual_ingestion`, `enrichment_result`, `unknown` 역할로 구분됩니다. RAG 검색은 확인된 지역 code, source family, content type, theme, target customer, narrow keyword를 반영하고, 검색 결과가 부족해도 상위 지역/전국/generic evidence로 자동 확장하지 않습니다. 사용한 query/filter/result count/matching signal은 `retrieval_diagnostics`에서 확인합니다.
+
+Run Detail의 Evidence + QA 화면은 source document의 raw `content` 문자열을 기본 화면에 그대로 노출하지 않습니다. Evidence detail은 `한국관광공사 관광 데이터 기반` 근거로 표시하고, 이미지 후보, 기본 정보, 상품 설명에 활용 가능한 정보, 게시 전 확인이 필요한 정보, 원본 링크를 분리해 보여줍니다. 요약할 사용자용 내용이 없는 근거는 raw snippet으로 대체하지 않고 빈칸으로 둡니다. `trust_level`, `source_confidence`, `retrieved_at`, `source_id`, `content_id`, raw metadata는 Developer raw data 영역에서만 확인합니다.
 
 ```bash
 conda activate paravoca-ax-agent-studio
@@ -734,4 +736,6 @@ Phase 17.2 Product-level Evidence Bundle은 취소했습니다. 17.1에서 produ
 
 Phase 17.3 Revision Source Stability and Source ID Guardrails도 구현 완료되었습니다. ProductAgent가 임의 source_id를 만들면 서버가 확실한 alias만 정규화하고, 애매하거나 없는 source_id는 제외한 뒤 internal diagnostic에 남깁니다. AI 수정, 직접 수정, QA-only revision은 source/evidence 수정 기능이 아니므로 부모 run의 `source_ids`, `evidence_summary`, `retrieved_documents`, `evidence_profile` 등을 유지하고, revision metadata에 `source_stability`를 남깁니다.
 
-다음 순서는 Phase 18 Evidence and Visual Evidence UX Redesign, Phase 19 Marketing Output Hardening, Phase 20 UI Copy and Product Surface Polish, Phase 21 Costs Dashboard, Phase 22 Deployment / Demo Hardening 순서로 진행합니다.
+Phase 18 Evidence UX Redesign도 구현 완료되었습니다. Evidence detail은 raw API dump 대신 사용자용 표시 모델을 사용하며, `신뢰도 90%` 같은 수치형 신뢰도와 `수집 ...` timestamp는 일반 화면에서 제거하고 `한국관광공사 관광 데이터 기반` 출처 표현으로 바꿨습니다. `추천 보강 호출`, `Coverage note`, `Claim 제한` 같은 내부/개발자 중심 문구는 사용자 친화적 표현으로 정리했고, 새 run은 사용자용/내부진단용 review note를 구조화해 저장합니다. 원본 raw content/metadata는 Developer raw data 영역에 남깁니다.
+
+다음 순서는 Phase 19 Marketing Output Hardening, Phase 20 UI Copy and Product Surface Polish, Phase 21 Costs Dashboard, Phase 22 Deployment / Demo Hardening 순서로 진행합니다.

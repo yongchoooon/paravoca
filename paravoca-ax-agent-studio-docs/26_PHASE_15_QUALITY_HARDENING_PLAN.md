@@ -245,6 +245,8 @@ AI 수정 후 QA 재검수에서 기존 이슈가 사라지는 대신 새 이슈
 
 ## 후속 Phase 재정의
 
+> 최신 상태 메모: 이 절은 Phase 15 audit 당시의 후속 계획을 보존한 historical mapping입니다. 현재 구현 기준으로 Phase 17.1 Source/RAG Structure Cleanup과 Phase 17.3 Revision Source Stability, Phase 18 Evidence UX Redesign은 완료되었고, Phase 17.2 Product-level Evidence Bundle은 취소되었습니다. 최신 다음 순서는 Phase 19 Marketing Output Hardening, Phase 20 UI Copy and Product Surface Polish, Phase 21 Costs Dashboard, Phase 22 Deployment / Demo Hardening입니다.
+
 ### Phase 16: QA Quality Hardening
 
 - QA prompt/schema 개선
