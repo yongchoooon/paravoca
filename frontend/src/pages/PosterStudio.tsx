@@ -63,6 +63,11 @@ type ProductOption = {
   one_liner?: string;
 };
 
+type RunSelectionEntry = {
+  run: WorkflowRun;
+  indent: boolean;
+};
+
 type PosterImageCandidate = {
   image_url: string;
   thumbnail_url?: string;
@@ -110,6 +115,7 @@ export function PosterStudio() {
         listWorkflowRuns(),
         listPosters(),
       ]);
+      const selectableRunEntries = runSelectionEntriesForPoster(nextRuns);
       setOptions(nextOptions);
       setRuns(nextRuns);
       setPosters(nextPosters);
@@ -122,8 +128,8 @@ export function PosterStudio() {
           : nextOptions.style_presets[0]?.id ?? DEFAULT_POSTER_STYLE
       );
       setSelectedRunId((current) => {
-        if (current && nextRuns.some((run) => run.id === current)) return current;
-        return nextRuns.find((run) => productOptionsForRun(run).length > 0)?.id ?? null;
+        if (current && selectableRunEntries.some((entry) => entry.run.id === current)) return current;
+        return selectableRunEntries[0]?.run.id ?? null;
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Poster Studio 데이터를 불러오지 못했습니다.");
@@ -146,6 +152,11 @@ export function PosterStudio() {
   const productOptions = useMemo(
     () => (selectedRun ? productOptionsForRun(selectedRun) : []),
     [selectedRun]
+  );
+
+  const selectableRunEntries = useMemo(
+    () => runSelectionEntriesForPoster(runs),
+    [runs]
   );
 
   useEffect(() => {
@@ -330,9 +341,9 @@ export function PosterStudio() {
                 </Badge>
               ) : null}
             </Group>
-            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+            <div className={classes.selectionGrid}>
               <RunSelectionTable
-                runs={runsWithProducts(runs)}
+                entries={selectableRunEntries}
                 selectedRunId={selectedRunId}
                 disabled={loading || generating}
                 onSelectRun={setSelectedRunId}
@@ -343,7 +354,7 @@ export function PosterStudio() {
                 disabled={!selectedRunId || loading || generating}
                 onSelectProduct={setSelectedProductId}
               />
-            </SimpleGrid>
+            </div>
             {selectedProduct ? (
               <Text size="sm" c="dimmed" lineClamp={2}>
                 {selectedProduct.one_liner || selectedProduct.title}
@@ -827,12 +838,12 @@ function ReferenceImageCard({
 }
 
 function RunSelectionTable({
-  runs,
+  entries,
   selectedRunId,
   disabled,
   onSelectRun,
 }: {
-  runs: WorkflowRun[];
+  entries: RunSelectionEntry[];
   selectedRunId: string | null;
   disabled: boolean;
   onSelectRun: (runId: string) => void;
@@ -844,24 +855,40 @@ function RunSelectionTable({
         <ScrollArea h={210}>
           <Table highlightOnHover verticalSpacing="xs" className={classes.selectionTable}>
             <Table.Tbody>
-              {runs.length > 0 ? runs.map((run) => (
-                <Table.Tr
-                  key={run.id}
-                  className={run.id === selectedRunId ? classes.selectedSelectionRow : classes.selectionRow}
-                  onClick={disabled ? undefined : () => onSelectRun(run.id)}
-                >
-                  <Table.Td>
-                    <Text fw={700} size="sm" lineClamp={1}>{getRunTitle(run)}</Text>
-                    <Text ff="monospace" size="xs" c="dimmed" lineClamp={1}>{run.id}</Text>
-                  </Table.Td>
-                  <Table.Td className={classes.selectionStatusCell}>
-                    <StatusBadge status={run.status} />
-                  </Table.Td>
-                  <Table.Td className={classes.selectionCountCell}>
-                    <Text size="xs" c="dimmed">{productOptionsForRun(run).length}개</Text>
-                  </Table.Td>
-                </Table.Tr>
-              )) : (
+              {entries.length > 0 ? entries.map(({ run, indent }) => {
+                const rowClassName = [
+                  run.id === selectedRunId ? classes.selectedSelectionRow : classes.selectionRow,
+                  indent ? classes.revisionSelectionRow : "",
+                ].filter(Boolean).join(" ");
+                return (
+                  <Table.Tr
+                    key={run.id}
+                    className={rowClassName}
+                    onClick={disabled ? undefined : () => onSelectRun(run.id)}
+                  >
+                    <Table.Td>
+                      <Group gap="xs" wrap="nowrap">
+                        {indent ? <Text className={classes.branchMarker}>↳</Text> : null}
+                        <div className={classes.selectionRunText}>
+                          <Text fw={700} size="sm" lineClamp={1}>{getRunTitle(run)}</Text>
+                          <Text ff="monospace" size="xs" c="dimmed" lineClamp={1}>{run.id}</Text>
+                        </div>
+                        {indent ? (
+                          <Badge size="xs" variant="light" color="gray">
+                            Rev {run.revision_number}
+                          </Badge>
+                        ) : null}
+                      </Group>
+                    </Table.Td>
+                    <Table.Td className={classes.selectionStatusCell}>
+                      <StatusBadge status={run.status} />
+                    </Table.Td>
+                    <Table.Td className={classes.selectionCountCell}>
+                      <Text size="xs" c="dimmed">{productOptionsForRun(run).length}개</Text>
+                    </Table.Td>
+                  </Table.Tr>
+                );
+              }) : (
                 <Table.Tr>
                   <Table.Td>
                     <Text size="sm" c="dimmed">상품이 있는 run이 없습니다.</Text>
@@ -1016,8 +1043,61 @@ function ZoomImage({
   );
 }
 
-function runsWithProducts(runs: WorkflowRun[]) {
-  return runs.filter((run) => productOptionsForRun(run).length > 0);
+function runSelectionEntriesForPoster(runs: WorkflowRun[]): RunSelectionEntry[] {
+  const runsById = new Map(runs.map((run) => [run.id, run]));
+  const revisionsByParentId = new Map<string, WorkflowRun[]>();
+  const orphanRevisions: WorkflowRun[] = [];
+
+  runs.forEach((run) => {
+    if (!run.parent_run_id) return;
+    if (!runsById.has(run.parent_run_id)) {
+      orphanRevisions.push(run);
+      return;
+    }
+    const revisions = revisionsByParentId.get(run.parent_run_id) ?? [];
+    revisions.push(run);
+    revisionsByParentId.set(run.parent_run_id, revisions);
+  });
+
+  const entries: RunSelectionEntry[] = [];
+  sortRunsByNewestCreated(runs.filter((run) => !run.parent_run_id)).forEach((rootRun) => {
+    const rootHasProducts = runHasProducts(rootRun);
+    if (rootHasProducts) {
+      entries.push({ run: rootRun, indent: false });
+    }
+
+    sortRevisionsByNewestRevision(revisionsByParentId.get(rootRun.id) ?? [])
+      .filter(runHasProducts)
+      .forEach((revision) => {
+        entries.push({ run: revision, indent: rootHasProducts });
+      });
+  });
+
+  sortRunsByNewestCreated(orphanRevisions)
+    .filter(runHasProducts)
+    .forEach((run) => entries.push({ run, indent: false }));
+
+  return entries;
+}
+
+function runHasProducts(run: WorkflowRun) {
+  return productOptionsForRun(run).length > 0;
+}
+
+function sortRevisionsByNewestRevision(runs: WorkflowRun[]) {
+  return runs.slice().sort((a, b) =>
+    (b.revision_number ?? 0) - (a.revision_number ?? 0) ||
+    runCreatedAtTime(b) - runCreatedAtTime(a)
+  );
+}
+
+function sortRunsByNewestCreated(runs: WorkflowRun[]) {
+  return runs.slice().sort((a, b) => runCreatedAtTime(b) - runCreatedAtTime(a));
+}
+
+function runCreatedAtTime(run: WorkflowRun) {
+  const timestamp = new Date(run.created_at).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function productImageCandidatesForRun(run: WorkflowRun, productId: string): PosterImageCandidate[] {
