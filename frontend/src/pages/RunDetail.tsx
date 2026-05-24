@@ -1261,30 +1261,11 @@ export function RunDetail({
         closeOnEscape={evidenceImagePreview === null}
       >
         {selectedEvidence ? (
-          <Stack gap="sm">
-            <Group gap="xs">
-              <Badge variant="light">{evidenceTypeLabel(selectedEvidence)}</Badge>
-              <Badge variant="light" color="blue">{evidenceSourceLabel(selectedEvidence)}</Badge>
-              <Badge variant="light" color="gray">{evidenceRegionLabel(selectedEvidence)}</Badge>
-              <EvidenceDetailBadge row={selectedEvidence} />
-            </Group>
-            <Text size="sm" c="dimmed">{evidenceSourceDescription(selectedEvidence)}</Text>
-            <EvidenceImageCandidates
+            <Stack gap="sm">
+            <EvidenceDetailView
               row={selectedEvidence}
               onPreviewImage={(candidate) => setEvidenceImagePreview(candidate)}
             />
-            <EvidenceMetadataSummary row={selectedEvidence} />
-            <Text size="sm">{selectedEvidence.content}</Text>
-            <Accordion variant="contained">
-              <Accordion.Item value="metadata">
-                <Accordion.Control>Developer metadata</Accordion.Control>
-                <Accordion.Panel>
-                  <Code block>
-                    {JSON.stringify(selectedEvidence.metadata, null, 2)}
-                  </Code>
-                </Accordion.Panel>
-              </Accordion.Item>
-            </Accordion>
           </Stack>
         ) : null}
       </Drawer>
@@ -1950,7 +1931,7 @@ function EnrichmentOverview({
               </Text>
             </div>
             <Badge variant="light" color={sourceConfidenceColor(result.source_confidence)}>
-              신뢰도 {Math.round((result.source_confidence || 0) * 100)}%
+              근거 상태
             </Badge>
           </Group>
           <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
@@ -1996,9 +1977,9 @@ function EnrichmentOverview({
         <Stack gap="sm">
           <Group justify="space-between" align="flex-start">
             <div>
-              <Text fw={700} size="sm">추천 보강 호출</Text>
+              <Text fw={700} size="sm">추가 데이터 확인 내역</Text>
               <Text size="sm" c="dimmed">
-                부족한 정보에 대해 실제 실행했거나 보류한 보강 호출입니다.
+                상품 기획에 필요한 상세정보, 이미지, 테마 자료를 추가로 확인한 내역입니다.
               </Text>
             </div>
             {latest ? (
@@ -2895,6 +2876,8 @@ function toolLabel(value: string) {
 
 function gapTypeLabel(value: string) {
   return {
+    missing_overview: "기본 설명",
+    missing_detail_common: "상세 공통 정보",
     missing_detail_info: "상세정보",
     missing_image_asset: "이미지",
     missing_operating_hours: "운영시간",
@@ -3035,14 +3018,19 @@ function ProductDetail({
   onAcceptRevisionChange: (changeId: string) => void;
   onRevertRevisionChange: (changeId: string) => void;
 }) {
-  const needsReview = stringListFromUnknown(product.needs_review);
-  const claimLimits = stringListFromUnknown(product.claim_limits);
-  const coverageNotes = stringListFromUnknown(product.coverage_notes);
+  const evidenceNotes = productDisplayNotes(product);
+  const needsReview = notesByCategory(evidenceNotes, "publish_check", stringListFromUnknown(product.needs_review));
+  const claimLimits = notesByCategory(evidenceNotes, "copy_caution", stringListFromUnknown(product.claim_limits));
+  const coverageNotes = notesByCategory(evidenceNotes, "evidence_scope", stringListFromUnknown(product.coverage_notes));
   const evidenceSummary =
     typeof product.evidence_summary === "string" && product.evidence_summary.trim()
       ? product.evidence_summary.trim()
       : "";
-  const marketingClaimLimits = stringListFromUnknown(marketing?.claim_limits);
+  const marketingClaimLimits = legacyUserFacingNotes(
+    stringListFromUnknown(marketing?.claim_limits),
+    "copy_caution",
+    "marketing.claim_limits"
+  ).map((note) => note.message);
   const evidenceDisclaimer =
     typeof marketing?.evidence_disclaimer === "string" ? marketing.evidence_disclaimer : "";
   const sourceIds = stringListFromUnknown(product.source_ids);
@@ -3162,7 +3150,7 @@ function ProductDetail({
                 확인 필요 {needsReview.length}개
               </Badge>
               <Badge variant="light" color={claimLimits.length > 0 ? "gray" : "green"}>
-                claim 제한 {claimLimits.length}개
+                주의 {claimLimits.length}개
               </Badge>
             </Group>
           </Group>
@@ -3232,13 +3220,13 @@ function ProductDetail({
           ) : null}
 
           <SimpleGrid cols={{ base: 1, md: 3 }}>
-            <EvidenceStateList title="확인 필요" items={needsReview} emptyText="별도 확인 항목 없음" />
+            <EvidenceStateList title="게시 전 확인이 필요한 정보" items={needsReview} emptyText="별도 확인 항목 없음" />
             <EvidenceStateList
-              title="Claim 제한"
+              title="표현 시 주의할 정보"
               items={[...claimLimits, ...marketingClaimLimits]}
-              emptyText="추가 제한 없음"
+              emptyText="추가 주의사항 없음"
             />
-            <EvidenceStateList title="Coverage note" items={coverageNotes} emptyText="추가 커버리지 메모 없음" />
+            <EvidenceStateList title="근거 범위 메모" items={coverageNotes} emptyText="추가 근거 메모 없음" />
           </SimpleGrid>
 
           {evidenceDisclaimer ? (
@@ -4300,49 +4288,61 @@ function EvidenceTable({
           </Table.Thead>
           <Table.Tbody>
             {rows.map((row) => (
-              <Table.Tr key={row.doc_id}>
-                <Table.Td>
-                  <Text fw={600} size="sm">{row.title}</Text>
-                  <Text size="xs" c="dimmed" lineClamp={1}>{evidenceSourceDescription(row)}</Text>
-                </Table.Td>
-                <Table.Td>{evidenceSourceLabel(row)}</Table.Td>
-                <Table.Td>
-                  <Text size="sm" lineClamp={1}>{evidenceRegionLabel(row)}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Badge variant="light">{evidenceTypeLabel(row)}</Badge>
-                </Table.Td>
-                <Table.Td>
-                  <EvidenceDetailBadge row={row} />
-                </Table.Td>
-                <Table.Td>
-                  <Badge variant="light" color={evidenceImageCandidates(row).length > 0 ? "green" : "gray"}>
-                    {evidenceImageCandidates(row).length}
-                  </Badge>
-                </Table.Td>
-                <Table.Td>
-                  <EvidenceReviewBadge row={row} />
-                </Table.Td>
-                <Table.Td maw={420}>
-                  <Text size="sm" lineClamp={2}>{row.snippet}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Tooltip label="Open evidence">
-                    <ActionIcon
-                      variant="light"
-                      aria-label="Open evidence"
-                      onClick={() => onOpenEvidence(row)}
-                    >
-                      <IconEye size={16} />
-                    </ActionIcon>
-                  </Tooltip>
-                </Table.Td>
-              </Table.Tr>
+              <EvidenceTableRow key={row.doc_id} row={row} onOpenEvidence={onOpenEvidence} />
             ))}
           </Table.Tbody>
         </Table>
       </ScrollArea>
     </Paper>
+  );
+}
+
+function EvidenceTableRow({
+  row,
+  onOpenEvidence,
+}: {
+  row: EvidenceDocument;
+  onOpenEvidence: (row: EvidenceDocument) => void;
+}) {
+  const display = buildEvidenceDisplayModel(row);
+  return (
+    <Table.Tr>
+      <Table.Td>
+        <Text fw={600} size="sm">{row.title}</Text>
+      </Table.Td>
+      <Table.Td>{evidenceSourceLabel(row)}</Table.Td>
+      <Table.Td>
+        <Text size="sm" lineClamp={1}>{evidenceRegionLabel(row)}</Text>
+      </Table.Td>
+      <Table.Td>
+        <Badge variant="light">{evidenceTypeLabel(row)}</Badge>
+      </Table.Td>
+      <Table.Td>
+        <EvidenceDetailBadge row={row} />
+      </Table.Td>
+      <Table.Td>
+        <Badge variant="light" color={evidenceImageCandidates(row).length > 0 ? "green" : "gray"}>
+          {evidenceImageCandidates(row).length}
+        </Badge>
+      </Table.Td>
+      <Table.Td>
+        <EvidenceReviewBadge row={row} />
+      </Table.Td>
+      <Table.Td maw={420}>
+        {display.summary ? <Text size="sm" lineClamp={2}>{display.summary}</Text> : null}
+      </Table.Td>
+      <Table.Td>
+        <Tooltip label="근거 보기">
+          <ActionIcon
+            variant="light"
+            aria-label="근거 보기"
+            onClick={() => onOpenEvidence(row)}
+          >
+            <IconEye size={16} />
+          </ActionIcon>
+        </Tooltip>
+      </Table.Td>
+    </Table.Tr>
   );
 }
 
@@ -4354,6 +4354,22 @@ type EvidenceImageCandidate = {
   source?: string;
   relevance_label?: string;
   relevance_rank?: number;
+};
+
+type EvidenceDisplayField = {
+  label: string;
+  value: string;
+  href?: string;
+};
+
+type EvidenceDisplayModel = {
+  sourceLabel: string;
+  badges: string[];
+  basicInfo: EvidenceDisplayField[];
+  usefulInfo: string[];
+  checkBeforePublish: string[];
+  links: EvidenceDisplayField[];
+  summary: string;
 };
 
 function EvidenceDetailBadge({ row }: { row: EvidenceDocument }) {
@@ -4386,16 +4402,6 @@ function evidenceSourceLabel(row: EvidenceDocument) {
   return source || "저장 근거";
 }
 
-function evidenceSourceDescription(row: EvidenceDocument) {
-  const trust = row.metadata.trust_level;
-  const retrievedAt = row.metadata.retrieved_at ? formatKstDateTime(String(row.metadata.retrieved_at)) : "";
-  const trustNumber = Number(trust);
-  const trustLabel = Number.isFinite(trustNumber)
-    ? `신뢰도 ${Math.round(trustNumber * 100)}%`
-    : "신뢰도 확인 필요";
-  return [trustLabel, retrievedAt ? `수집 ${retrievedAt}` : ""].filter(Boolean).join(" · ");
-}
-
 function evidenceRegionLabel(row: EvidenceDocument) {
   const explicit = String(
     row.metadata.region_name ??
@@ -4412,26 +4418,505 @@ function evidenceRegionLabel(row: EvidenceDocument) {
   return "-";
 }
 
-function EvidenceMetadataSummary({ row }: { row: EvidenceDocument }) {
-  const detailInfoCount = numberFromMetadata(row.metadata.detail_info_count);
+function EvidenceDetailView({
+  row,
+  onPreviewImage,
+}: {
+  row: EvidenceDocument;
+  onPreviewImage: (candidate: EvidenceImageCandidate) => void;
+}) {
+  const display = buildEvidenceDisplayModel(row);
+  return (
+    <Stack gap="sm">
+      <Paper withBorder p="sm">
+        <Stack gap="xs">
+          <Group gap="xs">
+            <Badge variant="light" color="blue">{display.sourceLabel}</Badge>
+            {display.badges.map((badge) => (
+              <Badge key={badge} variant="light">{badge}</Badge>
+            ))}
+          </Group>
+        </Stack>
+      </Paper>
+
+      <EvidenceImageCandidates row={row} onPreviewImage={onPreviewImage} />
+      <EvidenceFieldSection title="기본 정보" fields={display.basicInfo} />
+      <EvidenceTextSection
+        title="상품 설명에 활용 가능한 정보"
+        items={display.usefulInfo}
+        emptyText="상품 설명에 바로 활용할 수 있는 요약 정보가 부족합니다."
+      />
+      <EvidenceTextSection
+        title="게시 전 확인이 필요한 정보"
+        items={display.checkBeforePublish}
+        emptyText="추가 확인 항목이 없습니다."
+      />
+      <EvidenceFieldSection title="원본 링크" fields={display.links} emptyText="원본 링크가 없습니다." />
+
+      <Accordion variant="contained">
+        <Accordion.Item value="developer">
+          <Accordion.Control>Developer raw data</Accordion.Control>
+          <Accordion.Panel>
+            <Stack gap="sm">
+              <div>
+                <Text fw={700} size="sm">Raw content</Text>
+                <Code block>{row.content}</Code>
+              </div>
+              <div>
+                <Text fw={700} size="sm">Raw metadata</Text>
+                <Code block>{JSON.stringify(row.metadata, null, 2)}</Code>
+              </div>
+            </Stack>
+          </Accordion.Panel>
+        </Accordion.Item>
+      </Accordion>
+    </Stack>
+  );
+}
+
+function EvidenceFieldSection({
+  title,
+  fields,
+  emptyText = "표시할 정보가 없습니다.",
+}: {
+  title: string;
+  fields: EvidenceDisplayField[];
+  emptyText?: string;
+}) {
+  return (
+    <Paper withBorder p="sm">
+      <Stack gap="xs">
+        <Text fw={700} size="sm">{title}</Text>
+        {fields.length > 0 ? (
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
+            {fields.map((field) => (
+              <div key={`${field.label}:${field.value}`}>
+                <Text size="xs" c="dimmed">{field.label}</Text>
+                {field.href ? (
+                  <Button
+                    component="a"
+                    href={field.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    variant="subtle"
+                    size="xs"
+                    rightSection={<IconArrowUpRight size={13} />}
+                    px={0}
+                  >
+                    {field.value}
+                  </Button>
+                ) : (
+                  <Text size="sm">{field.value}</Text>
+                )}
+              </div>
+            ))}
+          </SimpleGrid>
+        ) : (
+          <Text size="sm" c="dimmed">{emptyText}</Text>
+        )}
+      </Stack>
+    </Paper>
+  );
+}
+
+function EvidenceTextSection({
+  title,
+  items,
+  emptyText,
+}: {
+  title: string;
+  items: string[];
+  emptyText: string;
+}) {
+  return (
+    <Paper withBorder p="sm">
+      <Stack gap="xs">
+        <Text fw={700} size="sm">{title}</Text>
+        {items.length > 0 ? (
+          <Stack gap={6}>
+            {items.map((item) => (
+              <Text key={item} size="sm">• {item}</Text>
+            ))}
+          </Stack>
+        ) : (
+          <Text size="sm" c="dimmed">{emptyText}</Text>
+        )}
+      </Stack>
+    </Paper>
+  );
+}
+
+function buildEvidenceDisplayModel(row: EvidenceDocument): EvidenceDisplayModel {
+  const metadata = row.metadata || {};
+  const parsedContent = parseEvidenceContent(row.content);
+  const detailFields = parseDetailFieldMap(parsedContent["상세 소개"]);
+  const infoFields = parseDetailFieldMap(parsedContent["이용정보"]);
   const imageCount = evidenceImageCandidates(row).length;
-  const notes = stringListFromMetadata(row.metadata.interpretation_notes);
-  const flags = stringListFromMetadata(row.metadata.data_quality_flags);
+  const hasDetail = metadata.detail_common_available === true || metadata.detail_common_available === "true";
+  const detailInfoCount = numberFromMetadata(metadata.detail_info_count);
+  const homepage = extractUrl(String(metadata.homepage || parsedContent["홈페이지"] || ""));
+  const contact = firstNonEmpty(
+    detailFields.infocenterculture,
+    detailFields.infocenter,
+    detailFields.infocenterleports,
+    detailFields.infocentertourcourse,
+    detailFields.infocentershopping,
+    detailFields.infocenterfood,
+    detailFields.infocenterlodging
+  );
+  const period = firstNonEmpty(
+    eventPeriod(metadata.event_start_date, metadata.event_end_date),
+    normalizedText(parsedContent["기간"])
+  );
+  const basicInfo = compactFields([
+    { label: "지역", value: evidenceRegionLabel(row) },
+    { label: "유형", value: evidenceTypeLabel(row) },
+    { label: "주소", value: firstNonEmpty(String(metadata.address || ""), parsedContent["주소"]) },
+    { label: "기간", value: period },
+    { label: "문의", value: contact },
+    homepage ? { label: "홈페이지", value: shortUrlLabel(homepage), href: homepage } : null,
+  ]);
+
+  const usefulInfo = dedupeStrings([
+    ...splitReadableSentences(firstNonEmpty(parsedContent["개요"], parsedContent["개요/스토리"]), 2),
+    ...friendlyDetailFacts(detailFields, infoFields),
+  ]).slice(0, 6);
+
+  const checkBeforePublish = dedupeStrings([
+    ...friendlyReviewNotes(metadata, detailFields, infoFields, imageCount),
+    ...stringListFromMetadata(metadata.interpretation_notes).map(cleanInternalEvidenceText),
+  ]).slice(0, 7);
+
+  const badges = dedupeStrings([
+    hasDetail || detailInfoCount > 0 ? "상세정보 보강됨" : "",
+    imageCount > 0 ? "이미지 후보 있음" : "",
+  ]);
+  const links = compactFields([
+    homepage ? { label: "홈페이지", value: shortUrlLabel(homepage), href: homepage } : null,
+    ...evidenceImageCandidates(row).slice(0, 1).map((candidate) => ({
+      label: "대표 이미지 원본",
+      value: "원본 이미지 열기",
+      href: candidate.image_url,
+    })),
+  ]);
+  const summary = usefulInfo[0] || "";
+
+  return {
+    sourceLabel: "한국관광공사 관광 데이터 기반",
+    badges,
+    basicInfo,
+    usefulInfo,
+    checkBeforePublish,
+    links,
+    summary: truncateForDisplay(summary, 220),
+  };
+}
+
+function parseEvidenceContent(content: string): Record<string, string> {
+  const text = cleanupEvidenceValue(content);
+  const result: Record<string, string> = {};
+  if (!text) return result;
+
+  const knownKeys = [
+    "제목",
+    "유형",
+    "지역코드",
+    "법정동코드",
+    "신분류체계",
+    "주소",
+    "기간",
+    "개요",
+    "홈페이지",
+    "상세 소개",
+    "이용정보",
+    "이미지 후보 수",
+    "이미지/라이선스",
+    "테마 후보",
+    "연결 관광지",
+    "출처 종류",
+    "작업",
+    "후보 주소",
+    "연결 관광지 주소",
+    "문의",
+    "개요/스토리",
+    "테마 속성",
+  ];
+  const keyPattern = knownKeys.map(escapeRegExp).join("|");
+  const matches = Array.from(text.matchAll(new RegExp(`(?:^|\\s)(${keyPattern})[:：]\\s*`, "g")));
+
+  if (matches.length > 0) {
+    matches.forEach((match, index) => {
+      const key = match[1].trim();
+      const valueStart = (match.index ?? 0) + match[0].length;
+      const valueEnd = index + 1 < matches.length ? matches[index + 1].index ?? text.length : text.length;
+      const value = cleanupEvidenceValue(text.slice(valueStart, valueEnd));
+      if (key && value) result[key] = value;
+    });
+    return result;
+  }
+
+  text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      const match = line.match(/^([^:：]{1,18})[:：]\s*(.*)$/);
+      if (!match) return;
+      const key = match[1].trim();
+      const value = cleanupEvidenceValue(match[2]);
+      if (key && value) result[key] = value;
+    });
+  return result;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseDetailFieldMap(value: unknown): Record<string, string> {
+  const text = normalizedText(value);
+  if (!text) return {};
+  const result: Record<string, string> = {};
+  text.split(/\s+\/\s+/).forEach((part) => {
+    const match = part.match(/^([^:：]{1,40})[:：]\s*(.*)$/);
+    if (!match) return;
+    const key = match[1].trim().toLowerCase();
+    const fieldValue = cleanupEvidenceValue(match[2]);
+    if (key && fieldValue) result[key] = fieldValue;
+  });
+  return result;
+}
+
+function friendlyDetailFacts(
+  detailFields: Record<string, string>,
+  infoFields: Record<string, string>
+): string[] {
+  return compactStrings([
+    detailFields.usefee ? `요금 정보: ${detailFields.usefee}` : "",
+    detailFields.usetimeculture ? `운영시간 정보: ${detailFields.usetimeculture}` : "",
+    detailFields.restdateculture ? `휴관일 정보: ${detailFields.restdateculture}` : "",
+    detailFields.parkingculture ? `주차 정보: ${detailFields.parkingculture}` : "",
+    infoFields.체험프로그램 ? `체험 프로그램: ${infoFields.체험프로그램}` : "",
+    infoFields.행사내용 ? `행사 내용: ${infoFields.행사내용}` : "",
+    infoFields.부대행사 ? `부대 행사: ${infoFields.부대행사}` : "",
+  ]);
+}
+
+function friendlyReviewNotes(
+  metadata: Record<string, unknown>,
+  detailFields: Record<string, string>,
+  infoFields: Record<string, string>,
+  imageCount: number
+): string[] {
+  const flags = stringListFromMetadata(metadata.data_quality_flags);
+  const sourceFamily = String(metadata.source_family || metadata.theme_source_family || metadata.source || "");
+  const notes = flags.map((flag) => {
+    const label = gapTypeLabel(flag);
+    if (flag === "missing_overview") return "기본 설명이 부족하므로 게시 전 원 출처에서 최신 정보를 확인하세요.";
+    if (flag === "missing_image_asset") return "게시 이미지가 필요하면 별도 이미지 후보를 확인하세요.";
+    if (flag === "missing_detail_info" || flag === "missing_detail_common") {
+      return "상세 설명과 이용 조건은 게시 전 원 출처에서 최신 정보를 확인하세요.";
+    }
+    if (flag === "theme_candidate" || flag === "needs_operational_review") {
+      return "테마 자료는 보조 근거로 활용하고, 실제 운영 조건은 게시 전 확인하세요.";
+    }
+    if (flag === "needs_license_review") return "이미지와 오디오 자료는 원 출처의 사용 조건을 확인하세요.";
+    return `${label}은 게시 전 최신 정보를 확인하세요.`;
+  });
+  if (detailFields.usefee) notes.push("요금/무료 여부는 원 출처 기준으로 게시 전 최신 여부를 확인하세요.");
+  if (detailFields.usetimeculture || detailFields.restdateculture) {
+    notes.push("운영시간과 휴관일은 변동될 수 있으므로 게시 전 확인하세요.");
+  }
+  if (infoFields.예약안내 || detailFields.reservation) {
+    notes.push("예약/문의 조건은 실제 운영자 안내와 일치하는지 확인하세요.");
+  }
+  if (sourceFamily.includes("audio")) {
+    notes.push("오디오 해설은 실제 제공 언어와 사용 조건을 확인한 뒤 안내하세요.");
+  }
+  if (imageCount > 0) {
+    notes.push("이미지는 게시 확정 자료가 아니라 후보이므로 사용권과 원 출처를 확인하세요.");
+  }
+  return notes.map(cleanInternalEvidenceText);
+}
+
+type ProductDisplayNote = {
+  audience: "user" | "developer";
+  category: "publish_check" | "copy_caution" | "evidence_scope" | "internal_diagnostic";
+  message: string;
+  source: string;
+};
+
+function productDisplayNotes(product: ProductIdea): ProductDisplayNote[] {
+  const structured = structuredProductNotes(product.review_notes);
+  if (structured.length > 0) return structured;
+  return [
+    ...legacyUserFacingNotes(stringListFromUnknown(product.needs_review), "publish_check", "needs_review"),
+    ...legacyUserFacingNotes(stringListFromUnknown(product.coverage_notes), "evidence_scope", "coverage_notes"),
+    ...legacyUserFacingNotes(stringListFromUnknown(product.claim_limits), "copy_caution", "claim_limits"),
+  ];
+}
+
+function structuredProductNotes(value: unknown): ProductDisplayNote[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const record = item as Record<string, unknown>;
+      const message = cleanupEvidenceValue(record.message);
+      const audience = record.audience === "developer" ? "developer" : "user";
+      const category = noteCategory(record.category);
+      const source = cleanupEvidenceValue(record.source) || "structured_note";
+      if (!message) return null;
+      return { audience, category, message, source } satisfies ProductDisplayNote;
+    })
+    .filter((item): item is ProductDisplayNote => Boolean(item));
+}
+
+function noteCategory(value: unknown): ProductDisplayNote["category"] {
+  if (value === "copy_caution" || value === "evidence_scope" || value === "internal_diagnostic") return value;
+  return "publish_check";
+}
+
+function notesByCategory(notes: ProductDisplayNote[], category: ProductDisplayNote["category"], legacyItems: string[]): string[] {
+  const categoryItems = notes
+    .filter((note) => note.audience === "user" && note.category === category)
+    .map((note) => note.message);
+  if (categoryItems.length > 0) return dedupeStrings(categoryItems);
+  return legacyUserFacingNotes(legacyItems, category, `legacy.${category}`).map((note) => note.message);
+}
+
+function legacyUserFacingNotes(
+  items: string[],
+  category: ProductDisplayNote["category"],
+  source: string
+): ProductDisplayNote[] {
+  return dedupeStrings(items)
+    .map((message) => legacyEvidenceNote(message, category, source))
+    .filter((note): note is ProductDisplayNote => Boolean(note && note.audience === "user" && note.message));
+}
+
+function legacyEvidenceNote(
+  value: unknown,
+  category: ProductDisplayNote["category"],
+  source: string
+): ProductDisplayNote | null {
+  const message = cleanupEvidenceValue(value);
+  if (!message) return null;
+
+  const legacyDeveloperMessages = new Set([
+    "모델이 실제 근거 목록에 없는 source id를 반환해 서버에서 제외했습니다.",
+    "상세, 이미지, 운영 조건 커버리지는 Data Coverage에서 함께 확인해야 합니다.",
+  ]);
+  if (legacyDeveloperMessages.has(message)) {
+    return { audience: "developer", category: "internal_diagnostic", message, source };
+  }
+  if (/^전체 근거 신뢰도는 약 \d+% 수준입니다\.$/.test(message)) {
+    return { audience: "developer", category: "internal_diagnostic", message, source };
+  }
+
+  return { audience: "user", category, message, source };
+}
+
+function cleanInternalEvidenceText(value: unknown): string {
+  return normalizedText(value)
+    .replace(/claim 제한/g, "표현 시 주의할 정보")
+    .replace(/Coverage note/gi, "근거 범위 메모")
+    .replace(/금지 claim/gi, "표현 시 주의할 정보")
+    .trim();
+}
+
+function compactFields(fields: Array<EvidenceDisplayField | null | undefined>): EvidenceDisplayField[] {
+  return fields.filter((field): field is EvidenceDisplayField => Boolean(field && field.value && field.value !== "-"));
+}
+
+function compactStrings(values: Array<string | null | undefined>): string[] {
+  return values.map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function dedupeStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  return compactStrings(values).filter((value) => {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function firstNonEmpty(...values: unknown[]): string {
+  for (const value of values) {
+    const text = cleanupEvidenceValue(value);
+    if (text && text !== "~") return text;
+  }
+  return "";
+}
+
+function normalizedText(value: unknown): string {
+  return String(value || "").trim();
+}
+
+function cleanupEvidenceValue(value: unknown): string {
+  const text = stripHtml(normalizedText(value)).replace(/\s+/g, " ").trim();
+  if (!text || text === "~") return "";
+  if (/^[가-힣A-Za-z0-9_\s/.-]{1,40}[:：]$/.test(text)) return "";
+  return text;
+}
+
+function stripHtml(value: string): string {
+  return value.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+}
+
+function extractUrl(value: string): string {
+  const match = value.match(/https?:\/\/[^\s"'<>]+/);
+  return match ? match[0] : "";
+}
+
+function shortUrlLabel(value: string): string {
+  try {
+    const url = new URL(value);
+    return url.hostname.replace(/^www\./, "");
+  } catch {
+    return value;
+  }
+}
+
+function eventPeriod(start: unknown, end: unknown): string {
+  const startText = normalizedText(start);
+  const endText = normalizedText(end);
+  if (!startText && !endText) return "";
+  if (startText && endText) return `${startText} ~ ${endText}`;
+  return startText || endText;
+}
+
+function splitReadableSentences(value: unknown, limit: number): string[] {
+  const text = cleanupEvidenceValue(value);
+  if (!text) return [];
+  const sentences = text
+    .split(/(?<=[.!?。！？]|다\.)\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return (sentences.length > 0 ? sentences : [text]).slice(0, limit);
+}
+
+function truncateForDisplay(value: unknown, maxLength: number): string {
+  const text = cleanupEvidenceValue(value);
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trim()}…`;
+}
+
+function EvidenceMetadataSummary({ row }: { row: EvidenceDocument }) {
+  const display = buildEvidenceDisplayModel(row);
   return (
     <Paper withBorder p="sm">
       <Stack gap="xs">
         <Group gap="xs">
-          <Badge variant="light">{evidenceSourceLabel(row)}</Badge>
+          <Badge variant="light">{display.sourceLabel}</Badge>
           <Badge variant="light">{evidenceRegionLabel(row)}</Badge>
-          <Badge variant="light">상세 항목 {detailInfoCount}</Badge>
-          <Badge variant="light">이미지 후보 {imageCount}</Badge>
+          {display.badges.slice(0, 2).map((badge) => (
+            <Badge key={badge} variant="light">{badge}</Badge>
+          ))}
         </Group>
-        {flags.length > 0 ? (
-          <Text size="xs" c="dimmed">운영자 확인: {flags.map(gapTypeLabel).join(", ")}</Text>
-        ) : null}
-        {notes.length > 0 ? (
-          <Text size="xs" c="dimmed">{notes.join(" ")}</Text>
-        ) : null}
+        <Text size="xs" c="dimmed">{display.summary}</Text>
       </Stack>
     </Paper>
   );
@@ -4473,7 +4958,7 @@ function EvidenceImageCandidates({
               </Text>
               <Group gap={6}>
                 <Badge size="xs" variant="light" color="yellow">
-                  {candidate.usage_status || "candidate"}
+                  검토용 이미지
                 </Badge>
                 {evidenceImageSourceLabel(candidate.source) ? (
                   <Badge size="xs" variant="light">

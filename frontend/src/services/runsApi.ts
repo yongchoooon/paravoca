@@ -45,6 +45,8 @@ export type ProductIdea = {
   needs_review?: string[];
   coverage_notes?: string[];
   claim_limits?: string[];
+  review_notes?: Array<Record<string, unknown>>;
+  internal_diagnostics?: Array<Record<string, unknown>>;
 };
 
 export type MarketingAsset = {

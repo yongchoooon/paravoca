@@ -3625,8 +3625,6 @@ def validate_products(
                     )
         source_ids = _expand_product_source_ids_with_linked_evidence(source_ids, docs, max_ids=5)
         review_notes = _safe_korean_string_list(product.get("needs_review"), "products[].needs_review")
-        if unresolved_invalid_source_ids and not repaired_source_id and not inferred_source_ids:
-            review_notes.append("모델이 실제 근거 목록에 없는 source id를 반환해 서버에서 제외했습니다.")
         if not source_ids:
             review_notes.append("상품에 연결된 근거 문서가 없어 게시 전 근거 연결이 필요합니다.")
         if shortage_note:
@@ -3682,6 +3680,11 @@ def validate_products(
             "needs_review": needs_review,
             "coverage_notes": coverage_notes,
             "claim_limits": claim_limits,
+            "review_notes": _product_display_notes(
+                needs_review=needs_review,
+                coverage_notes=coverage_notes,
+                claim_limits=claim_limits,
+            ),
         }
         product_source_id_diagnostics = [
             {**diagnostic, "product_id": product_id}
@@ -4100,17 +4103,49 @@ def _claim_limits_from_context(evidence_context: dict[str, Any]) -> list[str]:
 
 def _coverage_notes_from_context(evidence_context: dict[str, Any]) -> list[str]:
     notes: list[str] = []
-    source_confidence = evidence_context.get("source_confidence")
-    if isinstance(source_confidence, (int, float)):
-        notes.append(f"전체 근거 신뢰도는 약 {round(float(source_confidence) * 100)}% 수준입니다.")
     gaps = evidence_context.get("unresolved_gaps") if isinstance(evidence_context.get("unresolved_gaps"), list) else []
     if gaps:
         gap_labels = sorted({_human_gap_type(gap.get("gap_type")) for gap in gaps if isinstance(gap, dict)})
-        notes.append(f"확인이 필요한 정보: {', '.join(gap_labels[:6])}")
-    coverage = evidence_context.get("data_coverage")
-    if isinstance(coverage, dict) and coverage:
-        notes.append("상세, 이미지, 운영 조건 커버리지는 Data Coverage에서 함께 확인해야 합니다.")
+        if gap_labels:
+            notes.append(f"게시 전 확인이 필요한 정보: {', '.join(gap_labels[:6])}")
     return _dedupe_texts(notes)
+
+
+def _product_display_notes(
+    *,
+    needs_review: list[str],
+    coverage_notes: list[str],
+    claim_limits: list[str],
+) -> list[dict[str, Any]]:
+    notes: list[dict[str, Any]] = []
+    for message in needs_review:
+        notes.append(
+            {
+                "audience": "user",
+                "category": "publish_check",
+                "message": message,
+                "source": "needs_review",
+            }
+        )
+    for message in coverage_notes:
+        notes.append(
+            {
+                "audience": "user",
+                "category": "evidence_scope",
+                "message": message,
+                "source": "coverage_notes",
+            }
+        )
+    for message in claim_limits:
+        notes.append(
+            {
+                "audience": "user",
+                "category": "copy_caution",
+                "message": message,
+                "source": "claim_limits",
+            }
+        )
+    return notes
 
 
 def _normalize_evidence_summary(value: Any, source_ids: list[str], docs: list[dict[str, Any]]) -> str:

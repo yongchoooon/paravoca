@@ -205,7 +205,15 @@ def test_validate_products_uses_only_real_doc_ids_and_adds_evidence_fields():
     assert products[0]["source_ids"] == ["doc_1"]
     assert "missing_doc" not in products[0]["source_ids"]
     assert products[0]["evidence_summary"]
-    assert any("source id" in item for item in products[0]["needs_review"])
+    assert not any("source id" in item for item in products[0]["needs_review"])
+    assert any(
+        item.get("category") == "source_id_guardrail" and item.get("invalid_source_id") == "missing_doc"
+        for item in products[0].get("internal_diagnostics", [])
+    )
+    assert any(
+        note.get("audience") == "user" and note.get("category") == "copy_caution"
+        for note in products[0].get("review_notes", [])
+    )
     assert "가격, 무료 여부, 할인율 단정" in products[0]["claim_limits"]
     assert "요청 avoid 기준: 무리한 도보" in products[0]["claim_limits"]
 
@@ -229,8 +237,14 @@ def test_validate_products_does_not_fallback_to_generic_sources_when_source_ids_
     assert products[0]["source_ids"] == []
     assert products[0]["itinerary"][0]["source_id"] == ""
     assert products[0]["evidence_summary"] == "연결된 근거가 부족해 운영자 확인이 필요합니다."
-    assert any("실제 근거 목록에 없는 source id" in item for item in products[0]["needs_review"])
+    assert not any("실제 근거 목록에 없는 source id" in item for item in products[0]["needs_review"])
     assert any("근거 문서가 없어" in item for item in products[0]["needs_review"])
+    assert any(
+        note.get("audience") == "user"
+        and note.get("category") == "publish_check"
+        and "근거 문서가 없어" in str(note.get("message"))
+        for note in products[0].get("review_notes", [])
+    )
     assert not any("서버가 사용 가능한 근거를 보정" in item for item in products[0]["needs_review"])
     assert products[0]["internal_diagnostics"][0]["category"] == "source_id_guardrail"
     assert products[0]["internal_diagnostics"][0]["invalid_source_id"] == "missing_doc"
