@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import re
 import time
-import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -178,9 +178,8 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
         response_payload = response.json()
         image_bytes = _image_bytes_from_openai_response(client, response_payload)
 
-    image_id = uuid.uuid4().hex
-    filename = f"{image_id}.png"
-    image_path = storage_dir / filename
+    image_id, image_path = _new_timestamped_image_path()
+    filename = image_path.name
     image_path.write_bytes(image_bytes)
 
     image_url = _public_image_url(request, filename)
@@ -202,6 +201,25 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
         provider_response_summary=provider_summary,
         latency_ms=latency_ms,
     )
+
+
+def _new_timestamped_image_path() -> tuple[str, Path]:
+    """Return a timestamp-based image id and path with microsecond precision.
+
+    The UTC timestamp keeps filenames sortable and avoids characters that are
+    awkward in URLs. A numeric suffix is used only if two writes land on the
+    same microsecond or an existing file is present.
+    """
+
+    base_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    image_id = base_id
+    image_path = storage_dir / f"{image_id}.png"
+    suffix = 2
+    while image_path.exists():
+        image_id = f"{base_id}-{suffix}"
+        image_path = storage_dir / f"{image_id}.png"
+        suffix += 1
+    return image_id, image_path
 
 
 def _call_image_generations(

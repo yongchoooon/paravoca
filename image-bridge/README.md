@@ -26,15 +26,15 @@ Content-Type: application/json
 - `input_image_urls`가 없으면 `POST https://api.openai.com/v1/images/generations`를 JSON으로 호출한다.
 - `input_image_urls`가 있으면 서버가 URL을 다운로드한 뒤 `POST https://api.openai.com/v1/images/edits`를 multipart form-data로 호출한다.
 - OpenAI 응답의 `b64_json`은 decode하고, `url` 응답은 다시 다운로드한다.
-- 생성 이미지는 `data/images/{uuid}.png`에 저장하고 `/images/{uuid}.png`로 서빙한다.
+- 생성 이미지는 `data/images/{YYYYMMDDTHHMMSSffffffZ}.png`에 저장하고 `/images/{YYYYMMDDTHHMMSSffffffZ}.png`로 서빙한다.
 
 ## Response
 
 ```json
 {
-  "image_url": "https://image-api.example.com/images/abc123.png",
-  "markdown": "![generated poster](https://image-api.example.com/images/abc123.png)",
-  "image_id": "abc123",
+  "image_url": "https://image-api.example.com/images/20260605T154512345678Z.png",
+  "markdown": "![generated poster](https://image-api.example.com/images/20260605T154512345678Z.png)",
+  "image_id": "20260605T154512345678Z",
   "input_image_count": 1,
   "model": "gpt-image-2",
   "size": "1024x1536",
