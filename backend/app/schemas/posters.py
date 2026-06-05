@@ -11,7 +11,12 @@ PosterIncludedSection = Literal[
     "product_summary",
     "itinerary",
     "marketing_copy",
+    "target_segment",
+    "key_selling_points",
+    "landing_outline",
+    "faq_strategy",
     "sns_copy",
+    "usable_claims",
     "evidence_summary",
     "claim_limits",
 ]

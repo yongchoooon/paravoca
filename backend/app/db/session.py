@@ -1,4 +1,6 @@
+import json
 from collections.abc import Generator
+from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -8,6 +10,7 @@ from app.db.base import Base
 from app.db import models
 
 settings = get_settings()
+LEGACY_SNS_FIELD = "sns_" + "posts"
 
 if settings.sqlite_path is not None:
     settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,6 +33,7 @@ def init_db() -> None:
     migrate_workflow_runs_revision_columns()
     migrate_tourism_item_geo_columns()
     migrate_poster_assets_input_images_column()
+    migrate_remove_legacy_sns_copy()
     with SessionLocal() as db:
         seed_default_workflow(db)
 
@@ -42,6 +46,116 @@ def migrate_poster_assets_input_images_column() -> None:
         existing_columns = {row["name"] for row in rows}
         if "input_images" not in existing_columns:
             connection.execute(text("ALTER TABLE poster_assets ADD COLUMN input_images JSON NOT NULL DEFAULT '[]'"))
+
+
+def migrate_remove_legacy_sns_copy() -> None:
+    """Remove legacy SNS JSON keys and move existing copy into sns_campaign.posts."""
+
+    if not settings.database_url.startswith("sqlite"):
+        return
+    json_columns = {
+        "workflow_runs": ["input", "normalized_input", "final_output", "error"],
+        "agent_steps": ["input", "output", "error"],
+        "poster_assets": ["included_sections", "provider_response_summary", "error"],
+    }
+    text_columns = {"poster_assets": ["prompt"]}
+    with engine.begin() as connection:
+        for table, columns in json_columns.items():
+            existing = _sqlite_columns(connection, table)
+            if not existing:
+                continue
+            id_column = "id"
+            for column in columns:
+                if column not in existing:
+                    continue
+                rows = connection.execute(
+                    text(f"SELECT {id_column}, {column} FROM {table} WHERE CAST({column} AS TEXT) LIKE '%sns_' || 'posts%'")
+                ).mappings().all()
+                for row in rows:
+                    raw_value = row[column]
+                    parsed = _json_loads_if_possible(raw_value)
+                    changed_value, changed = _remove_legacy_sns_copy_value(parsed)
+                    if changed:
+                        connection.execute(
+                            text(f"UPDATE {table} SET {column} = :value WHERE {id_column} = :id"),
+                            {"value": json.dumps(changed_value, ensure_ascii=False), "id": row[id_column]},
+                        )
+        for table, columns in text_columns.items():
+            existing = _sqlite_columns(connection, table)
+            if not existing:
+                continue
+            for column in columns:
+                if column not in existing:
+                    continue
+                connection.execute(
+                    text(
+                        f"UPDATE {table} SET {column} = REPLACE({column}, :legacy_field, 'sns_campaign.posts') "
+                        f"WHERE {column} LIKE '%' || :legacy_field || '%'"
+                    ),
+                    {"legacy_field": LEGACY_SNS_FIELD},
+                )
+
+
+def _sqlite_columns(connection: Any, table: str) -> set[str]:
+    rows = connection.execute(text(f"PRAGMA table_info({table})")).mappings().all()
+    return {row["name"] for row in rows}
+
+
+def _json_loads_if_possible(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _remove_legacy_sns_copy_value(value: Any) -> tuple[Any, bool]:
+    changed = False
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        legacy_posts = value.get(LEGACY_SNS_FIELD)
+        for key, item in value.items():
+            if key == LEGACY_SNS_FIELD:
+                changed = True
+                continue
+            cleaned_item, item_changed = _remove_legacy_sns_copy_value(item)
+            result[key] = cleaned_item
+            changed = changed or item_changed
+        if isinstance(legacy_posts, list) and legacy_posts and not isinstance(result.get("sns_campaign"), dict):
+            result["sns_campaign"] = _sns_campaign_from_legacy_copy(legacy_posts)
+            changed = True
+        return result, changed
+    if isinstance(value, list):
+        result_list = []
+        for item in value:
+            if item == "sns_campaign":
+                changed = True
+                continue
+            cleaned_item, item_changed = _remove_legacy_sns_copy_value(item)
+            result_list.append(cleaned_item)
+            changed = changed or item_changed
+        return result_list, changed
+    if isinstance(value, str) and LEGACY_SNS_FIELD in value:
+        return value.replace(LEGACY_SNS_FIELD, "sns_campaign.posts"), True
+    return value, False
+
+
+def _sns_campaign_from_legacy_copy(posts: list[Any]) -> dict[str, Any]:
+    cleaned_posts = [str(post).strip() for post in posts if str(post or "").strip()]
+    return {
+        "campaign_angles": [],
+        "posts": [
+            {
+                "format": "feed",
+                "hook": post.split(".")[0][:80].strip() or post[:80].strip(),
+                "body": post,
+                "hashtags": [word for word in post.split() if word.startswith("#")],
+            }
+            for post in cleaned_posts
+        ],
+        "visual_direction": [],
+    }
 
 
 def check_db() -> bool:

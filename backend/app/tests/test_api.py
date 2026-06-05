@@ -222,8 +222,18 @@ def fake_workflow_gemini_result(**kwargs) -> GeminiJsonResult:
                         "sections": [{"title": "추천 포인트", "body": "야간 관광과 로컬 경험을 함께 구성합니다."}],
                         "disclaimer": "가격과 운영시간은 공식 확인 후 게시합니다.",
                     },
-                    "faq": [{"question": "운영시간은 확정인가요?", "answer": "운영시간은 공식 확인 후 안내합니다."}],
-                    "sns_posts": [title],
+                    "faq": [
+                        {
+                            "question": "누구에게 추천하나요?",
+                            "answer": "부산의 로컬 분위기를 가볍게 경험하고 싶은 외국인 관광객에게 추천합니다.",
+                        },
+                        {"question": "운영시간은 확정인가요?", "answer": "운영시간은 공식 확인 후 안내합니다."},
+                    ],
+                    "sns_campaign": {
+                        "campaign_angles": [{"angle": title, "rationale": "대표 SNS 각도"}],
+                        "posts": [{"format": "feed", "hook": title, "body": title, "hashtags": ["#부산여행"]}],
+                        "visual_direction": ["대표 장면"],
+                    },
                     "search_keywords": ["부산", "야간 관광", "외국인"],
                     "evidence_disclaimer": "TourAPI 근거 기반",
                     "claim_limits": ["가격 확정 금지"],
@@ -389,7 +399,7 @@ def test_geo_scope_expands_parent_city_to_child_signgus_for_tourapi_search():
 def test_tourapi_keyword_queries_use_short_known_terms_without_hallucinated_landmarks():
     normalized = {
         "target_customer": "외국인",
-        "preferred_themes": ["생태", "해변"],
+        "preferred_themes": ["자연", "해변"],
     }
     geo_scope = {
         "locations": [
@@ -407,8 +417,8 @@ def test_tourapi_keyword_queries_use_short_known_terms_without_hallucinated_land
 
     queries = _tourapi_keyword_queries(normalized, geo_scope, geo_scope["locations"][0])
 
-    assert queries == ["포항", "생태", "해변", "포항 생태", "포항 해변"]
-    assert "경상북도 포항시 외국인 생태 해변 액티비티" not in queries
+    assert queries == ["포항", "자연", "해변", "포항 자연", "포항 해변"]
+    assert "경상북도 포항시 외국인 자연 해변 액티비티" not in queries
     assert all(term not in " ".join(queries) for term in ["영일대", "호미곶"])
 
 
@@ -1786,8 +1796,8 @@ def test_validate_qa_report_cites_problem_phrase_for_deterministic_operating_hou
     products = [
         {
             "id": "product_1",
-            "title": "포항 경상북도수목원 힐링 & 생태 체험",
-            "one_liner": "숲에서 쉬어 가는 생태 체험입니다.",
+            "title": "포항 경상북도수목원 힐링 & 자연 체험",
+            "one_liner": "숲에서 쉬어 가는 자연 체험입니다.",
             "core_value": [],
             "itinerary": [],
             "estimated_duration": "상시 운영",
@@ -1809,6 +1819,49 @@ def test_validate_qa_report_cites_problem_phrase_for_deterministic_operating_hou
     assert issue["field_path"] == "estimated_duration"
     assert "예상 소요 시간" in issue["message"]
     assert "'상시 운영'" in issue["message"]
+
+
+def test_validate_qa_report_checks_strategy_pack_usable_claims():
+    products = [
+        {
+            "id": "product_1",
+            "title": "예약 확정 투어",
+            "one_liner": "근거 기반 상품",
+            "core_value": [],
+            "itinerary": [],
+            "estimated_duration": "1일",
+            "operation_difficulty": "보통",
+            "source_ids": ["doc_1"],
+        }
+    ]
+    marketing_assets = [
+        {
+            "product_id": "product_1",
+            "sales_copy": {"headline": "제목", "subheadline": "부제", "sections": [], "disclaimer": "확인"},
+            "faq": [],
+            "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
+            "search_keywords": [],
+            "claim_strategy": {
+                "usable_claims": [
+                    {"claim": "예약 즉시 확정되는 액티비티입니다.", "evidence_basis": "근거 없음"}
+                ],
+                "caution_phrasing": [{"phrase": "예약 즉시 확정", "reason": "예약 근거 없음"}],
+            },
+        }
+    ]
+
+    report = validate_qa_report(
+        {"overall_status": "pass", "summary": "", "issues": []},
+        products,
+        docs=[{"doc_id": "doc_1"}],
+        evidence_context={"unresolved_gaps": [{"gap_type": "missing_booking_info"}]},
+        marketing_assets=marketing_assets,
+    )
+
+    issue = report["issues"][0]
+    assert issue["type"] == "booking_claim"
+    assert issue["field_path"] == "claim_strategy.usable_claims[0].claim"
+    assert "활용 가능한 주장" in issue["message"]
 
 
 def test_validate_qa_report_filters_source_metadata_noise_and_enriches_title_fix():
@@ -2038,7 +2091,7 @@ def test_targeted_revision_qa_report_overrides_still_open_when_problem_quote_rem
                     "disclaimer": "운영 정보는 확인 후 안내합니다.",
                 },
                 "faq": [],
-                "sns_posts": [],
+                "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
                 "search_keywords": [],
             }
         ],
@@ -2089,7 +2142,7 @@ def test_targeted_revision_still_open_message_quotes_current_problem_text():
                         "answer": "예약 없이 모든 체험에 참여할 수 있습니다.",
                     }
                 ],
-                "sns_posts": [],
+                "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
                 "search_keywords": [],
             }
         ],
@@ -2142,7 +2195,7 @@ def test_targeted_revision_carryover_issue_quotes_current_problem_text():
                         "answer": "예약 없이 모든 체험에 참여할 수 있습니다.",
                     }
                 ],
-                "sns_posts": [],
+                "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
                 "search_keywords": [],
             }
         ],
@@ -2167,7 +2220,11 @@ def test_apply_revision_patch_only_applies_allowed_issue_field():
                 "disclaimer": "원본 유의 문구",
             },
             "faq": [{"question": "예약은요?", "answer": "예약 즉시 확정됩니다."}],
-            "sns_posts": ["원본 SNS"],
+            "sns_campaign": {
+                "campaign_angles": [{"angle": "원본 SNS", "rationale": "원본 SNS 각도"}],
+                "posts": [{"format": "feed", "hook": "원본 SNS", "body": "원본 SNS", "hashtags": ["#부산"]}],
+                "visual_direction": ["원본 장면"],
+            },
             "search_keywords": ["부산"],
         }
     ]
@@ -2197,6 +2254,99 @@ def test_apply_revision_patch_only_applies_allowed_issue_field():
     assert patched_assets[0]["sales_copy"]["headline"] == "원본 헤드라인"
     assert patched_assets[0]["sales_copy"]["sections"][0]["body"] == "가격은 운영자 확인 후 안내합니다."
     assert patched_assets[0]["faq"][0]["answer"] == "예약 즉시 확정됩니다."
+
+
+
+
+def test_apply_revision_patch_updates_allowed_marketing_strategy_field_only():
+    products = [{"id": "product_1", "title": "부산 야경 투어", "one_liner": "원본"}]
+    marketing_assets = [
+        {
+            "product_id": "product_1",
+            "sales_copy": {"headline": "원본", "subheadline": "원본", "sections": [], "disclaimer": "원본"},
+            "faq": [],
+            "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
+            "search_keywords": [],
+            "faq_strategy": {
+                "operation_faq": [{"question": "운영시간은요?", "answer": "방문 전 확인하세요."}]
+            },
+            "claim_strategy": {
+                "usable_claims": [{"claim": "광안리 야경 산책을 소개할 수 있습니다.", "evidence_basis": "근거 있음"}],
+                "caution_phrasing": [],
+            },
+        }
+    ]
+
+    _, patched_assets = apply_revision_patch(
+        {
+            "marketing_field_patches": [
+                {
+                    "product_id": "product_1",
+                    "field_path": "faq_strategy.operation_faq[0].answer",
+                    "value": "근거에 있는 행사 날짜는 본문에 쓰고, 운영시간은 게시 전 확인하도록 안내합니다.",
+                },
+                {
+                    "product_id": "product_1",
+                    "field_path": "claim_strategy.needs_confirmation[0].claim",
+                    "value": "생성되면 안 되는 필드",
+                },
+            ]
+        },
+        products,
+        marketing_assets,
+        allowed_patch_scope={"product_1": {"faq_strategy.operation_faq[0].answer", "claim_strategy.needs_confirmation[0].claim"}},
+    )
+
+    assert patched_assets[0]["faq_strategy"]["operation_faq"][0]["answer"].startswith("근거에 있는 행사 날짜")
+    assert "needs_confirmation" not in patched_assets[0]["claim_strategy"]
+
+
+def test_ai_revision_change_review_tracks_strategy_pack_field_paths():
+    source_output = {
+        "products": [{"id": "product_1", "title": "상품", "one_liner": "소개"}],
+        "marketing_assets": [
+            {
+                "product_id": "product_1",
+                "sales_copy": {"headline": "제목", "subheadline": "부제", "sections": [], "disclaimer": "확인"},
+                "faq": [],
+                "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
+                "search_keywords": [],
+                "faq_strategy": {"operation_faq": [{"question": "운영시간은요?", "answer": "방문 전 확인하세요."}]},
+            }
+        ],
+    }
+    selected_issue = {
+        "product_id": "product_1",
+        "type": "operational_uncertainty",
+        "severity": "medium",
+        "field_path": "faq_strategy.operation_faq[0].answer",
+        "message": "FAQ 답변에 문제 문구 '방문 전 확인하세요.'가 있습니다.",
+        "suggested_fix": "근거 기반으로 답변하세요.",
+    }
+
+    review = _build_ai_revision_change_review(
+        {"source_final_output": source_output, "qa_issues": [selected_issue]},
+        {
+            "product_ideas": source_output["products"],
+            "marketing_assets": [
+                {
+                    "product_id": "product_1",
+                    "sales_copy": {"headline": "제목", "subheadline": "부제", "sections": [], "disclaimer": "확인"},
+                    "faq": [],
+                    "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
+                    "search_keywords": [],
+                    "faq_strategy": {"operation_faq": [{"question": "운영시간은요?", "answer": "행사 날짜는 근거에 맞춰 안내하고 운영시간은 확인을 요청합니다."}]},
+                }
+            ],
+        },
+        "llm_partial_rewrite",
+    )
+
+    assert review["enabled"] is True
+    assert review["pending_count"] == 1
+    assert review["items"][0]["field_path"] == "faq_strategy.operation_faq[0].answer"
+    assert review["items"][0]["field_label"] == "운영 확인 FAQ 답변"
+    assert review["items"][0]["qa_issue"]["message"] == selected_issue["message"]
 
 
 def test_revision_source_stability_preserves_parent_source_fields():
@@ -2251,7 +2401,7 @@ def test_ai_revision_change_review_tracks_changed_fields_and_related_issue():
                     "disclaimer": "확인 후 안내합니다.",
                 },
                 "faq": [],
-                "sns_posts": [],
+                "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
                 "search_keywords": [],
             }
         ],
@@ -2279,7 +2429,7 @@ def test_ai_revision_change_review_tracks_changed_fields_and_related_issue():
                         "disclaimer": "확인 후 안내합니다.",
                     },
                     "faq": [],
-                    "sns_posts": [],
+                    "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
                     "search_keywords": [],
                 }
             ],
@@ -2414,7 +2564,7 @@ def test_ai_revision_change_decisions_accept_or_revert_without_new_revision():
                     "disclaimer": "확인 후 안내합니다.",
                 },
                 "faq": [],
-                "sns_posts": [],
+                "sns_campaign": {"campaign_angles": [], "posts": [], "visual_direction": []},
                 "search_keywords": [],
             }
         ],

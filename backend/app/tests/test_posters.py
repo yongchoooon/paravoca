@@ -47,10 +47,43 @@ def _sample_result(status: str = "completed") -> dict:
                     "disclaimer": "운영 정보는 방문 전 확인이 필요합니다.",
                 },
                 "faq": [],
-                "sns_posts": ["오늘 밤 광안리에서 가볍게 시작하는 로컬 산책"],
                 "search_keywords": ["부산 야경", "광안리"],
                 "evidence_disclaimer": "운영시간과 가격은 확인 필요",
                 "claim_limits": ["예약 즉시 확정 표현 금지"],
+                "marketing_strategy": {
+                    "key_selling_points": [
+                        {
+                            "point": "광안리 야간 경관을 중심으로 한 가벼운 산책",
+                            "evidence_basis": "광안리 해변 근거에서 야간 경관을 확인했습니다.",
+                            "usage_note": "포스터 톤은 야경과 로컬 무드 중심",
+                        }
+                    ],
+                },
+                "landing_page_outline": {
+                    "hero": {
+                        "headline": "광안리 밤바다 로컬 워크",
+                        "subheadline": "야경과 골목 무드를 함께 걷는 저녁 코스",
+                        "hook": "부산의 밤을 과하게 서두르지 않고 즐깁니다.",
+                    }
+                },
+                "sns_campaign": {
+                    "posts": [
+                        {
+                            "format": "feed",
+                            "hook": "오늘 밤 광안리 산책",
+                            "body": "바다와 골목 무드를 함께 담는 저녁 코스",
+                            "hashtags": ["#부산야경", "#광안리산책"],
+                        }
+                    ],
+                },
+                "claim_strategy": {
+                    "usable_claims": [
+                        {"claim": "광안리 야간 경관을 중심으로 소개할 수 있습니다.", "evidence_basis": "근거 문서에 야간 경관 정보가 있습니다."}
+                    ],
+                    "caution_phrasing": [
+                        {"phrase": "예약 즉시 확정", "reason": "예약 가능 여부 근거가 없습니다."}
+                    ],
+                },
             }
         ],
         "unresolved_gaps": [{"type": "hours", "message": "운영시간 확인 필요"}],
@@ -93,7 +126,12 @@ def test_poster_prompt_builder_separates_visible_text_and_constraints():
             "product_summary",
             "itinerary",
             "marketing_copy",
+            "target_segment",
+            "key_selling_points",
+            "landing_outline",
+            "faq_strategy",
             "sns_copy",
+            "usable_claims",
             "evidence_summary",
             "claim_limits",
         ],
@@ -111,11 +149,21 @@ def test_poster_prompt_builder_separates_visible_text_and_constraints():
     assert "Do not substitute a generic famous landmark" in prompt.prompt
     assert '"광안리 야경 로컬 워크"' in prompt.prompt
     assert any("가격, 할인율" in item for item in prompt.constraints)
+    assert any("예약 즉시 확정" in item for item in prompt.constraints)
     assert "Avoid claiming: 가격, 할인율" in prompt.prompt
+    assert "Avoid claiming: 예약 즉시 확정" in prompt.prompt
+    assert "광안리 밤바다 로컬 워크" in prompt.prompt
+    assert "광안리 야간 경관을 중심으로 한 가벼운 산책" in prompt.prompt
+    assert "오늘 밤 광안리 산책" in prompt.prompt
+    assert "Core selling point cues:" in prompt.prompt
+    assert "Landing-page story cues:" in prompt.prompt
+    assert "Claims that may be used safely" in prompt.prompt
     assert all("가격, 할인율" not in item for item in prompt.visible_text)
     assert "근거 기반 초안" not in prompt.prompt
     assert result["products"][0]["evidence_summary"] not in prompt.visible_text
-    assert result["products"][0]["evidence_summary"] in prompt.prompt
+    assert result["products"][0]["evidence_summary"] not in prompt.prompt
+    assert "광안리 해변: 야간 경관이 알려져 있습니다." in prompt.prompt
+    assert prompt.source_summary["evidence_context_count"] == 1
     assert "광안리 야경 로컬 워크" in prompt.source_summary["specific_place_hints"]
 
 

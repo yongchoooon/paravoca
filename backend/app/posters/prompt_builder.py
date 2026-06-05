@@ -38,16 +38,24 @@ def build_poster_prompt(
     location = _location_text(run_input, normalized_request, geo_scope)
     core_values = _string_list(product.get("core_value"), limit=4)
     itinerary_items = _itinerary_texts(product.get("itinerary"), limit=3)
-    evidence_summary = _clean_text(product.get("evidence_summary"))
     marketing_copy = _marketing_texts(marketing)
-    sns_copy = _string_list(_dict(marketing).get("sns_posts"), limit=1)
+    sns_copy = _sns_texts(marketing)
+    target_segment_texts = _target_segment_texts(marketing)
+    key_selling_point_texts = _key_selling_point_texts(marketing)
+    landing_outline_texts = _landing_outline_texts(marketing)
+    faq_strategy_texts = _faq_strategy_texts(marketing)
+    usable_claim_texts = _usable_claim_texts(marketing)
+    evidence_context_texts = _evidence_context_texts(product=product, result=result)
     specific_place_hints = _specific_place_hints(
         product_title=product_title,
         one_liner=one_liner,
         itinerary_items=itinerary_items,
         marketing_copy=marketing_copy,
         sns_copy=sns_copy,
-        evidence_summary=evidence_summary,
+        target_segment_texts=target_segment_texts,
+        key_selling_point_texts=key_selling_point_texts,
+        landing_outline_texts=landing_outline_texts,
+        evidence_context_texts=evidence_context_texts,
     )
 
     visible_text: list[str] = []
@@ -59,8 +67,14 @@ def build_poster_prompt(
         visible_text.extend(itinerary_items[:2])
     if "marketing_copy" in selected:
         visible_text.extend(marketing_copy[:2])
+    if "key_selling_points" in selected:
+        visible_text.extend(key_selling_point_texts[:2])
+    if "landing_outline" in selected:
+        visible_text.extend(landing_outline_texts[:2])
     if "sns_copy" in selected:
         visible_text.extend(sns_copy[:1])
+    if "usable_claims" in selected:
+        visible_text.extend(usable_claim_texts[:1])
     visible_text = _dedupe([_clean_text(item) for item in visible_text if _clean_text(item)])[:7]
 
     constraints = _constraints(product, marketing, result)
@@ -72,7 +86,12 @@ def build_poster_prompt(
         itinerary_items=itinerary_items,
         marketing_copy=marketing_copy,
         sns_copy=sns_copy,
-        evidence_summary=evidence_summary,
+        target_segment_texts=target_segment_texts,
+        key_selling_point_texts=key_selling_point_texts,
+        landing_outline_texts=landing_outline_texts,
+        faq_strategy_texts=faq_strategy_texts,
+        usable_claim_texts=usable_claim_texts,
+        evidence_context_texts=evidence_context_texts,
     )
 
     resolved_input_images = input_images or []
@@ -197,6 +216,7 @@ def build_poster_prompt(
             "target_customer": target_customer,
             "input_image_count": len(resolved_input_images),
             "specific_place_hints": specific_place_hints,
+            "evidence_context_count": len(evidence_context_texts),
         },
     )
 
@@ -277,12 +297,176 @@ def _itinerary_texts(value: Any, *, limit: int) -> list[str]:
 
 
 def _marketing_texts(marketing: dict[str, Any] | None) -> list[str]:
-    sales_copy = _dict(_dict(marketing).get("sales_copy"))
+    marketing_dict = _dict(marketing)
+    sales_copy = _dict(marketing_dict.get("sales_copy"))
+    outline = _dict(marketing_dict.get("landing_page_outline"))
+    hero = _dict(outline.get("hero"))
+    strategy = _dict(marketing_dict.get("marketing_strategy"))
+    key_points = []
+    for item in _records(strategy.get("key_selling_points"), limit=3):
+        key_points.extend([_clean_text(item.get("point")), _clean_text(item.get("usage_note"))])
     texts = [
+        _clean_text(hero.get("headline")),
+        *key_points,
+        _clean_text(hero.get("subheadline")),
+        _clean_text(hero.get("hook")),
         _clean_text(sales_copy.get("headline")),
         _clean_text(sales_copy.get("subheadline")),
     ]
     return _dedupe([item for item in texts if item])
+
+
+def _sns_texts(marketing: dict[str, Any] | None) -> list[str]:
+    marketing_dict = _dict(marketing)
+    campaign = _dict(marketing_dict.get("sns_campaign"))
+    posts = _records(campaign.get("posts"), limit=2)
+    texts: list[str] = []
+    for post in posts:
+        texts.extend([_clean_text(post.get("hook")), _clean_text(post.get("body"))])
+    return _dedupe([item for item in texts if item])[:2]
+
+
+def _target_segment_texts(marketing: dict[str, Any] | None) -> list[str]:
+    strategy = _dict(_dict(marketing).get("marketing_strategy"))
+    target = _dict(strategy.get("target_segment"))
+    secondary = _string_list(target.get("secondary"), limit=3)
+    texts = [
+        _clean_text(target.get("primary")),
+        ", ".join(secondary),
+        _clean_text(target.get("foreigner_context")),
+    ]
+    return _dedupe([item for item in texts if item])[:4]
+
+
+def _key_selling_point_texts(marketing: dict[str, Any] | None) -> list[str]:
+    strategy = _dict(_dict(marketing).get("marketing_strategy"))
+    texts: list[str] = []
+    for item in _records(strategy.get("key_selling_points"), limit=4):
+        point = _clean_text(item.get("point"))
+        usage_note = _clean_text(item.get("usage_note"))
+        evidence_basis = _clean_text(item.get("evidence_basis"))
+        if point:
+            texts.append(point)
+        if usage_note:
+            texts.append(usage_note)
+        if evidence_basis:
+            texts.append(f"Evidence cue: {evidence_basis}")
+    return _dedupe(texts)[:8]
+
+
+def _landing_outline_texts(marketing: dict[str, Any] | None) -> list[str]:
+    outline = _dict(_dict(marketing).get("landing_page_outline"))
+    hero = _dict(outline.get("hero"))
+    texts = [
+        _clean_text(hero.get("headline")),
+        _clean_text(hero.get("subheadline")),
+        _clean_text(hero.get("hook")),
+        *_string_list(outline.get("why_this_product"), limit=3),
+        *_string_list(outline.get("practical_info"), limit=2),
+    ]
+    for item in _records(outline.get("evidence_backed_points"), limit=3):
+        point = _clean_text(item.get("point"))
+        if point:
+            texts.append(point)
+    return _dedupe([item for item in texts if item])[:8]
+
+
+def _faq_strategy_texts(marketing: dict[str, Any] | None) -> list[str]:
+    faq_strategy = _dict(_dict(marketing).get("faq_strategy"))
+    texts: list[str] = []
+    for key, label in (("buyer_faq", "Buyer FAQ"), ("operation_faq", "Operation FAQ")):
+        for item in _records(faq_strategy.get(key), limit=2):
+            question = _clean_text(item.get("question"))
+            answer = _clean_text(item.get("answer"))
+            if question or answer:
+                texts.append(f"{label}: {' / '.join([part for part in [question, answer] if part])}")
+    return _dedupe(texts)[:4]
+
+
+def _usable_claim_texts(marketing: dict[str, Any] | None) -> list[str]:
+    claim_strategy = _dict(_dict(marketing).get("claim_strategy"))
+    texts: list[str] = []
+    for item in _records(claim_strategy.get("usable_claims"), limit=4):
+        claim = _clean_text(item.get("claim"))
+        evidence_basis = _clean_text(item.get("evidence_basis"))
+        if claim:
+            texts.append(claim)
+        if evidence_basis:
+            texts.append(f"Evidence cue: {evidence_basis}")
+    return _dedupe(texts)[:6]
+
+
+def _evidence_context_texts(
+    *,
+    product: dict[str, Any],
+    result: dict[str, Any],
+    limit: int = 3,
+) -> list[str]:
+    """Return meaningful evidence context, not a low-information "N sources used" summary."""
+
+    source_ids = set(_string_list(product.get("source_ids"), limit=12))
+    docs = result.get("retrieved_documents")
+    texts: list[str] = []
+    if isinstance(docs, list):
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            doc_id = _clean_text(doc.get("doc_id") or doc.get("source_id") or doc.get("id"))
+            if source_ids and doc_id and doc_id not in source_ids:
+                continue
+            title = _clean_text(doc.get("title"))
+            snippet = _clean_text(doc.get("snippet") or doc.get("summary"))
+            content = _clean_text(doc.get("content"))
+            body = snippet or _short_meaningful_content(content)
+            if title and body:
+                texts.append(f"{title}: {body}")
+            elif title:
+                texts.append(title)
+            elif body:
+                texts.append(body)
+            if len(texts) >= limit:
+                break
+
+    # Use product evidence_summary only when it contains actual context, not just a count/title shell.
+    summary = _clean_text(product.get("evidence_summary"))
+    if summary and not _is_low_information_evidence_summary(summary):
+        texts.append(summary)
+
+    return _dedupe([_trim_for_context(item, max_chars=420) for item in texts if item])[:limit]
+
+
+def _short_meaningful_content(content: str) -> str:
+    if not content:
+        return ""
+    # Do not dump long raw evidence into poster prompts. Use the first sentence-like chunk only.
+    for separator in (". ", "。", "\n"):
+        if separator in content:
+            candidate = content.split(separator)[0]
+            return _trim_for_context(candidate, max_chars=260)
+    return _trim_for_context(content, max_chars=260)
+
+
+def _trim_for_context(text: str, *, max_chars: int) -> str:
+    cleaned = _clean_text(text)
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 1].rstrip() + "…"
+
+
+def _is_low_information_evidence_summary(text: str) -> bool:
+    normalized = text.strip()
+    return (
+        "근거를 사용했습니다" in normalized
+        and len(normalized) < 90
+        and ":" not in normalized
+        and " - " not in normalized
+    )
+
+
+def _records(value: Any, *, limit: int = 8) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)][:limit]
 
 
 def _specific_place_hints(
@@ -292,7 +476,10 @@ def _specific_place_hints(
     itinerary_items: list[str],
     marketing_copy: list[str],
     sns_copy: list[str],
-    evidence_summary: str,
+    target_segment_texts: list[str],
+    key_selling_point_texts: list[str],
+    landing_outline_texts: list[str],
+    evidence_context_texts: list[str],
 ) -> list[str]:
     candidates = [
         product_title,
@@ -300,7 +487,10 @@ def _specific_place_hints(
         *itinerary_items,
         *marketing_copy,
         *sns_copy,
-        evidence_summary,
+        *target_segment_texts,
+        *key_selling_point_texts,
+        *landing_outline_texts,
+        *evidence_context_texts,
     ]
     return _dedupe([item for item in (_clean_text(candidate) for candidate in candidates) if item])[:8]
 
@@ -314,7 +504,12 @@ def _key_details(
     itinerary_items: list[str],
     marketing_copy: list[str],
     sns_copy: list[str],
-    evidence_summary: str,
+    target_segment_texts: list[str],
+    key_selling_point_texts: list[str],
+    landing_outline_texts: list[str],
+    faq_strategy_texts: list[str],
+    usable_claim_texts: list[str],
+    evidence_context_texts: list[str],
 ) -> list[str]:
     details: list[str] = []
     if location:
@@ -326,12 +521,22 @@ def _key_details(
     if "itinerary" in selected and itinerary_items:
         details.append(f"Experience cues: {', '.join(itinerary_items)}.")
     if "marketing_copy" in selected and marketing_copy:
-        details.append(f"Marketing tone cues: {' / '.join(marketing_copy[:2])}.")
+        details.append(f"Marketing tone cues: {' / '.join(marketing_copy[:4])}.")
+    if "target_segment" in selected and target_segment_texts:
+        details.append(f"Audience and sales target cues: {' / '.join(target_segment_texts[:4])}.")
+    if "key_selling_points" in selected and key_selling_point_texts:
+        details.append(f"Core selling point cues: {' / '.join(key_selling_point_texts[:5])}.")
+    if "landing_outline" in selected and landing_outline_texts:
+        details.append(f"Landing-page story cues: {' / '.join(landing_outline_texts[:5])}.")
+    if "faq_strategy" in selected and faq_strategy_texts:
+        details.append(f"Buyer/operator concern cues to reflect subtly: {' / '.join(faq_strategy_texts[:3])}.")
     if "sns_copy" in selected and sns_copy:
         details.append(f"Social copy tone cue: {sns_copy[0]}.")
-    if "evidence_summary" in selected and evidence_summary:
+    if "usable_claims" in selected and usable_claim_texts:
+        details.append(f"Claims that may be used safely when supported: {' / '.join(usable_claim_texts[:4])}.")
+    if "evidence_summary" in selected and evidence_context_texts:
         details.append(
-            f"Use this as background evidence context, without overclaiming: {evidence_summary}."
+            f"Use these evidence-backed context cues, without printing long evidence text: {' / '.join(evidence_context_texts)}."
         )
     return details or ["Use the product data as the primary source of visual and text choices."]
 
@@ -363,6 +568,12 @@ def _constraints(
     raw_constraints.extend(
         f"Avoid claiming: {item}."
         for item in _string_list(_dict(marketing).get("claim_limits"), limit=6)
+    )
+    claim_strategy = _dict(_dict(marketing).get("claim_strategy"))
+    raw_constraints.extend(
+        f"Avoid claiming: {_clean_text(item.get('phrase'))} — {_clean_text(item.get('reason'))}."
+        for item in _records(claim_strategy.get("caution_phrasing"), limit=6)
+        if _clean_text(item.get("phrase")) or _clean_text(item.get("reason"))
     )
     raw_constraints.extend(
         f"Treat this as a limitation, not promotional copy: {item}."

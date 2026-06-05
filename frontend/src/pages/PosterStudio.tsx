@@ -374,7 +374,12 @@ export function PosterStudio() {
                     section={section}
                     checked={includedSections.includes(section)}
                     expanded={expandedSections.includes(section)}
-                    preview={posterSectionPreview(section, selectedProductRecord, selectedMarketingRecord)}
+                    preview={posterSectionPreview(
+                      section,
+                      selectedProductRecord,
+                      selectedMarketingRecord,
+                      recordsFromUnknown(selectedRun?.final_output?.["retrieved_documents"])
+                    )}
                     disabled={generating}
                     onToggleChecked={(checked) => toggleSection(section, checked)}
                     onToggleExpanded={() => toggleExpandedSection(section)}
@@ -1246,10 +1251,16 @@ function posterStyleLabel(styleId: string, options: PosterOptions | null) {
 function posterSectionPreview(
   section: PosterIncludedSection,
   product: Record<string, unknown> | null,
-  marketing: Record<string, unknown> | null
+  marketing: Record<string, unknown> | null,
+  evidenceDocuments: Array<Record<string, unknown>> = []
 ) {
   if (!product) return "상품을 선택하면 이 항목에 들어갈 실제 내용이 표시됩니다.";
   const salesCopy = recordFromUnknown(marketing?.sales_copy);
+  const strategy = recordFromUnknown(marketing?.marketing_strategy);
+  const targetSegment = recordFromUnknown(strategy.target_segment);
+  const outline = recordFromUnknown(marketing?.landing_page_outline);
+  const faqStrategy = recordFromUnknown(marketing?.faq_strategy);
+  const claimStrategy = recordFromUnknown(marketing?.claim_strategy);
   if (section === "product_summary") {
     return [product.title, product.one_liner, stringListFromUnknown(product.core_value).join(", ")]
       .map((item) => String(item ?? "").trim())
@@ -1263,26 +1274,126 @@ function posterSectionPreview(
     return items.join(" → ") || "일정/경험 요소 없음";
   }
   if (section === "marketing_copy") {
-    return [salesCopy.headline, salesCopy.subheadline]
+    return posterMarketingPreviewText(marketing, salesCopy) || "마케팅 문구 없음";
+  }
+  if (section === "target_segment") {
+    return [targetSegment.primary, stringListFromUnknown(targetSegment.secondary).join(", "), targetSegment.foreigner_context]
       .map((item) => String(item ?? "").trim())
       .filter(Boolean)
-      .join(" / ") || "마케팅 문구 없음";
+      .join(" / ") || "판매 대상 정보 없음";
+  }
+  if (section === "key_selling_points") {
+    return recordsFromUnknown(strategy.key_selling_points)
+      .map((item) => [item.point, item.usage_note].map((value) => String(value ?? "").trim()).filter(Boolean).join(" — "))
+      .filter(Boolean)
+      .join(" / ") || "핵심 Selling Point 없음";
+  }
+  if (section === "landing_outline") {
+    const hero = recordFromUnknown(outline.hero);
+    return [
+      hero.headline,
+      hero.subheadline,
+      hero.hook,
+      ...stringListFromUnknown(outline.why_this_product),
+      ...recordsFromUnknown(outline.evidence_backed_points).map((item) => item.point),
+      ...stringListFromUnknown(outline.practical_info),
+    ]
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+      .slice(0, 6)
+      .join(" / ") || "상세페이지 구성 없음";
+  }
+  if (section === "faq_strategy") {
+    const buyer = recordsFromUnknown(faqStrategy.buyer_faq).map((item) => item.question || item.answer);
+    const operation = recordsFromUnknown(faqStrategy.operation_faq).map((item) => item.question || item.answer);
+    return [...buyer, ...operation].map((item) => String(item ?? "").trim()).filter(Boolean).slice(0, 4).join(" / ") || "FAQ 전략 없음";
   }
   if (section === "sns_copy") {
-    return stringListFromUnknown(marketing?.sns_posts)[0] || "SNS 문구 없음";
+    return posterSnsPreviewText(marketing) || "SNS 문구 없음";
+  }
+  if (section === "usable_claims") {
+    return recordsFromUnknown(claimStrategy.usable_claims)
+      .map((item) => [item.claim, item.evidence_basis].map((value) => String(value ?? "").trim()).filter(Boolean).join(" — "))
+      .filter(Boolean)
+      .join(" / ") || "활용 가능한 주장 없음";
   }
   if (section === "evidence_summary") {
-    return String(product.evidence_summary || "").trim() || "근거 요약 없음";
+    return posterEvidencePreviewText(product, evidenceDocuments) || "연결된 근거 제목/요약이 없어 포스터에는 넣지 않습니다.";
   }
   if (section === "claim_limits") {
     const limits = [
       ...stringListFromUnknown(product.claim_limits),
       ...stringListFromUnknown(product.not_to_claim),
       ...stringListFromUnknown(product.needs_review),
+      ...posterCautionPhrases(marketing),
     ];
     return limits.join(" / ") || "제한/주의사항 없음";
   }
   return "선택한 데이터가 포스터 프롬프트에 반영됩니다.";
+}
+
+function posterEvidencePreviewText(
+  product: Record<string, unknown>,
+  evidenceDocuments: Array<Record<string, unknown>>
+) {
+  const sourceIds = new Set(stringListFromUnknown(product.source_ids));
+  const docTexts = evidenceDocuments
+    .filter((doc) => {
+      const docId = String(doc.doc_id || doc.source_id || doc.id || "").trim();
+      return !sourceIds.size || !docId || sourceIds.has(docId);
+    })
+    .map((doc) => {
+      const title = String(doc.title ?? "").trim();
+      const snippet = String(doc.snippet || doc.summary || "").trim();
+      const content = String(doc.content || "").trim();
+      const body = snippet || content.slice(0, 160);
+      return [title, body].filter(Boolean).join(": ");
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+  const summary = String(product.evidence_summary || "").trim();
+  if (summary && !isLowInformationEvidenceSummary(summary)) {
+    docTexts.push(summary);
+  }
+  return Array.from(new Set(docTexts)).slice(0, 3).join(" / ");
+}
+
+function isLowInformationEvidenceSummary(value: string) {
+  return value.includes("근거를 사용했습니다") && value.length < 90 && !value.includes(":");
+}
+
+function posterMarketingPreviewText(
+  marketing: Record<string, unknown> | null,
+  salesCopy: Record<string, unknown>
+) {
+  const outline = recordFromUnknown(marketing?.landing_page_outline);
+  const hero = recordFromUnknown(outline.hero);
+  const strategy = recordFromUnknown(marketing?.marketing_strategy);
+  const keyPoints = recordsFromUnknown(strategy.key_selling_points).map((item) =>
+    String(item.point ?? "").trim()
+  );
+  return [hero.headline, hero.subheadline, hero.hook, salesCopy.headline, salesCopy.subheadline, ...keyPoints]
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .join(" / ");
+}
+
+function posterSnsPreviewText(marketing: Record<string, unknown> | null) {
+  const campaign = recordFromUnknown(marketing?.sns_campaign);
+  const campaignPost = recordsFromUnknown(campaign.posts).find((post) => post.hook || post.body);
+  return [campaignPost?.hook, campaignPost?.body]
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" / ");
+}
+
+function posterCautionPhrases(marketing: Record<string, unknown> | null) {
+  const strategy = recordFromUnknown(marketing?.claim_strategy);
+  return recordsFromUnknown(strategy.caution_phrasing)
+    .map((item) => [item.phrase, item.reason].map((value) => String(value ?? "").trim()).filter(Boolean).join(" — "))
+    .filter(Boolean);
 }
 
 function recordsFromUnknown(value: unknown): Array<Record<string, unknown>> {

@@ -6,7 +6,12 @@ export type PosterIncludedSection =
   | "product_summary"
   | "itinerary"
   | "marketing_copy"
+  | "target_segment"
+  | "key_selling_points"
+  | "landing_outline"
+  | "faq_strategy"
   | "sns_copy"
+  | "usable_claims"
   | "evidence_summary"
   | "claim_limits";
 
@@ -62,10 +67,15 @@ export type CreatePosterPayload = {
 export const POSTER_SECTION_LABELS: Record<PosterIncludedSection, string> = {
   product_summary: "상품 요약",
   itinerary: "일정/경험 요소",
-  marketing_copy: "마케팅 문구",
-  sns_copy: "SNS 문구",
-  evidence_summary: "근거 요약",
-  claim_limits: "Claim 제한/주의사항",
+  marketing_copy: "마케팅 대표 문구",
+  target_segment: "판매 대상",
+  key_selling_points: "핵심 Selling Point",
+  landing_outline: "상세페이지 구성",
+  faq_strategy: "FAQ 전략",
+  sns_copy: "SNS 대표 문구",
+  usable_claims: "활용 가능한 주장",
+  evidence_summary: "근거 맥락",
+  claim_limits: "주의 표현",
 };
 
 export const DEFAULT_POSTER_INCLUDED_SECTIONS: PosterIncludedSection[] = [

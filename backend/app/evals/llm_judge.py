@@ -251,7 +251,6 @@ def _compact_marketing(asset: Any) -> dict[str, Any]:
         "headline": data.get("headline"),
         "copy": data.get("copy"),
         "faq": data.get("faq"),
-        "sns_posts": data.get("sns_posts"),
         "search_keywords": data.get("search_keywords"),
         "evidence_disclaimer": data.get("evidence_disclaimer"),
         "claim_limits": data.get("claim_limits"),

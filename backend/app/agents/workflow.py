@@ -59,6 +59,35 @@ logger = logging.getLogger("uvicorn.error")
 
 MAX_PRODUCT_COUNT = 20
 
+REMOVED_MARKETING_STRATEGY_FIELDS = {
+    "reasons_to_believe",
+    "recommended_sales_angle",
+    "experience_story",
+    "conversion_cta",
+    "needs_confirmation",
+    "avoid_phrasing",
+    "safe_alternatives",
+}
+
+MARKETING_FIELD_PARENT_PATCHES = {
+    "faq",
+    "search_keywords",
+    "sales_copy.sections",
+    "marketing_strategy.key_selling_points",
+    "marketing_strategy.customer_objections",
+    "marketing_strategy.operation_checklist",
+    "landing_page_outline.why_this_product",
+    "landing_page_outline.evidence_backed_points",
+    "landing_page_outline.practical_info",
+    "faq_strategy.buyer_faq",
+    "faq_strategy.operation_faq",
+    "sns_campaign.campaign_angles",
+    "sns_campaign.posts",
+    "sns_campaign.visual_direction",
+    "claim_strategy.usable_claims",
+    "claim_strategy.caution_phrasing",
+}
+
 
 class WorkflowCancelled(RuntimeError):
     pass
@@ -679,8 +708,82 @@ def _revision_review_paths(entity: str, before: dict[str, Any], after: dict[str,
     )
     for index in range(max_faq):
         sales_paths.extend([f"faq[{index}].question", f"faq[{index}].answer"])
-    sales_paths.extend(["sns_posts", "search_keywords"])
+    sales_paths.extend(["search_keywords"])
+    sales_paths.extend(_marketing_strategy_review_paths(before, after))
     return sales_paths
+
+
+def _marketing_strategy_review_paths(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    paths = [
+        "marketing_strategy.target_segment.primary",
+        "marketing_strategy.target_segment.foreigner_context",
+        "marketing_strategy.product_positioning.summary",
+        "marketing_strategy.product_positioning.differentiation",
+        "landing_page_outline.hero.headline",
+        "landing_page_outline.hero.subheadline",
+        "landing_page_outline.hero.hook",
+    ]
+
+    def max_len(path: str) -> int:
+        before_value = _get_nested_value(before, path)
+        after_value = _get_nested_value(after, path)
+        return max(
+            len(before_value) if isinstance(before_value, list) else 0,
+            len(after_value) if isinstance(after_value, list) else 0,
+        )
+
+    for index in range(max_len("marketing_strategy.target_segment.secondary")):
+        paths.append(f"marketing_strategy.target_segment.secondary[{index}]")
+    for index in range(max_len("marketing_strategy.key_selling_points")):
+        paths.extend(
+            [
+                f"marketing_strategy.key_selling_points[{index}].point",
+                f"marketing_strategy.key_selling_points[{index}].evidence_basis",
+                f"marketing_strategy.key_selling_points[{index}].usage_note",
+            ]
+        )
+    for index in range(max_len("marketing_strategy.customer_objections")):
+        paths.extend(
+            [
+                f"marketing_strategy.customer_objections[{index}].objection",
+                f"marketing_strategy.customer_objections[{index}].response",
+                f"marketing_strategy.customer_objections[{index}].requires_confirmation",
+            ]
+        )
+    for index in range(max_len("marketing_strategy.operation_checklist")):
+        paths.extend(
+            [
+                f"marketing_strategy.operation_checklist[{index}].item",
+                f"marketing_strategy.operation_checklist[{index}].reason",
+            ]
+        )
+    for index in range(max_len("landing_page_outline.why_this_product")):
+        paths.append(f"landing_page_outline.why_this_product[{index}]")
+    for index in range(max_len("landing_page_outline.evidence_backed_points")):
+        paths.extend(
+            [
+                f"landing_page_outline.evidence_backed_points[{index}].point",
+                f"landing_page_outline.evidence_backed_points[{index}].evidence_basis",
+            ]
+        )
+    for index in range(max_len("landing_page_outline.practical_info")):
+        paths.append(f"landing_page_outline.practical_info[{index}]")
+    for group in ["buyer_faq", "operation_faq"]:
+        for index in range(max_len(f"faq_strategy.{group}")):
+            paths.extend([f"faq_strategy.{group}[{index}].question", f"faq_strategy.{group}[{index}].answer"])
+    for index in range(max_len("sns_campaign.campaign_angles")):
+        paths.extend([f"sns_campaign.campaign_angles[{index}].angle", f"sns_campaign.campaign_angles[{index}].rationale"])
+    for index in range(max_len("sns_campaign.posts")):
+        paths.extend([f"sns_campaign.posts[{index}].format", f"sns_campaign.posts[{index}].hook", f"sns_campaign.posts[{index}].body"])
+        for tag_index in range(max_len(f"sns_campaign.posts[{index}].hashtags")):
+            paths.append(f"sns_campaign.posts[{index}].hashtags[{tag_index}]")
+    for index in range(max_len("sns_campaign.visual_direction")):
+        paths.append(f"sns_campaign.visual_direction[{index}]")
+    for index in range(max_len("claim_strategy.usable_claims")):
+        paths.extend([f"claim_strategy.usable_claims[{index}].claim", f"claim_strategy.usable_claims[{index}].evidence_basis"])
+    for index in range(max_len("claim_strategy.caution_phrasing")):
+        paths.extend([f"claim_strategy.caution_phrasing[{index}].phrase", f"claim_strategy.caution_phrasing[{index}].reason"])
+    return paths
 
 
 def _revision_change_id(entity: str, product_id: str, path: str) -> str:
@@ -757,9 +860,13 @@ def _matching_revision_change_issue(
             continue
         if issue_path == path:
             return issue
-        if issue_path in {"faq", "sns_posts", "search_keywords"} and path.startswith(issue_path):
+        if issue_path in {"faq", "search_keywords"} and path.startswith(issue_path):
             return issue
         if issue_path == "sales_copy.sections" and path.startswith("sales_copy.sections"):
+            return issue
+        if issue_path in MARKETING_FIELD_PARENT_PATCHES and path.startswith(issue_path):
+            return issue
+        if path.startswith(f"{issue_path}.") or path.startswith(f"{issue_path}["):
             return issue
     return None
 
@@ -795,11 +902,49 @@ def _revision_change_field_label(path: str) -> str:
     faq_match = re.fullmatch(r"faq\[(\d+)\]\.(question|answer)", path)
     if faq_match:
         return f"FAQ {int(faq_match.group(1)) + 1}"
-    if path == "sns_posts":
-        return "SNS 문구"
     if path == "search_keywords":
         return "검색 키워드"
+    strategy_label = _marketing_strategy_field_label(path)
+    if strategy_label:
+        return strategy_label
     return _field_path_label(path)
+
+
+def _marketing_strategy_field_label(path: str) -> str | None:
+    normalized = path.lower()
+    if normalized.startswith("marketing_strategy.target_segment"):
+        return "판매 대상"
+    if normalized.startswith("marketing_strategy.product_positioning"):
+        return "포지셔닝"
+    if normalized.startswith("marketing_strategy.key_selling_points"):
+        return "핵심 Selling Point"
+    if normalized.startswith("marketing_strategy.customer_objections"):
+        return "고객 망설임 대응"
+    if normalized.startswith("marketing_strategy.operation_checklist"):
+        return "운영 체크리스트"
+    if normalized.startswith("landing_page_outline.hero"):
+        return "상세페이지 첫 화면"
+    if normalized.startswith("landing_page_outline.why_this_product"):
+        return "상세페이지 선택 이유"
+    if normalized.startswith("landing_page_outline.evidence_backed_points"):
+        return "근거 기반 상세페이지 포인트"
+    if normalized.startswith("landing_page_outline.practical_info"):
+        return "상세페이지 확인 정보"
+    if normalized.startswith("faq_strategy.buyer_faq"):
+        return "구매 전환 FAQ 답변" if normalized.endswith(".answer") else "구매 전환 FAQ"
+    if normalized.startswith("faq_strategy.operation_faq"):
+        return "운영 확인 FAQ 답변" if normalized.endswith(".answer") else "운영 확인 FAQ"
+    if normalized.startswith("sns_campaign.campaign_angles"):
+        return "SNS 각도"
+    if normalized.startswith("sns_campaign.posts"):
+        return "SNS 포스트"
+    if normalized.startswith("sns_campaign.visual_direction"):
+        return "SNS 비주얼 방향"
+    if normalized.startswith("claim_strategy.usable_claims"):
+        return "활용 가능한 주장"
+    if normalized.startswith("claim_strategy.caution_phrasing"):
+        return "주의 표현"
+    return None
 
 
 def _invalid_source_id_diagnostics_from_products(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2084,7 +2229,6 @@ def _refreshed_documents_after_enrichment(
             "kto_wellness",
             "kto_pet",
             "kto_audio",
-            "kto_eco",
             "kto_medical",
         ],
         normalized=normalized,
@@ -2924,50 +3068,67 @@ def marketing_agent(db: Session, state: GraphState) -> GraphState:
         docs = state.get("retrieved_documents", [])
         revision_context = state.get("revision_context")
         qa_settings = _qa_settings_from_state(state)
-        gemini_result = call_gemini_json(
-            db=db,
-            run_id=state["run_id"],
-            step_id=step.id,
-            purpose="marketing_generation",
-            prompt=_marketing_prompt(
-                products,
-                docs,
-                revision_context,
-                evidence_context,
-                qa_settings,
-            ),
-            response_schema=MARKETING_RESPONSE_SCHEMA,
-            max_output_tokens=16384,
-            temperature=0.35,
-            settings=settings,
-        )
-        try:
-            assets = validate_marketing_assets(gemini_result.data, products, evidence_context=evidence_context)
-        except ValueError as exc:
-            if not _should_retry_marketing_validation(exc):
-                raise
-            repair_result = call_gemini_json(
+        assets: list[dict[str, Any]] = []
+        generation_results: list[GeminiJsonResult] = []
+        for product_batch in _marketing_product_batches(products):
+            _raise_if_cancelled(db, state["run_id"])
+            batch_docs = _marketing_docs_for_products(product_batch, docs)
+            gemini_result = call_gemini_json(
                 db=db,
                 run_id=state["run_id"],
                 step_id=step.id,
-                purpose="marketing_generation_repair",
+                purpose="marketing_generation",
                 prompt=_marketing_prompt(
-                    products,
-                    docs,
+                    product_batch,
+                    batch_docs,
                     revision_context,
                     evidence_context,
                     qa_settings,
-                    validation_error=str(exc),
                 ),
                 response_schema=MARKETING_RESPONSE_SCHEMA,
-                max_output_tokens=16384,
-                temperature=0.2,
+                max_output_tokens=MARKETING_BATCH_MAX_OUTPUT_TOKENS,
+                temperature=0.35,
                 settings=settings,
             )
-            assets = validate_marketing_assets(repair_result.data, products, evidence_context=evidence_context)
-            gemini_result = repair_result
-        meta = _gemini_generation_meta("MarketingAgent", "marketing_generation", gemini_result)
-        step.model = gemini_result.model
+            try:
+                batch_assets = validate_marketing_assets(
+                    gemini_result.data,
+                    product_batch,
+                    evidence_context=evidence_context,
+                )
+            except ValueError as exc:
+                if not _should_retry_marketing_validation(exc):
+                    raise
+                _raise_if_cancelled(db, state["run_id"])
+                repair_result = call_gemini_json(
+                    db=db,
+                    run_id=state["run_id"],
+                    step_id=step.id,
+                    purpose="marketing_generation_repair",
+                    prompt=_marketing_prompt(
+                        product_batch,
+                        batch_docs,
+                        revision_context,
+                        evidence_context,
+                        qa_settings,
+                        validation_error=str(exc),
+                    ),
+                    response_schema=MARKETING_RESPONSE_SCHEMA,
+                    max_output_tokens=MARKETING_BATCH_MAX_OUTPUT_TOKENS,
+                    temperature=0.2,
+                    settings=settings,
+                )
+                batch_assets = validate_marketing_assets(
+                    repair_result.data,
+                    product_batch,
+                    evidence_context=evidence_context,
+                )
+                gemini_result = repair_result
+            assets.extend(batch_assets)
+            generation_results.append(gemini_result)
+        assets = validate_marketing_assets({"marketing_assets": assets}, products, evidence_context=evidence_context)
+        meta = _combined_gemini_generation_meta("MarketingAgent", "marketing_generation", generation_results)
+        step.model = meta["model"]
         step.output = {"marketing_assets": assets, "generation": meta}
         return {
             "marketing_assets": assets,
@@ -3312,6 +3473,10 @@ PRODUCT_RESPONSE_SCHEMA = {
     },
 }
 
+MARKETING_PRODUCT_BATCH_SIZE = 3
+MARKETING_BATCH_MAX_OUTPUT_TOKENS = 24576
+
+
 MARKETING_RESPONSE_SCHEMA = {
     "type": "object",
     "required": ["marketing_assets"],
@@ -3320,15 +3485,45 @@ MARKETING_RESPONSE_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["product_id", "sales_copy", "faq", "sns_posts", "search_keywords"],
+                "required": ["product_id", "sales_copy", "faq", "search_keywords"],
                 "properties": {
                     "product_id": {"type": "string"},
                     "sales_copy": {"type": "object"},
                     "faq": {"type": "array", "items": {"type": "object"}},
-                    "sns_posts": {"type": "array", "items": {"type": "string"}},
                     "search_keywords": {"type": "array", "items": {"type": "string"}},
                     "evidence_disclaimer": {"type": "string"},
                     "claim_limits": {"type": "array", "items": {"type": "string"}},
+                    "marketing_strategy": {"type": "object"},
+                    "landing_page_outline": {"type": "object"},
+                    "faq_strategy": {"type": "object"},
+                    "sns_campaign": {"type": "object"},
+                    "claim_strategy": {
+                        "type": "object",
+                        "properties": {
+                            "usable_claims": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["claim", "evidence_basis"],
+                                    "properties": {
+                                        "claim": {"type": "string"},
+                                        "evidence_basis": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "caution_phrasing": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["phrase", "reason"],
+                                    "properties": {
+                                        "phrase": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                    },
+                                },
+                            },
+                        },
+                    },
                 },
             },
         }
@@ -3341,6 +3536,18 @@ REVISION_PATCH_RESPONSE_SCHEMA = {
     "properties": {
         "product_patches": {"type": "array"},
         "marketing_patches": {"type": "array"},
+        "marketing_field_patches": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["product_id", "field_path", "value"],
+                "properties": {
+                    "product_id": {"type": "string"},
+                    "field_path": {"type": "string"},
+                    "value": {},
+                },
+            },
+        },
         "notes": {"type": "array"},
     },
 }
@@ -3522,7 +3729,6 @@ def _explicit_theme_terms_from_text(text: str) -> list[str]:
         (("웰니스", "힐링"), "웰니스"),
         (("반려동물", "반려", "펫", "강아지"), "반려동물"),
         (("오디오", "해설"), "오디오 해설"),
-        (("생태", "친환경"), "생태"),
         (("의료", "메디컬"), "의료관광"),
     ]
     themes: list[str] = []
@@ -3737,34 +3943,364 @@ def validate_marketing_assets(
         faq = _validate_faq(asset.get("faq"), require_korean=True)
         if not faq:
             raise ValueError(f"marketing_assets[{product['id']}].faq must not be empty")
-        sns_posts = _korean_string_list(asset.get("sns_posts"), "marketing_assets[].sns_posts")[:5]
-        if not sns_posts:
-            raise ValueError(f"marketing_assets[{product['id']}].sns_posts must not be empty")
+        if not _faq_includes_buyer_value(faq):
+            raise ValueError(
+                f"marketing_assets[{product['id']}].faq must include at least one buyer-facing value question"
+            )
         search_keywords = _normalize_search_keywords(asset.get("search_keywords"), product)[:12]
         if not search_keywords:
             raise ValueError(f"marketing_assets[{product['id']}].search_keywords must not be empty")
-        validated.append(
+        evidence_disclaimer = _safe_korean_text(
+            asset.get("evidence_disclaimer"),
+            "marketing_assets[].evidence_disclaimer",
+            fallback=_marketing_evidence_disclaimer(product, evidence_context or {}),
+        )
+        _assert_marketing_user_text(evidence_disclaimer, "marketing_assets[].evidence_disclaimer")
+        validated_asset = {
+            "product_id": product["id"] if asset.get("product_id") in product_ids else product["id"],
+            "sales_copy": sales_copy,
+            "faq": faq,
+            "search_keywords": search_keywords,
+            "evidence_disclaimer": evidence_disclaimer,
+            "claim_limits": _dedupe_texts(
+                [
+                    *_safe_korean_string_list(asset.get("claim_limits"), "marketing_assets[].claim_limits"),
+                    *_string_list(product.get("claim_limits")),
+                    *_string_list(product.get("not_to_claim")),
+                ]
+            )[:10],
+        }
+        for field_name, normalizer in [
+            ("marketing_strategy", _normalize_marketing_strategy),
+            ("landing_page_outline", _normalize_landing_page_outline),
+            ("faq_strategy", _normalize_faq_strategy),
+            ("sns_campaign", _normalize_sns_campaign),
+            ("claim_strategy", _normalize_claim_strategy),
+        ]:
+            if field_name in asset and asset.get(field_name) not in (None, ""):
+                validated_asset[field_name] = normalizer(asset.get(field_name), product["id"])
+        if "sns_campaign" not in validated_asset:
+            raise ValueError(f"marketing_assets[{product['id']}].sns_campaign must be present")
+        validated.append(validated_asset)
+    return validated
+
+
+def _faq_includes_buyer_value(faq: list[dict[str, str]]) -> bool:
+    """Return whether FAQ contains at least one purchase-decision question.
+
+    This intentionally checks broad semantic signals instead of product-specific
+    examples. Operational-only FAQ still belongs in the output, but it must not
+    be the entire FAQ set.
+    """
+    buyer_value_terms = [
+        "누구",
+        "추천",
+        "어떤 경험",
+        "기대",
+        "좋은",
+        "어울",
+        "외국인",
+        "관광객",
+        "처음",
+        "가족",
+        "친구",
+        "커플",
+        "혼자",
+        "아이",
+        "포인트",
+        "매력",
+        "즐길",
+        "느낄",
+        "배울",
+    ]
+    operational_only_terms = [
+        "가격",
+        "요금",
+        "무료",
+        "예약",
+        "운영시간",
+        "휴무",
+        "휴관",
+        "집결",
+        "우천",
+        "취소",
+        "변경",
+        "확정",
+        "문의",
+        "확인",
+    ]
+    for item in faq:
+        text = f"{item.get('question', '')} {item.get('answer', '')}"
+        if any(term in text for term in buyer_value_terms):
+            return True
+    return not faq or not all(
+        any(term in f"{item.get('question', '')} {item.get('answer', '')}" for term in operational_only_terms)
+        for item in faq
+    )
+
+
+def _assert_marketing_user_text(text: str, field_path: str) -> None:
+    raw = str(text or "")
+    lowered = raw.lower()
+    blocked_raw_terms = [
+        "not_to_claim",
+        "claim_limits",
+        "source_id",
+        "source_ids",
+        "doc_id",
+        "field_path",
+        "missing_pet_policy",
+        "needs_review",
+        "data_coverage",
+        "unresolved_gaps",
+    ]
+    blocked_korean_terms = [
+        "금지 claim",
+        "금지 클레임",
+        "내부 필드",
+        "필드 경로",
+        "소스 아이디",
+    ]
+    if any(term in lowered for term in blocked_raw_terms) or any(term in raw for term in blocked_korean_terms):
+        raise ValueError(f"{field_path} contains internal diagnostic terminology")
+
+
+def _required_marketing_text(payload: dict[str, Any], key: str, field_path: str) -> str:
+    value = _korean_text(str(payload.get(key) or ""), f"{field_path}.{key}")
+    _assert_marketing_user_text(value, f"{field_path}.{key}")
+    return value
+
+
+def _optional_marketing_text(payload: dict[str, Any], key: str, field_path: str) -> str:
+    value = payload.get(key)
+    if value in (None, ""):
+        return ""
+    text = _korean_text(str(value), f"{field_path}.{key}")
+    _assert_marketing_user_text(text, f"{field_path}.{key}")
+    return text
+
+
+def _marketing_text_list(value: Any, field_path: str, *, limit: int = 8) -> list[str]:
+    items = [_korean_text(item, field_path) for item in _string_list(value)[:limit]]
+    for item in items:
+        _assert_marketing_user_text(item, field_path)
+    return items
+
+
+def _marketing_record_list(value: Any, field_path: str, *, limit: int = 8) -> list[dict[str, Any]]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field_path} must be an array")
+    records: list[dict[str, Any]] = []
+    for item in value[:limit]:
+        if not isinstance(item, dict):
+            raise ValueError(f"{field_path} items must be objects")
+        records.append(item)
+    return records
+
+
+def _normalize_marketing_strategy(value: Any, product_id: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"marketing_assets[{product_id}].marketing_strategy must be an object")
+    field_path = f"marketing_assets[{product_id}].marketing_strategy"
+    target = value.get("target_segment") if isinstance(value.get("target_segment"), dict) else {}
+    positioning = value.get("product_positioning") if isinstance(value.get("product_positioning"), dict) else {}
+    key_selling_points: list[dict[str, str]] = []
+    for item in _marketing_record_list(value.get("key_selling_points"), f"{field_path}.key_selling_points", limit=6):
+        point = _required_marketing_text(item, "point", f"{field_path}.key_selling_points[]")
+        evidence_basis = _required_marketing_text(item, "evidence_basis", f"{field_path}.key_selling_points[]")
+        key_selling_points.append(
             {
-                "product_id": product["id"] if asset.get("product_id") in product_ids else product["id"],
-                "sales_copy": sales_copy,
-                "faq": faq,
-                "sns_posts": sns_posts,
-                "search_keywords": search_keywords,
-                "evidence_disclaimer": _safe_korean_text(
-                    asset.get("evidence_disclaimer"),
-                    "marketing_assets[].evidence_disclaimer",
-                    fallback=_marketing_evidence_disclaimer(product, evidence_context or {}),
-                ),
-                "claim_limits": _dedupe_texts(
-                    [
-                        *_safe_korean_string_list(asset.get("claim_limits"), "marketing_assets[].claim_limits"),
-                        *_string_list(product.get("claim_limits")),
-                        *_string_list(product.get("not_to_claim")),
-                    ]
-                )[:10],
+                "point": point,
+                "evidence_basis": evidence_basis,
+                "usage_note": _optional_marketing_text(item, "usage_note", f"{field_path}.key_selling_points[]"),
             }
         )
-    return validated
+    if not key_selling_points:
+        raise ValueError(f"{field_path}.key_selling_points must include evidence-backed Selling Points")
+
+    customer_objections: list[dict[str, Any]] = []
+    for item in _marketing_record_list(value.get("customer_objections"), f"{field_path}.customer_objections", limit=6):
+        customer_objections.append(
+            {
+                "objection": _required_marketing_text(item, "objection", f"{field_path}.customer_objections[]"),
+                "response": _required_marketing_text(item, "response", f"{field_path}.customer_objections[]"),
+                "requires_confirmation": item.get("requires_confirmation") is True,
+            }
+        )
+
+    operation_checklist: list[dict[str, str]] = []
+    for item in _marketing_record_list(value.get("operation_checklist"), f"{field_path}.operation_checklist", limit=8):
+        operation_checklist.append(
+            {
+                "item": _required_marketing_text(item, "item", f"{field_path}.operation_checklist[]"),
+                "reason": _required_marketing_text(item, "reason", f"{field_path}.operation_checklist[]"),
+            }
+        )
+
+    return {
+        "target_segment": {
+            "primary": _required_marketing_text(target, "primary", f"{field_path}.target_segment"),
+            "secondary": _marketing_text_list(target.get("secondary"), f"{field_path}.target_segment.secondary", limit=5),
+            "foreigner_context": _optional_marketing_text(target, "foreigner_context", f"{field_path}.target_segment"),
+        },
+        "product_positioning": {
+            "summary": _required_marketing_text(positioning, "summary", f"{field_path}.product_positioning"),
+            "differentiation": _required_marketing_text(positioning, "differentiation", f"{field_path}.product_positioning"),
+        },
+        "key_selling_points": key_selling_points,
+        "customer_objections": customer_objections,
+        "operation_checklist": operation_checklist,
+    }
+
+
+def _normalize_landing_page_outline(value: Any, product_id: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"marketing_assets[{product_id}].landing_page_outline must be an object")
+    field_path = f"marketing_assets[{product_id}].landing_page_outline"
+    hero = value.get("hero") if isinstance(value.get("hero"), dict) else {}
+    evidence_points: list[dict[str, str]] = []
+    for item in _marketing_record_list(value.get("evidence_backed_points"), f"{field_path}.evidence_backed_points", limit=6):
+        evidence_points.append(
+            {
+                "point": _required_marketing_text(item, "point", f"{field_path}.evidence_backed_points[]"),
+                "evidence_basis": _required_marketing_text(item, "evidence_basis", f"{field_path}.evidence_backed_points[]"),
+            }
+        )
+    return {
+        "hero": {
+            "headline": _required_marketing_text(hero, "headline", f"{field_path}.hero"),
+            "subheadline": _required_marketing_text(hero, "subheadline", f"{field_path}.hero"),
+            "hook": _required_marketing_text(hero, "hook", f"{field_path}.hero"),
+        },
+        "why_this_product": _marketing_text_list(value.get("why_this_product"), f"{field_path}.why_this_product", limit=6),
+        "evidence_backed_points": evidence_points,
+        "practical_info": _marketing_text_list(value.get("practical_info"), f"{field_path}.practical_info", limit=8),
+    }
+
+
+def _normalize_faq_strategy(value: Any, product_id: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"marketing_assets[{product_id}].faq_strategy must be an object")
+    buyer_faq = _validate_faq(value.get("buyer_faq"), require_korean=True)[:6]
+    operation_faq = _validate_faq(value.get("operation_faq"), require_korean=True)[:6]
+    if not buyer_faq and not operation_faq:
+        raise ValueError(f"marketing_assets[{product_id}].faq_strategy must include buyer_faq or operation_faq")
+    for item in [*buyer_faq, *operation_faq]:
+        _assert_marketing_user_text(item.get("question", ""), f"marketing_assets[{product_id}].faq_strategy.question")
+        _assert_marketing_user_text(item.get("answer", ""), f"marketing_assets[{product_id}].faq_strategy.answer")
+    return {"buyer_faq": buyer_faq, "operation_faq": operation_faq}
+
+
+def _normalize_sns_campaign(value: Any, product_id: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"marketing_assets[{product_id}].sns_campaign must be an object")
+    field_path = f"marketing_assets[{product_id}].sns_campaign"
+    campaign_angles: list[dict[str, str]] = []
+    for item in _marketing_record_list(value.get("campaign_angles"), f"{field_path}.campaign_angles", limit=5):
+        campaign_angles.append(
+            {
+                "angle": _required_marketing_text(item, "angle", f"{field_path}.campaign_angles[]"),
+                "rationale": _required_marketing_text(item, "rationale", f"{field_path}.campaign_angles[]"),
+            }
+        )
+    posts: list[dict[str, Any]] = []
+    for item in _marketing_record_list(value.get("posts"), f"{field_path}.posts", limit=6):
+        post_format = str(item.get("format") or "feed").strip().lower()
+        if post_format not in {"feed", "reels", "story"}:
+            raise ValueError(f"{field_path}.posts[].format must be feed, reels, or story")
+        posts.append(
+            {
+                "format": post_format,
+                "hook": _required_marketing_text(item, "hook", f"{field_path}.posts[]"),
+                "body": _required_marketing_text(item, "body", f"{field_path}.posts[]"),
+                "hashtags": _marketing_text_list(item.get("hashtags"), f"{field_path}.posts[].hashtags", limit=8),
+            }
+        )
+    return {
+        "campaign_angles": campaign_angles,
+        "posts": posts,
+        "visual_direction": _marketing_text_list(value.get("visual_direction"), f"{field_path}.visual_direction", limit=8),
+    }
+
+
+def _normalize_claim_strategy(value: Any, product_id: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"marketing_assets[{product_id}].claim_strategy must be an object")
+    field_path = f"marketing_assets[{product_id}].claim_strategy"
+    usable_claims: list[dict[str, str]] = []
+    raw_usable_claims = value.get("usable_claims")
+    if raw_usable_claims in (None, ""):
+        raw_usable_claims = []
+    if not isinstance(raw_usable_claims, list):
+        raise ValueError(f"{field_path}.usable_claims must be an array")
+    for item in raw_usable_claims[:6]:
+        if isinstance(item, str):
+            claim = _korean_text(item, f"{field_path}.usable_claims[]")
+            _assert_marketing_user_text(claim, f"{field_path}.usable_claims[]")
+            evidence_basis = claim
+        elif isinstance(item, dict):
+            claim = _required_marketing_text(item, "claim", f"{field_path}.usable_claims[]")
+            evidence_basis = _required_marketing_text(item, "evidence_basis", f"{field_path}.usable_claims[]")
+        else:
+            raise ValueError(f"{field_path}.usable_claims items must be objects or Korean strings")
+        if _is_unsupported_operational_claim(claim):
+            raise ValueError(f"{field_path}.usable_claims contains unsupported operational claim")
+        usable_claims.append({"claim": claim, "evidence_basis": evidence_basis})
+    if not usable_claims:
+        raise ValueError(f"{field_path}.usable_claims must include evidence-backed usable claims")
+    caution_phrasing: list[dict[str, str]] = []
+    for item in _marketing_record_list(value.get("caution_phrasing"), f"{field_path}.caution_phrasing", limit=12):
+        phrase = _optional_marketing_text(item, "phrase", f"{field_path}.caution_phrasing[]") or _optional_marketing_text(item, "claim", f"{field_path}.caution_phrasing[]")
+        reason = _required_marketing_text(item, "reason", f"{field_path}.caution_phrasing[]")
+        if phrase:
+            caution_phrasing.append({"phrase": phrase, "reason": reason})
+    # Backward-compatible input normalization: old strategy packs may still contain
+    # separate confirmation/avoid fields, but normalized new output exposes only
+    # one user-facing caution_phrasing collection.
+    for item in _marketing_record_list(value.get("needs_confirmation"), f"{field_path}.needs_confirmation", limit=8):
+        caution_phrasing.append(
+            {
+                "phrase": _required_marketing_text(item, "claim", f"{field_path}.needs_confirmation[]"),
+                "reason": _required_marketing_text(item, "reason", f"{field_path}.needs_confirmation[]"),
+            }
+        )
+    for item in _marketing_record_list(value.get("avoid_phrasing"), f"{field_path}.avoid_phrasing", limit=8):
+        caution_phrasing.append(
+            {
+                "phrase": _required_marketing_text(item, "phrase", f"{field_path}.avoid_phrasing[]"),
+                "reason": _required_marketing_text(item, "reason", f"{field_path}.avoid_phrasing[]"),
+            }
+        )
+    return {
+        "usable_claims": usable_claims,
+        "caution_phrasing": caution_phrasing,
+    }
+
+
+def _is_unsupported_operational_claim(text: str) -> bool:
+    terms = [
+        "무료",
+        "가격",
+        "요금",
+        "할인",
+        "운영시간",
+        "예약",
+        "상시",
+        "즉시 확정",
+        "안전",
+        "무사고",
+        "치료",
+        "의료",
+        "효능",
+        "건강 개선",
+        "외국어 지원",
+        "영어 지원",
+        "중국어 지원",
+        "일본어 지원",
+    ]
+    return any(term in text for term in terms)
 
 
 def _desired_product_count(normalized: dict[str, Any], fallback: int) -> int:
@@ -3802,15 +4338,29 @@ def _safe_korean_string_list(value: Any, field_path: str) -> list[str]:
 
 def _should_retry_marketing_validation(exc: ValueError) -> bool:
     message = str(exc)
+    if message.startswith("Missing marketing asset for "):
+        return True
+    if "marketing_assets" not in message and not any(
+        field in message
+        for field in [
+            "sales_copy",
+            "faq",
+                    "search_keywords",
+            "marketing_strategy",
+            "landing_page_outline",
+            "faq_strategy",
+            "sns_campaign",
+            "claim_strategy",
+        ]
+    ):
+        return False
     return (
         "must be written in Korean" in message
-        and (
-            "marketing_assets" in message
-            or "sales_copy" in message
-            or "faq" in message
-            or "sns_posts" in message
-            or "search_keywords" in message
-        )
+        or "must not be empty" in message
+        or "internal diagnostic terminology" in message
+        or "unsupported operational claim" in message
+        or "must include" in message
+        or "must be an object" in message
     )
 
 
@@ -4399,21 +4949,7 @@ def _public_product_text(product: dict[str, Any]) -> str:
 
 
 def _public_marketing_text(asset: dict[str, Any]) -> str:
-    sales_copy = asset.get("sales_copy") if isinstance(asset.get("sales_copy"), dict) else {}
-    sections = sales_copy.get("sections") if isinstance(sales_copy.get("sections"), list) else []
-    faq = asset.get("faq") if isinstance(asset.get("faq"), list) else []
-    values: list[str] = [
-        str(sales_copy.get("headline") or ""),
-        str(sales_copy.get("subheadline") or ""),
-    ]
-    for section in sections:
-        if isinstance(section, dict):
-            values.extend([str(section.get("title") or ""), str(section.get("body") or "")])
-    for item in faq:
-        if isinstance(item, dict):
-            values.extend([str(item.get("question") or ""), str(item.get("answer") or "")])
-    values.extend(_string_list(asset.get("sns_posts")))
-    return "\n".join(values)
+    return "\n".join(segment["text"] for segment in _public_marketing_segments(asset))
 
 
 def _public_text_segments(product: dict[str, Any], asset: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -4438,6 +4974,18 @@ def _public_text_segments(product: dict[str, Any], asset: dict[str, Any] | None)
 
     if not isinstance(asset, dict):
         return segments
+    segments.extend(_public_marketing_segments(asset))
+    return segments
+
+
+def _public_marketing_segments(asset: dict[str, Any]) -> list[dict[str, str]]:
+    segments: list[dict[str, str]] = []
+
+    def add(label: str, field_path: str, value: Any) -> None:
+        text = str(value or "").strip()
+        if text:
+            segments.append({"label": label, "field_path": field_path, "text": text})
+
     sales_copy = asset.get("sales_copy") if isinstance(asset.get("sales_copy"), dict) else {}
     add("홍보 제목", "sales_copy.headline", sales_copy.get("headline"))
     add("홍보 부제목", "sales_copy.subheadline", sales_copy.get("subheadline"))
@@ -4451,8 +4999,57 @@ def _public_text_segments(product: dict[str, Any], asset: dict[str, Any] | None)
         if isinstance(item, dict):
             add("FAQ 질문", f"faq[{index}].question", item.get("question"))
             add("FAQ 답변", f"faq[{index}].answer", item.get("answer"))
-    for index, value in enumerate(_string_list(asset.get("sns_posts"))):
-        add("SNS 문구", f"sns_posts[{index}]", value)
+    strategy = asset.get("marketing_strategy") if isinstance(asset.get("marketing_strategy"), dict) else {}
+    target = strategy.get("target_segment") if isinstance(strategy.get("target_segment"), dict) else {}
+    positioning = strategy.get("product_positioning") if isinstance(strategy.get("product_positioning"), dict) else {}
+    add("판매 대상", "marketing_strategy.target_segment.primary", target.get("primary"))
+    add("외국인 관광객 맥락", "marketing_strategy.target_segment.foreigner_context", target.get("foreigner_context"))
+    add("상품 포지셔닝", "marketing_strategy.product_positioning.summary", positioning.get("summary"))
+    add("상품 차별점", "marketing_strategy.product_positioning.differentiation", positioning.get("differentiation"))
+    for index, item in enumerate(strategy.get("key_selling_points") if isinstance(strategy.get("key_selling_points"), list) else []):
+        if isinstance(item, dict):
+            add("핵심 Selling Point", f"marketing_strategy.key_selling_points[{index}].point", item.get("point"))
+            add("핵심 Selling Point 근거", f"marketing_strategy.key_selling_points[{index}].evidence_basis", item.get("evidence_basis"))
+            add("핵심 Selling Point 활용", f"marketing_strategy.key_selling_points[{index}].usage_note", item.get("usage_note"))
+
+    outline = asset.get("landing_page_outline") if isinstance(asset.get("landing_page_outline"), dict) else {}
+    hero = outline.get("hero") if isinstance(outline.get("hero"), dict) else {}
+    add("상세페이지 첫 화면 제목", "landing_page_outline.hero.headline", hero.get("headline"))
+    add("상세페이지 첫 화면 보조 문구", "landing_page_outline.hero.subheadline", hero.get("subheadline"))
+    add("상세페이지 첫 문장", "landing_page_outline.hero.hook", hero.get("hook"))
+    for index, value in enumerate(_string_list(outline.get("why_this_product"))):
+        add("상세페이지 선택 이유", f"landing_page_outline.why_this_product[{index}]", value)
+    for index, item in enumerate(outline.get("evidence_backed_points") if isinstance(outline.get("evidence_backed_points"), list) else []):
+        if isinstance(item, dict):
+            add("근거 기반 상세페이지 포인트", f"landing_page_outline.evidence_backed_points[{index}].point", item.get("point"))
+            add("상세페이지 포인트 근거", f"landing_page_outline.evidence_backed_points[{index}].evidence_basis", item.get("evidence_basis"))
+    for index, value in enumerate(_string_list(outline.get("practical_info"))):
+        add("상세페이지 확인 정보", f"landing_page_outline.practical_info[{index}]", value)
+
+    faq_strategy = asset.get("faq_strategy") if isinstance(asset.get("faq_strategy"), dict) else {}
+    for group_key, group_label in [("buyer_faq", "구매 전환 FAQ"), ("operation_faq", "운영 확인 FAQ")]:
+        for index, item in enumerate(faq_strategy.get(group_key) if isinstance(faq_strategy.get(group_key), list) else []):
+            if isinstance(item, dict):
+                add(f"{group_label} 질문", f"faq_strategy.{group_key}[{index}].question", item.get("question"))
+                add(f"{group_label} 답변", f"faq_strategy.{group_key}[{index}].answer", item.get("answer"))
+
+    campaign = asset.get("sns_campaign") if isinstance(asset.get("sns_campaign"), dict) else {}
+    for index, item in enumerate(campaign.get("campaign_angles") if isinstance(campaign.get("campaign_angles"), list) else []):
+        if isinstance(item, dict):
+            add("SNS 각도", f"sns_campaign.campaign_angles[{index}].angle", item.get("angle"))
+            add("SNS 각도 근거", f"sns_campaign.campaign_angles[{index}].rationale", item.get("rationale"))
+    for index, item in enumerate(campaign.get("posts") if isinstance(campaign.get("posts"), list) else []):
+        if isinstance(item, dict):
+            add("SNS Hook", f"sns_campaign.posts[{index}].hook", item.get("hook"))
+            add("SNS 본문", f"sns_campaign.posts[{index}].body", item.get("body"))
+            for tag_index, value in enumerate(_string_list(item.get("hashtags"))):
+                add("SNS 해시태그", f"sns_campaign.posts[{index}].hashtags[{tag_index}]", value)
+
+    claim_strategy = asset.get("claim_strategy") if isinstance(asset.get("claim_strategy"), dict) else {}
+    for index, item in enumerate(claim_strategy.get("usable_claims") if isinstance(claim_strategy.get("usable_claims"), list) else []):
+        if isinstance(item, dict):
+            add("활용 가능한 주장", f"claim_strategy.usable_claims[{index}].claim", item.get("claim"))
+            add("활용 가능한 주장 근거", f"claim_strategy.usable_claims[{index}].evidence_basis", item.get("evidence_basis"))
     return segments
 
 
@@ -4588,12 +5185,12 @@ def _revision_patch_paths_from_issue(field_path: str, message: str) -> set[str]:
     if "FAQ" in text or "faq" in text.lower():
         return {"faq"}
     if "SNS" in text or "sns" in text.lower():
-        return {"sns_posts"}
+        return {"sns_campaign.posts"}
     if "제목" in text or "headline" in text.lower():
         return {"title", "sales_copy.headline"}
     if "상세 설명" in text or "sales copy" in text.lower() or "판매 문구" in text:
         return {"sales_copy.sections"}
-    return {"one_liner", "sales_copy.headline", "sales_copy.subheadline", "sales_copy.sections", "faq", "sns_posts"}
+    return {"one_liner", "sales_copy.headline", "sales_copy.subheadline", "sales_copy.sections", "faq", "sns_campaign.posts"}
 
 
 def _revision_patch_path_allowed(
@@ -4609,9 +5206,13 @@ def _revision_patch_path_allowed(
     for allowed_path in allowed_paths:
         if candidate_path == allowed_path:
             return True
-        if allowed_path in {"faq", "sns_posts", "search_keywords"} and candidate_path.startswith(allowed_path):
+        if allowed_path in {"faq", "search_keywords"} and candidate_path.startswith(allowed_path):
             return True
         if allowed_path == "sales_copy.sections" and candidate_path.startswith("sales_copy.sections"):
+            return True
+        if allowed_path in MARKETING_FIELD_PARENT_PATCHES and candidate_path.startswith(f"{allowed_path}."):
+            return True
+        if allowed_path in MARKETING_FIELD_PARENT_PATCHES and candidate_path.startswith(f"{allowed_path}["):
             return True
     return False
 
@@ -4674,17 +5275,75 @@ def apply_revision_patch(
             allowed_patch_scope=allowed_patch_scope,
             product_id=str(asset.get("product_id") or ""),
         )
-        if "sns_posts" in patch and _revision_patch_path_allowed(allowed_patch_scope, str(asset.get("product_id") or ""), "sns_posts"):
-            sns_posts = _korean_string_list(patch.get("sns_posts"), "marketing_assets[].sns_posts")
-            if sns_posts:
-                asset["sns_posts"] = sns_posts[:5]
         if "search_keywords" in patch and _revision_patch_path_allowed(allowed_patch_scope, str(asset.get("product_id") or ""), "search_keywords"):
             product = product_by_id.get(asset.get("product_id")) or {}
             keywords = _normalize_search_keywords(patch.get("search_keywords"), product)
             if keywords:
                 asset["search_keywords"] = keywords[:12]
 
+    marketing_field_patches = payload.get("marketing_field_patches") or []
+    if not isinstance(marketing_field_patches, list):
+        raise ValueError("revision_patch.marketing_field_patches must be an array")
+    for patch in marketing_field_patches:
+        if not isinstance(patch, dict):
+            continue
+        product_id = str(patch.get("product_id") or "")
+        asset = asset_by_id.get(product_id)
+        field_path = str(patch.get("field_path") or "").strip()
+        if not asset or not field_path:
+            continue
+        if not _marketing_field_patch_path_allowed(field_path):
+            continue
+        if not _revision_patch_path_allowed(allowed_patch_scope, product_id, field_path):
+            continue
+        value = patch.get("value")
+        _assert_marketing_patch_value(value, f"marketing_assets[].{field_path}")
+        _set_nested_value(asset, field_path, value)
+
     return patched_products, patched_assets
+
+
+def _marketing_field_patch_path_allowed(path: str) -> bool:
+    tokens = _path_tokens(path)
+    if not tokens:
+        return False
+    if any(str(token) in REMOVED_MARKETING_STRATEGY_FIELDS for token in tokens if isinstance(token, str)):
+        return False
+    if any(str(token) in {"source_ids", "source_id", "evidence", "retrieved_documents"} for token in tokens if isinstance(token, str)):
+        return False
+    root = str(tokens[0])
+    if root in {"sales_copy", "faq", "search_keywords"}:
+        return True
+    if root not in {
+        "marketing_strategy",
+        "landing_page_outline",
+        "faq_strategy",
+        "sns_campaign",
+        "claim_strategy",
+    }:
+        return False
+    return True
+
+
+def _assert_marketing_patch_value(value: Any, field_path: str) -> None:
+    if isinstance(value, str):
+        _assert_marketing_user_text(value, field_path)
+        if _is_unsupported_operational_claim(value) and "claim_strategy.usable_claims" in field_path:
+            raise ValueError(f"{field_path} contains unsupported operational claim")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _assert_marketing_patch_value(item, field_path)
+        return
+    if isinstance(value, dict):
+        if any(key in REMOVED_MARKETING_STRATEGY_FIELDS for key in value):
+            raise ValueError(f"{field_path} contains removed marketing strategy field")
+        for key, item in value.items():
+            _assert_marketing_patch_value(item, f"{field_path}.{key}")
+        return
+    if value is None or isinstance(value, (bool, int, float)):
+        return
+    raise ValueError(f"{field_path} has unsupported patch value type")
 
 
 def _apply_section_patches(
@@ -4750,24 +5409,39 @@ def _normalize_sales_copy(
     sections = sales_copy.get("sections")
     if not isinstance(sections, list):
         raise ValueError("sales_copy.sections must be an array")
-    normalized_sections = [
-        {
-            "title": _korean_text(str(section.get("title") or "섹션"), "sales_copy.sections[].title"),
-            "body": _korean_text(str(section.get("body") or ""), "sales_copy.sections[].body"),
-        }
-        for section in sections
-        if isinstance(section, dict)
-    ][:4]
+    normalized_sections = []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        title = _korean_text(str(section.get("title") or "섹션"), "sales_copy.sections[].title")
+        body = _korean_text(str(section.get("body") or ""), "sales_copy.sections[].body")
+        _assert_marketing_user_text(title, "sales_copy.sections[].title")
+        _assert_marketing_user_text(body, "sales_copy.sections[].body")
+        normalized_sections.append({"title": title, "body": body})
+        if len(normalized_sections) >= 4:
+            break
     if not normalized_sections:
         raise ValueError("sales_copy.sections must contain at least one valid section")
-    return {
-        "headline": _korean_text(str(sales_copy.get("headline") or product["title"]), "sales_copy.headline"),
-        "subheadline": _korean_text(str(sales_copy.get("subheadline") or product["one_liner"]), "sales_copy.subheadline"),
-        "sections": normalized_sections,
-        "disclaimer": _korean_text(str(
+    headline = _korean_text(str(sales_copy.get("headline") or product["title"]), "sales_copy.headline")
+    subheadline = _korean_text(str(sales_copy.get("subheadline") or product["one_liner"]), "sales_copy.subheadline")
+    disclaimer = _korean_text(
+        str(
             sales_copy.get("disclaimer")
             or "세부 일정, 가격, 포함사항은 운영자가 최종 확정해야 합니다."
-        ), "sales_copy.disclaimer"),
+        ),
+        "sales_copy.disclaimer",
+    )
+    for field_path, value in [
+        ("sales_copy.headline", headline),
+        ("sales_copy.subheadline", subheadline),
+        ("sales_copy.disclaimer", disclaimer),
+    ]:
+        _assert_marketing_user_text(value, field_path)
+    return {
+        "headline": headline,
+        "subheadline": subheadline,
+        "sections": normalized_sections,
+        "disclaimer": disclaimer,
     }
 
 
@@ -5268,7 +5942,7 @@ def _planner_prompt(request: dict[str, Any]) -> str:
         "출력_규칙": [
             f"product_count는 1~{MAX_PRODUCT_COUNT} 사이 정수로 반환하세요. 사용자가 {MAX_PRODUCT_COUNT}개 이상을 말하면 {MAX_PRODUCT_COUNT}로 제한하세요.",
             "preferred_themes와 avoid는 사용자가 준 값과 자연어 요청에서 명확한 값만 포함하세요.",
-            "자연어 요청에 웰니스, 반려동물, 오디오 해설, 생태, 의료 같은 테마가 명시되면 preferences 값과 달라도 preferred_themes에 반드시 포함하세요.",
+            "자연어 요청에 웰니스, 반려동물, 오디오 해설, 의료 같은 테마가 명시되면 preferences 값과 달라도 preferred_themes에 반드시 포함하세요.",
             "product_generation_constraints에는 상품 생성 단계가 지켜야 할 제약을 한국어 문장으로 넣으세요.",
             "evidence_requirements에는 근거 연결, 단정 금지, 운영자 확인 항목 분리 기준을 한국어 문장으로 넣으세요.",
             "TourAPI code, areaCode, ldong code, sigungu code, geo_scope 필드는 출력하지 마세요.",
@@ -5495,6 +6169,12 @@ def _product_prompt(
             "coverage_notes": "이 상품의 근거 커버리지와 남은 공백",
             "claim_limits": "본문/마케팅에서 단정하면 안 되는 claim 제한",
         },
+        "상품성_기준": {
+            "title": "장소/테마/경험이 드러나는 실제 여행 상품명이어야 합니다. '근거 기반 상품', '관광 상품 1'처럼 형식적인 이름은 피하세요.",
+            "one_liner": "고객이 이 상품을 선택할 이유를 한 문장으로 설명해야 합니다. 장소명만 나열하거나 '구성합니다'로 끝나는 내부 설명은 피하세요.",
+            "core_value": "운영 정보가 아니라 고객이 얻는 경험 가치, 감정, 대상 고객 맥락을 2~4개로 분리하세요.",
+            "differentiation": "같은 run 안의 상품은 서로 다른 angle을 가져야 하며 제목/one_liner/core_value가 복사한 듯 반복되면 안 됩니다.",
+        },
         "규칙": [
             f"요청.product_count 값과 정확히 같은 개수의 상품을 생성하세요. 최대 {MAX_PRODUCT_COUNT}개를 절대 넘지 마세요.",
             "근거 문서 수가 요청 상품 수보다 적어도 상품 개수를 줄이지 마세요.",
@@ -5503,6 +6183,8 @@ def _product_prompt(
             "다른 source_id 형식, content_id, 관광지 id, API item id를 추측해서 만들지 마세요.",
             "각 product의 source_ids에는 상품과 직접 관련된 근거만 넣으세요. 직접 관련 근거가 없으면 빈 배열을 반환하고 needs_review/coverage_notes에 근거 부족을 남기세요.",
             "candidate_evidence_cards의 usable_facts, experience_hooks, recommended_product_angles를 우선 활용하세요.",
+            "상품명, one_liner, core_value는 마케팅 단계의 기반이므로 구체적인 장소/경험/대상 고객 맥락을 담으세요.",
+            "여러 상품을 만들 때 같은 제목 패턴, 같은 one_liner 구조, 같은 core_value 표현을 반복하지 마세요.",
             "unresolved_gaps에 남은 정보는 상품 본문에 단정하지 말고 needs_review, assumptions, not_to_claim, claim_limits로 분리하세요.",
             "운영시간, 요금, 예약 가능 여부, 외국어 지원, 안전성, 의료/웰니스 효능은 근거가 없으면 절대 단정하지 마세요.",
             "지역 mismatch가 있거나 source_confidence가 낮은 근거는 핵심 claim에 쓰지 말고 coverage_notes에 확인 필요로 남기세요.",
@@ -5527,6 +6209,59 @@ def _marketing_prompt(
         "근거_프로필": _product_evidence_context_for_prompt(evidence_context or {}),
         "QA_avoid_rules": _string_list((qa_settings or {}).get("avoid")),
         "수정_요청": _prompt_revision_context(revision_context),
+        "마케팅_출력_품질_기준": {
+            "product_title": "실제 여행 상품처럼 장소/테마/경험이 드러나는 구체적인 이름을 유지하고, 너무 행정적인 제목으로 약화하지 않습니다.",
+            "one_liner": "고객이 왜 이 상품을 선택해야 하는지 한 문장으로 말합니다. 단순 '근거 기반 상품' 같은 설명은 피합니다.",
+            "core_value": "상품의 선택 이유를 경험, 감정, 대상 고객 맥락으로 분리합니다.",
+            "marketing_strategy": "상품별로 누구에게, 왜, 어떤 포인트로 팔 수 있는지 관광상품 판매 기획서 수준의 전략을 작성합니다.",
+            "landing_page_outline": "상세페이지 첫 화면, 선택 이유, 근거 기반 포인트, 확인 정보를 구조화합니다.",
+            "sales_copy": "headline → subheadline → sections가 관심 유도, 경험 상상, 예약 전 확인 순서로 이어지는 설득 흐름을 가집니다.",
+            "faq_strategy": "구매 전환 FAQ와 운영 확인 FAQ를 분리해 고객 설득과 게시 전 확인을 모두 지원합니다.",
+            "sns_campaign": "SNS 문구는 이 필드 하나에 캠페인 각도, 포맷별 hook/body/해시태그, 시각 방향으로 작성합니다.",
+            "claim_strategy": "활용 가능한 주장과 주의 표현을 구분합니다.",
+            "faq": "기존 호환용 FAQ에도 구매 전 궁금증과 게시 전 확인 정보를 함께 담습니다. 운영 확인 안내만 반복하지 않습니다.",
+            "claims": "근거로 활용 가능한 Selling Point와 게시 전 확인이 필요한 정보를 구분하고, 근거 없는 사실은 단정하지 않습니다.",
+        },
+        "Marketing_Strategy_Pack_출력_형식": {
+            "marketing_strategy": {
+                "target_segment": {"primary": "핵심 구매자", "secondary": ["부가 타깃"], "foreigner_context": "외국인 대상 맥락"},
+                "product_positioning": {"summary": "한 줄 포지셔닝", "differentiation": "차별화 지점"},
+                "key_selling_points": [{"point": "근거 기반 판매 포인트", "evidence_basis": "근거에서 확인되는 사실", "usage_note": "활용 위치"}],
+                "customer_objections": [{"objection": "망설임", "response": "설명 방향", "requires_confirmation": True}],
+                "operation_checklist": [{"item": "게시/판매 전 확인 항목", "reason": "확인 이유"}],
+            },
+            "landing_page_outline": {
+                "hero": {"headline": "상세페이지 제목", "subheadline": "보조 문구", "hook": "첫 문장"},
+                "why_this_product": ["선택 이유"],
+                "evidence_backed_points": [{"point": "근거 기반 포인트", "evidence_basis": "근거 내용"}],
+                "practical_info": ["게시 전 확인 필요한 운영 정보"],
+            },
+            "faq_strategy": {
+                "buyer_faq": [{"question": "구매자가 궁금해할 질문", "answer": "구매 전환에 도움 되는 답변"}],
+                "operation_faq": [{"question": "운영/게시 전 확인 질문", "answer": "확인 필요 정보를 자연스럽게 안내"}],
+            },
+            "sns_campaign": {
+                "campaign_angles": [{"angle": "캠페인 각도", "rationale": "좋은 이유"}],
+                "posts": [{"format": "feed | reels | story", "hook": "첫 문장", "body": "본문", "hashtags": ["한국어 해시태그"]}],
+                "visual_direction": ["사진/장면 방향"],
+            },
+            "claim_strategy": {
+                "usable_claims": [{"claim": "근거 기반으로 바로 쓸 수 있는 주장", "evidence_basis": "근거에서 확인되는 사실"}],
+                "caution_phrasing": [{"phrase": "주의 표현 또는 게시 전 확인이 필요한 주장", "reason": "주의/확인이 필요한 이유"}],
+            },
+        },
+        "상품별_차별화_지시": [
+            "같은 run 안의 상품들이 같은 문장 구조와 같은 표현으로 시작하지 않게 하세요.",
+            "각 상품마다 서로 다른 angle을 정하세요. 예: 역사 스토리, 로컬 미식, 가족 체험, 야간 산책, 자연 관찰, 포토 스팟 등.",
+            "상품명, headline, SNS 첫 문장이 서로 복사한 듯 반복되면 실패입니다.",
+            "근거가 같은 지역에 있더라도 각 상품의 장소/행사/체험 단서를 다르게 살리세요.",
+        ],
+        "근거_안전_마케팅_정책": {
+            "활용_가능": "근거 문서에서 확인되는 장소명, 행사 성격, 전시/체험 요소, 지역 맥락, 스토리 소재는 Selling Point로 전환할 수 있습니다.",
+            "게시_전_확인": "요금/무료 여부, 운영시간, 예약 가능 여부, 외국어 지원, 안전 조건, 사용권은 근거가 명확하지 않으면 확인 필요로 표현합니다.",
+            "표현_주의": "근거 없는 가격, 운영시간, 예약 확정, 안전 보장, 의료/웰니스 효능, 외국어 지원은 단정하지 않습니다.",
+            "톤": "주의사항을 쓰더라도 상품 매력을 죽이는 법무 문구처럼 쓰지 말고, 운영자가 게시 전 확인할 정보로 자연스럽게 분리합니다.",
+        },
         "출력_언어": {
             "language": "ko",
             "rule": "외국인 대상 상품이어도 출력 문구는 전부 한국어로 작성합니다.",
@@ -5544,30 +6279,63 @@ def _marketing_prompt(
         },
         "규칙": [
             "각 product_id마다 marketing_asset을 정확히 1개씩 생성하세요. product_id 값은 상품_목록의 id를 그대로 사용하세요.",
+            "각 marketing_asset에는 marketing_strategy, landing_page_outline, faq_strategy, sns_campaign, claim_strategy를 모두 포함하세요.",
+            "marketing_strategy.key_selling_points와 claim_strategy.usable_claims는 근거 문서나 상품의 evidence_summary에서 확인되는 내용만 사용하세요.",
+            "근거가 부족한 가격/운영시간/예약/안전/의료/웰니스 효능/외국어 지원은 Selling Point나 usable_claims가 아니라 operation_checklist, customer_objections, faq_strategy.operation_faq, claim_strategy.caution_phrasing으로 분리하세요.",
+            "landing_page_outline을 먼저 설계한 뒤, 기존 sales_copy는 그 outline의 hero/why/practical_info를 압축한 홍보 문구처럼 작성하세요.",
+            "faq_strategy.buyer_faq는 구매 전환에 도움 되는 질문으로, operation_faq는 가격/운영시간/예약/언어 지원 등 운영 정보 질문으로 구분하세요.",
+            "FAQ 답변은 너무 보수적으로 회피하지 마세요. 축제 기간, 행사 장소, 운영시간, 요금, 프로그램처럼 근거 문서나 상품 입력에 명확히 있는 사실은 답변에 구체적으로 활용하세요.",
+            "근거에 있는 날짜/운영정보를 사용할 때는 '근거 기준으로는 ...입니다'처럼 말하고, 변경 가능성이 있는 행사/운영 정보는 마지막에 '게시 전 최신 공지 확인' 정도로만 보완하세요. 근거가 있는데도 '공식 홈페이지에서 확인하세요'만 반복하면 실패입니다.",
+            "SNS 문구는 sns_campaign.posts에만 작성하세요. 각 post는 첫 문장에 hook이 있어야 합니다.",
+            "claim_strategy에는 usable_claims와 caution_phrasing만 작성하세요. needs_confirmation, avoid_phrasing, safe_alternatives는 생성하지 마세요.",
+            "marketing_strategy에는 reasons_to_believe와 recommended_sales_angle을 생성하지 마세요.",
+            "landing_page_outline에는 experience_story와 conversion_cta를 생성하지 마세요.",
             "sales_copy는 문자열이 아니라 JSON 객체여야 합니다.",
-            "sales_copy.sections는 title과 body를 가진 객체 배열이며 상품당 최대 3개만 작성하세요.",
-            "FAQ에는 우천, 가격 확정 여부, 외국어 안내, 집결지, 일정 변경 관련 질문을 포함하되 상품당 최대 5개만 작성하세요.",
-            "sns_posts는 상품당 최대 3개만 작성하고, 각 항목은 platform/content 객체가 아니라 한국어 문자열이어야 합니다.",
-            "sns_posts는 반드시 한글 문장을 포함해야 합니다. 중국어/일본어/영어로 작성하지 마세요.",
+            "sales_copy.headline은 상품명 반복이 아니라 고객이 클릭하고 싶어지는 홍보 제목이어야 합니다.",
+            "sales_copy.subheadline은 이 상품만의 선택 이유를 구체적으로 말해야 합니다.",
+            "sales_copy.sections는 title과 body를 가진 객체 배열이며 상품당 2~4개 작성하세요. 각 section은 경험 상상, 핵심 매력, 이용 전 확인 중 하나의 역할을 가져야 합니다.",
+            "FAQ에는 구매 전 궁금증(누구에게 좋은지, 어떤 경험인지, 외국인에게 어떤 점이 편한지)과 운영 확인 질문(요금/예약/운영시간/언어 지원)을 균형 있게 포함하되 상품당 최대 5개만 작성하세요.",
             "외국인 대상이라는 이유로 SNS 문구를 중국어, 일본어, 영어 등으로 번역하지 마세요. output_language가 ko이므로 한국어 운영 문구만 작성하세요.",
             "search_keywords는 상품당 최대 10개만 작성하고, 각 항목은 한국어 문자열이어야 합니다.",
             "search_keywords에는 Busan, yacht, food tour 같은 영어만 있는 값을 쓰지 말고 부산, 요트, 푸드투어처럼 한국어로 작성하세요.",
             "상품_목록의 needs_review, assumptions, not_to_claim, claim_limits는 hard constraint입니다.",
             "근거 문서에 없는 운영 정보를 사실처럼 새로 만들지 마세요.",
             "가격, 예약, 운영시간, 외국어 지원, 안전 보장, 의료/웰니스 효능은 근거가 없으면 FAQ와 유의 문구에서 확인 필요로만 표현하세요.",
-            "evidence_disclaimer에는 data_coverage와 unresolved_gaps를 반영한 검토 필요 문장을 쓰세요.",
-            "claim_limits에는 상품별 not_to_claim과 unresolved gap 기반 금지 claim을 요약하세요.",
+            "evidence_disclaimer에는 data_coverage와 unresolved_gaps를 반영하되, 상품 매력을 죽이는 경고문이 아니라 게시 전 확인 안내로 작성하세요.",
+            "claim_limits에는 상품 설명에 활용하면 안 되는 내부 용어가 아니라, 표현 시 주의할 정보를 운영자가 이해할 수 있는 한국어 문장으로 요약하세요.",
+            "FAQ와 disclaimer에서 '운영자 확인 필요'만 반복하지 말고, 고객이 기대할 수 있는 경험과 확인해야 할 조건을 함께 말하세요.",
             "요청의 avoid에 포함된 금지 기준을 우선 적용하세요.",
-            "운영자가 바로 검토할 수 있게 간결하고 실무적인 문장으로 작성하세요.",
+            "운영자가 바로 검토할 수 있게 자연스럽고 실무적인 문장으로 작성하되, 지나치게 짧고 형식적인 문구는 피하세요.",
+            "not_to_claim, claim_limits, source_id, field_path, missing_pet_policy 같은 내부 용어를 고객 노출 문구에 쓰지 마세요.",
             "사용자에게 보이는 모든 텍스트 필드는 반드시 한국어로 작성하세요. 영어 문장을 쓰지 마세요.",
         ],
     }
     if validation_error:
         context["검증_실패_수정"] = {
             "error": validation_error,
-            "instruction": "이전 응답이 서버 검증을 통과하지 못했습니다. 전체 marketing_assets를 다시 작성하되, 모든 sns_posts/FAQ/문구/키워드가 한국어 문자열인지 자체 점검한 뒤 출력하세요.",
+            "instruction": "이전 응답이 서버 검증을 통과하지 못했습니다. 전체 marketing_assets를 다시 작성하되, 상품_목록의 모든 product_id에 대해 marketing_asset을 정확히 1개씩 포함하세요. claim_strategy.usable_claims는 문자열 배열이 아니라 반드시 {claim, evidence_basis} 객체 배열이어야 하고, caution_phrasing도 {phrase, reason} 객체 배열이어야 합니다. 모든 FAQ/SNS 문구/키워드가 한국어 문자열인지 자체 점검한 뒤 출력하세요.",
         }
     return json.dumps(context, ensure_ascii=False)
+
+
+def _marketing_product_batches(products: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    batch_size = max(1, MARKETING_PRODUCT_BATCH_SIZE)
+    return [products[index : index + batch_size] for index in range(0, len(products), batch_size)]
+
+
+def _marketing_docs_for_products(products: list[dict[str, Any]], docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source_ids: set[str] = set()
+    for product in products:
+        source_ids.update(_string_list(product.get("source_ids")))
+        for itinerary_item in product.get("itinerary") or []:
+            if isinstance(itinerary_item, dict):
+                source_id = str(itinerary_item.get("source_id") or "").strip()
+                if source_id:
+                    source_ids.add(source_id)
+    if not source_ids:
+        return []
+    matched = [doc for doc in docs if str(doc.get("doc_id") or "").strip() in source_ids]
+    return matched
 
 
 def _qa_prompt(
@@ -5667,8 +6435,14 @@ def _revision_patch_prompt(
                     "faq": [
                         {"index": 0, "question": "필요할 때만", "answer": "필요할 때만"}
                     ],
-                    "sns_posts": ["전체 교체가 필요할 때만"],
                     "search_keywords": ["전체 교체가 필요할 때만"],
+                }
+            ],
+            "marketing_field_patches": [
+                {
+                    "product_id": "수정할 상품 id",
+                    "field_path": "faq_strategy.operation_faq[0].answer",
+                    "value": "새 Marketing Strategy Pack 필드 수정값",
                 }
             ],
             "notes": ["수정 이유"],
@@ -5680,6 +6454,9 @@ def _revision_patch_prompt(
             "수정이 필요 없는 product_id는 product_patches와 marketing_patches에 포함하지 마세요.",
             "수정하지 않는 기존 값은 출력하지 마세요. 기존 값은 서버가 그대로 유지합니다.",
             "source_ids, evidence, claim_limits, needs_review, retrieved_documents는 수정하지 마세요.",
+            "새 Marketing Strategy Pack 필드(marketing_strategy, landing_page_outline, faq_strategy, sns_campaign, claim_strategy)는 marketing_field_patches에 field_path/value로만 수정하세요.",
+            "marketing_field_patches.field_path는 수정_대상의 field_path와 정확히 일치하거나 그 하위 경로여야 합니다.",
+            "reasons_to_believe, recommended_sales_angle, experience_story, conversion_cta, needs_confirmation, avoid_phrasing, safe_alternatives는 생성하지 마세요.",
             "field_path가 sales_copy.sections[n].body이면 해당 index의 body만 출력하세요. 다른 섹션이나 FAQ, SNS는 출력하지 마세요.",
             "field_path가 faq[n].answer이면 해당 index의 answer만 출력하세요. 다른 FAQ나 sales copy는 출력하지 마세요.",
             "index는 현재_마케팅_자산 배열 내부 faq/sections의 0부터 시작하는 위치입니다.",
@@ -5853,12 +6630,9 @@ def _revision_current_value_for_field(product: dict[str, Any], asset: dict[str, 
         key = faq_match.group(2)
         if 0 <= index < len(faq) and isinstance(faq[index], dict):
             return faq[index].get(key)
-    sns_match = re.match(r"sns_posts\[(\d+)\]$", field_path)
-    if sns_match:
-        posts = asset.get("sns_posts") if isinstance(asset.get("sns_posts"), list) else []
-        index = int(sns_match.group(1))
-        if 0 <= index < len(posts):
-            return posts[index]
+    generic_value = _get_nested_value(asset, field_path)
+    if generic_value is not None:
+        return generic_value
     return None
 
 
@@ -6147,6 +6921,44 @@ def _gemini_generation_meta(agent_name: str, purpose: str, result: GeminiJsonRes
         "cost_usd": round(result.cost_usd, 8),
         "paid_tier_equivalent_cost_usd": round(result.paid_tier_equivalent_cost_usd, 8),
         "latency_ms": result.latency_ms,
+    }
+
+
+def _combined_gemini_generation_meta(
+    agent_name: str,
+    purpose: str,
+    results: list[GeminiJsonResult],
+) -> dict[str, Any]:
+    if not results:
+        return {
+            "agent": agent_name,
+            "purpose": purpose,
+            "provider": "gemini",
+            "model": "",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+            "paid_tier_equivalent_cost_usd": 0.0,
+            "latency_ms": 0,
+            "call_count": 0,
+        }
+    models = _dedupe_texts([result.model for result in results])
+    return {
+        "agent": agent_name,
+        "purpose": purpose,
+        "provider": "gemini",
+        "model": ", ".join(models),
+        "prompt_tokens": sum(result.prompt_tokens for result in results),
+        "completion_tokens": sum(result.completion_tokens for result in results),
+        "total_tokens": sum(result.total_tokens for result in results),
+        "cost_usd": round(sum(result.cost_usd for result in results), 8),
+        "paid_tier_equivalent_cost_usd": round(
+            sum(result.paid_tier_equivalent_cost_usd for result in results),
+            8,
+        ),
+        "latency_ms": sum(result.latency_ms for result in results),
+        "call_count": len(results),
     }
 
 
@@ -6519,10 +7331,11 @@ def _field_path_label(path: str) -> str:
         return "FAQ 질문"
     if normalized.startswith("faq") and ".answer" in normalized:
         return "FAQ 답변"
-    if normalized.startswith("sns_posts"):
-        return "SNS 문구"
     if normalized.startswith("search_keywords"):
         return "검색 키워드"
+    strategy_label = _marketing_strategy_field_label(path)
+    if strategy_label:
+        return strategy_label
     if normalized.startswith("marketing_assets"):
         return "마케팅 자산"
     if normalized.startswith("products"):
@@ -6589,6 +7402,8 @@ def _validate_faq(value: Any, require_korean: bool = False) -> list[dict[str, st
             if require_korean:
                 question = _korean_text(question, "faq[].question")
                 answer = _korean_text(answer, "faq[].answer")
+            _assert_marketing_user_text(question, "faq[].question")
+            _assert_marketing_user_text(answer, "faq[].answer")
             faq.append({"question": question, "answer": answer})
     return faq
 

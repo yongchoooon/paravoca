@@ -149,6 +149,13 @@ type RevisionChangeReviewItem = {
   qa_issue?: QAIssue | null;
 };
 
+type RevisionChangeMap = Map<string, RevisionChangeReviewItem>;
+type RevisionChangeActions = {
+  decidingIds: string[];
+  onAccept: (changeId: string) => void;
+  onRevert: (changeId: string) => void;
+};
+
 const POSTER_SECTION_ORDER = Object.keys(POSTER_SECTION_LABELS) as PosterIncludedSection[];
 const POSTER_IMAGE_CANDIDATE_PAGE_SIZE = 6;
 
@@ -786,6 +793,14 @@ export function RunDetail({
     updateEditableMarketing(productId, { faq });
   }
 
+  function updateMarketingPath(productId: string, path: string, value: unknown) {
+    setEditableMarketingAssets((current) =>
+      current.map((asset) =>
+        asset.product_id === productId ? (setNestedValue(asset, path, value) as MarketingAsset) : asset
+      )
+    );
+  }
+
   async function submitRevision(modeOverride?: RevisionMode) {
     if (!run || !result) return;
     const mode = modeOverride ?? revisionMode;
@@ -1303,7 +1318,12 @@ export function RunDetail({
                     section={section}
                     checked={posterIncludedSections.includes(section)}
                     expanded={posterExpandedSections.includes(section)}
-                    preview={posterSectionPreview(section, posterModalProduct, modalMarketing)}
+                    preview={posterSectionPreview(
+                      section,
+                      posterModalProduct,
+                      modalMarketing,
+                      result?.retrieved_documents ?? []
+                    )}
                     disabled={posterGenerating}
                     onToggleChecked={(checked) => togglePosterSection(section, checked)}
                     onToggleExpanded={() => togglePosterExpandedSection(section)}
@@ -1733,6 +1753,9 @@ export function RunDetail({
                         updateSalesCopySection(editableProduct.id, index, patch)
                       }
                       onFaqChange={(index, patch) => updateFaq(editableProduct.id, index, patch)}
+                      onMarketingPathChange={(path, value) =>
+                        updateMarketingPath(editableProduct.id, path, value)
+                      }
                     />
                   ) : (
                     <Text c="dimmed">수정 가능한 상품 결과가 없습니다.</Text>
@@ -2842,7 +2865,6 @@ function sourceFamilyLabel(value: string) {
     kto_wellness: "웰니스",
     kto_pet: "반려동물",
     kto_audio: "오디오 관광",
-    kto_eco: "생태관광",
     kto_medical: "의료관광",
   }[value] ?? (value || "-");
 }
@@ -2868,8 +2890,6 @@ function toolLabel(value: string) {
     kto_audio_keyword_search: "오디오 해설",
     kto_audio_story_search: "오디오 스토리",
     kto_audio_theme_search: "오디오 테마",
-    kto_eco_tourism_search: "생태관광",
-    kto_eco_area_search: "생태관광",
     kto_medical_keyword_search: "의료관광",
   }[value] ?? (value || "-");
 }
@@ -2890,7 +2910,6 @@ function gapTypeLabel(value: string) {
     missing_wellness_attributes: "웰니스 속성",
     missing_medical_context: "의료관광 맥락",
     missing_story_asset: "해설/스토리",
-    missing_sustainability_context: "생태/지속가능성",
     missing_demand_signal: "수요 신호",
     missing_crowding_signal: "혼잡 신호",
     missing_regional_demand_signal: "지역 수요",
@@ -2961,6 +2980,50 @@ function arrayOfRecords(value: unknown): Array<Record<string, unknown>> {
         Boolean(item && typeof item === "object" && !Array.isArray(item))
       )
     : [];
+}
+
+function pathTokens(path: string): Array<string | number> {
+  const tokens: Array<string | number> = [];
+  path.split(".").forEach((part) => {
+    const matcher = /([^\[\]]+)|\[(\d+)\]/g;
+    let match: RegExpExecArray | null;
+    while ((match = matcher.exec(part)) !== null) {
+      if (match[1]) tokens.push(match[1]);
+      if (match[2]) tokens.push(Number(match[2]));
+    }
+  });
+  return tokens;
+}
+
+function setNestedValue<T>(source: T, path: string, value: unknown): T {
+  const root = cloneJson(source) as Record<string, unknown>;
+  const tokens = pathTokens(path);
+  if (tokens.length === 0) return root as T;
+  let current: Record<string, unknown> | unknown[] = root;
+  tokens.slice(0, -1).forEach((token, index) => {
+    const nextToken = tokens[index + 1];
+    if (Array.isArray(current)) {
+      const arrayIndex = Number(token);
+      if (!Number.isInteger(arrayIndex) || arrayIndex < 0) return;
+      if (current[arrayIndex] === undefined || current[arrayIndex] === null) {
+        current[arrayIndex] = typeof nextToken === "number" ? [] : {};
+      }
+      current = current[arrayIndex] as Record<string, unknown> | unknown[];
+      return;
+    }
+    const key = String(token);
+    if (current[key] === undefined || current[key] === null) {
+      current[key] = typeof nextToken === "number" ? [] : {};
+    }
+    current = current[key] as Record<string, unknown> | unknown[];
+  });
+  const lastToken = tokens[tokens.length - 1];
+  if (Array.isArray(current) && typeof lastToken === "number") {
+    current[lastToken] = value;
+  } else if (!Array.isArray(current)) {
+    current[String(lastToken)] = value;
+  }
+  return root as T;
 }
 
 function StageIndicator({ status }: { status: string }) {
@@ -3053,7 +3116,7 @@ function ProductDetail({
     onRevert: onRevertRevisionChange,
   };
   const tabChangeCounts = useMemo(() => {
-    const counts = { copy: 0, faq: 0, sns: 0, rules: 0 };
+    const counts = { strategy: 0, landing: 0, copy: 0, faq: 0, sns: 0, rules: 0 };
     revisionChanges.forEach((item) => {
       counts[revisionChangeTab(item)] += 1;
     });
@@ -3229,16 +3292,24 @@ function ProductDetail({
             <EvidenceStateList title="근거 범위 메모" items={coverageNotes} emptyText="추가 근거 메모 없음" />
           </SimpleGrid>
 
-          {evidenceDisclaimer ? (
-            <Alert color="gray" variant="light">
-              <Text size="sm">{evidenceDisclaimer}</Text>
-            </Alert>
-          ) : null}
+      {evidenceDisclaimer ? (
+        <Alert color="gray" variant="light">
+          <Text size="sm">{evidenceDisclaimer}</Text>
+        </Alert>
+      ) : null}
         </Stack>
       </Paper>
 
+      {marketing ? <MarketingStrategyOverview marketing={marketing} /> : null}
+
       <Tabs defaultValue="copy">
         <Tabs.List>
+          <Tabs.Tab value="strategy">
+            <TabLabelWithCount label="상품 판매 전략" count={tabChangeCounts.strategy} />
+          </Tabs.Tab>
+          <Tabs.Tab value="outline">
+            <TabLabelWithCount label="상세페이지 구성" count={tabChangeCounts.landing} />
+          </Tabs.Tab>
           <Tabs.Tab value="copy">
             <TabLabelWithCount label="Sales Copy" count={tabChangeCounts.copy} />
           </Tabs.Tab>
@@ -3249,9 +3320,21 @@ function ProductDetail({
             <TabLabelWithCount label="SNS" count={tabChangeCounts.sns} />
           </Tabs.Tab>
           <Tabs.Tab value="rules">
-            <TabLabelWithCount label="Claims" count={tabChangeCounts.rules} />
+            <TabLabelWithCount label="Claims / 표현 주의" count={tabChangeCounts.rules} />
           </Tabs.Tab>
         </Tabs.List>
+
+        <Tabs.Panel value="strategy" pt="sm">
+          {marketing ? (
+            <MarketingStrategyPanel marketing={marketing} changeByPath={changeByPath} changeActions={changeActions} />
+          ) : <Text c="dimmed">생성된 마케팅 자산이 없습니다.</Text>}
+        </Tabs.Panel>
+
+        <Tabs.Panel value="outline" pt="sm">
+          {marketing ? (
+            <LandingPageOutlinePanel marketing={marketing} changeByPath={changeByPath} changeActions={changeActions} />
+          ) : <Text c="dimmed">생성된 마케팅 자산이 없습니다.</Text>}
+        </Tabs.Panel>
 
         <Tabs.Panel value="copy" pt="sm">
           {marketing ? (
@@ -3301,39 +3384,38 @@ function ProductDetail({
         </Tabs.Panel>
 
         <Tabs.Panel value="faq" pt="sm">
-          <Table verticalSpacing="sm">
-            <Table.Tbody>
-              {(marketing?.faq ?? []).map((item, index) => (
-                <Table.Tr key={item.question}>
-                  <Table.Td w="35%"><Text fw={600} size="sm">{item.question}</Text></Table.Td>
-                  <Table.Td>
-                    <RevisionChangeInline
-                      change={changeByPath.get(`marketing:faq[${index}].answer`)}
-                      actions={changeActions}
-                    >
-                      <Text size="sm">{item.answer}</Text>
-                    </RevisionChangeInline>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+          <Stack gap="md">
+            {marketing?.faq_strategy ? (
+              <FaqStrategyPanel marketing={marketing} changeByPath={changeByPath} changeActions={changeActions} />
+            ) : (
+              <Table verticalSpacing="sm">
+                <Table.Tbody>
+                  {(marketing?.faq ?? []).map((item, index) => (
+                    <Table.Tr key={item.question}>
+                      <Table.Td w="35%"><Text fw={600} size="sm">{item.question}</Text></Table.Td>
+                      <Table.Td>
+                        <RevisionChangeInline
+                          change={changeByPath.get(`marketing:faq[${index}].answer`)}
+                          actions={changeActions}
+                        >
+                          <Text size="sm">{item.answer}</Text>
+                        </RevisionChangeInline>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            )}
+          </Stack>
         </Tabs.Panel>
 
         <Tabs.Panel value="sns" pt="sm">
           <Stack gap="sm">
-            <RevisionChangeInline
-              change={changeByPath.get("marketing:sns_posts")}
-              actions={changeActions}
-            >
-              <Stack gap="sm">
-                {(marketing?.sns_posts ?? []).map((post) => (
-                  <Paper key={post} withBorder p="sm">
-                    <Text size="sm">{post}</Text>
-                  </Paper>
-                ))}
-              </Stack>
-            </RevisionChangeInline>
+            {marketing?.sns_campaign ? (
+              <SnsCampaignPanel marketing={marketing} changeByPath={changeByPath} changeActions={changeActions} />
+            ) : (
+              <Text size="sm" c="dimmed">SNS 정보가 없습니다.</Text>
+            )}
             <RevisionChangeInline
               change={changeByPath.get("marketing:search_keywords")}
               actions={changeActions}
@@ -3349,9 +3431,17 @@ function ProductDetail({
         </Tabs.Panel>
 
         <Tabs.Panel value="rules" pt="sm">
-          <SimpleGrid cols={{ base: 1, sm: 2 }}>
+          <Stack gap="md">
+            {marketing ? (
+              <ClaimStrategyPanel
+                marketing={marketing}
+                productNotToClaim={product.not_to_claim}
+                changeByPath={changeByPath}
+                changeActions={changeActions}
+              />
+            ) : null}
             <Paper withBorder p="sm">
-              <Text fw={700} size="sm">Assumptions</Text>
+              <Text fw={700} size="sm">운영 전제/확인 메모</Text>
               <RevisionChangeInline
                 change={changeByPath.get("product:assumptions")}
                 actions={changeActions}
@@ -3361,21 +3451,422 @@ function ProductDetail({
                 ))}
               </RevisionChangeInline>
             </Paper>
-            <Paper withBorder p="sm">
-              <Text fw={700} size="sm">Do not claim</Text>
-              <RevisionChangeInline
-                change={changeByPath.get("product:not_to_claim")}
-                actions={changeActions}
-              >
-                {product.not_to_claim.map((item) => (
-                  <Text key={item} size="sm">- {item}</Text>
-                ))}
-              </RevisionChangeInline>
-            </Paper>
-          </SimpleGrid>
+          </Stack>
         </Tabs.Panel>
       </Tabs>
     </Stack>
+  );
+}
+
+function MarketingStrategyOverview({ marketing }: { marketing: MarketingAsset }) {
+  const strategy = marketing.marketing_strategy;
+  const topSellingPoints = (strategy?.key_selling_points ?? [])
+    .map((item) => item.point)
+    .filter(Boolean)
+    .slice(0, 3) as string[];
+  const objections = (strategy?.customer_objections ?? [])
+    .map((item) => item.objection)
+    .filter(Boolean)
+    .slice(0, 3) as string[];
+  const checks = (strategy?.operation_checklist ?? [])
+    .map((item) => item.item)
+    .filter(Boolean)
+    .slice(0, 3) as string[];
+  if (!strategy && !marketing.landing_page_outline && !marketing.faq_strategy && !marketing.sns_campaign && !marketing.claim_strategy) {
+    return null;
+  }
+  return (
+    <Paper withBorder p="sm">
+      <Stack gap="sm">
+        <Group justify="space-between" align="flex-start">
+          <div style={{ minWidth: 0 }}>
+            <Text fw={700} size="sm">상품 판매 기획 요약</Text>
+            <Text size="sm" c="dimmed">
+              상품 문구 위에 판매 대상, 고객 망설임, 게시 전 확인 정보를 함께 정리합니다.
+            </Text>
+          </div>
+        </Group>
+        <SimpleGrid cols={{ base: 1, md: 2 }}>
+          <StrategyTextBlock
+            title="이 상품은 누구에게 팔기 좋은가"
+            items={[strategy?.target_segment?.primary, strategy?.target_segment?.foreigner_context].filter(Boolean) as string[]}
+            emptyText="전략 정보 없음"
+          />
+          <StrategyTextBlock title="핵심 Selling Point" items={topSellingPoints} emptyText="핵심 포인트 없음" />
+          <StrategyTextBlock title="고객이 망설일 지점" items={objections} emptyText="망설임 항목 없음" />
+          <StrategyTextBlock title="게시 전 확인할 정보" items={checks} emptyText="확인 항목 없음" />
+        </SimpleGrid>
+      </Stack>
+    </Paper>
+  );
+}
+
+function marketingChange(changeByPath: RevisionChangeMap, path: string) {
+  return changeByPath.get(`marketing:${path}`);
+}
+
+function MarketingStrategyPanel({
+  marketing,
+  changeByPath,
+  changeActions,
+}: {
+  marketing: MarketingAsset;
+  changeByPath: RevisionChangeMap;
+  changeActions: RevisionChangeActions;
+}) {
+  const strategy = marketing.marketing_strategy;
+  if (!strategy) {
+    return <Text c="dimmed">이전 run에는 상품 판매 전략 정보가 없습니다.</Text>;
+  }
+  return (
+    <Stack gap="md">
+      <SimpleGrid cols={{ base: 1, md: 2 }}>
+        <Paper withBorder p="sm">
+          <Text fw={700} size="sm">판매 대상</Text>
+          <RevisionChangeInline
+            change={marketingChange(changeByPath, "marketing_strategy.target_segment.primary")}
+            actions={changeActions}
+          >
+            <Text size="sm" mt={4}>{strategy.target_segment?.primary || "핵심 타깃 정보 없음"}</Text>
+          </RevisionChangeInline>
+          <StrategyTextBlock
+            title="부가 타깃"
+            items={strategy.target_segment?.secondary ?? []}
+            emptyText="부가 타깃 없음"
+          />
+          {strategy.target_segment?.foreigner_context ? (
+            <RevisionChangeInline
+              change={marketingChange(changeByPath, "marketing_strategy.target_segment.foreigner_context")}
+              actions={changeActions}
+            >
+              <Text size="sm" c="dimmed" mt="xs">{strategy.target_segment.foreigner_context}</Text>
+            </RevisionChangeInline>
+          ) : null}
+        </Paper>
+        <Paper withBorder p="sm">
+          <Text fw={700} size="sm">포지셔닝</Text>
+          <RevisionChangeInline
+            change={marketingChange(changeByPath, "marketing_strategy.product_positioning.summary")}
+            actions={changeActions}
+          >
+            <Text size="sm" mt={4}>{strategy.product_positioning?.summary || "포지셔닝 요약 없음"}</Text>
+          </RevisionChangeInline>
+          {strategy.product_positioning?.differentiation ? (
+            <RevisionChangeInline
+              change={marketingChange(changeByPath, "marketing_strategy.product_positioning.differentiation")}
+              actions={changeActions}
+            >
+              <Text size="sm" c="dimmed" mt="xs">{strategy.product_positioning.differentiation}</Text>
+            </RevisionChangeInline>
+          ) : null}
+        </Paper>
+      </SimpleGrid>
+      <StrategyPairList
+        title="근거 기반 Selling Point"
+        items={(strategy.key_selling_points ?? []).map((item, index) => ({
+          title: item.point,
+          body: item.evidence_basis,
+          note: item.usage_note,
+          change: marketingChange(changeByPath, `marketing_strategy.key_selling_points[${index}].point`),
+        }))}
+        emptyText="근거 기반 Selling Point 없음"
+        actions={changeActions}
+      />
+      <SimpleGrid cols={{ base: 1, md: 2 }}>
+        <StrategyPairList
+          title="고객 망설임 대응"
+          items={(strategy.customer_objections ?? []).map((item, index) => ({
+            title: item.objection,
+            body: item.response,
+            note: item.requires_confirmation ? "게시 전 확인 필요" : undefined,
+            change: marketingChange(changeByPath, `marketing_strategy.customer_objections[${index}].response`),
+          }))}
+          emptyText="고객 망설임 항목 없음"
+          actions={changeActions}
+        />
+        <StrategyPairList
+          title="운영 체크리스트"
+          items={(strategy.operation_checklist ?? []).map((item, index) => ({
+            title: item.item,
+            body: item.reason,
+            change: marketingChange(changeByPath, `marketing_strategy.operation_checklist[${index}].item`),
+          }))}
+          emptyText="운영 체크리스트 없음"
+          actions={changeActions}
+        />
+      </SimpleGrid>
+    </Stack>
+  );
+}
+
+function LandingPageOutlinePanel({
+  marketing,
+  changeByPath,
+  changeActions,
+}: {
+  marketing: MarketingAsset;
+  changeByPath: RevisionChangeMap;
+  changeActions: RevisionChangeActions;
+}) {
+  const outline = marketing.landing_page_outline;
+  if (!outline) {
+    return <Text c="dimmed">이전 run에는 상세페이지 구성 정보가 없습니다.</Text>;
+  }
+  return (
+    <Stack gap="md">
+      <Paper withBorder p="sm">
+        <Text fw={700} size="sm">첫 화면</Text>
+        <RevisionChangeInline
+          change={marketingChange(changeByPath, "landing_page_outline.hero.headline")}
+          actions={changeActions}
+        >
+          <Title order={5} mt={4}>{outline.hero?.headline || "헤드라인 없음"}</Title>
+        </RevisionChangeInline>
+        {outline.hero?.subheadline ? (
+          <RevisionChangeInline
+            change={marketingChange(changeByPath, "landing_page_outline.hero.subheadline")}
+            actions={changeActions}
+          >
+            <Text size="sm" mt={4}>{outline.hero.subheadline}</Text>
+          </RevisionChangeInline>
+        ) : null}
+        {outline.hero?.hook ? (
+          <RevisionChangeInline
+            change={marketingChange(changeByPath, "landing_page_outline.hero.hook")}
+            actions={changeActions}
+          >
+            <Text size="sm" c="dimmed" mt={4}>{outline.hero.hook}</Text>
+          </RevisionChangeInline>
+        ) : null}
+      </Paper>
+      <StrategyTextBlock title="선택해야 하는 이유" items={outline.why_this_product ?? []} emptyText="선택 이유 없음" />
+      <StrategyPairList
+        title="근거 기반 상세페이지 포인트"
+        items={(outline.evidence_backed_points ?? []).map((item, index) => ({
+          title: item.point,
+          body: item.evidence_basis,
+          change: marketingChange(changeByPath, `landing_page_outline.evidence_backed_points[${index}].point`),
+        }))}
+        emptyText="근거 기반 포인트 없음"
+        actions={changeActions}
+      />
+      <StrategyTextBlock title="게시 전 확인 정보" items={outline.practical_info ?? []} emptyText="확인 정보 없음" />
+    </Stack>
+  );
+}
+
+function FaqStrategyPanel({
+  marketing,
+  changeByPath,
+  changeActions,
+}: {
+  marketing: MarketingAsset;
+  changeByPath: RevisionChangeMap;
+  changeActions: RevisionChangeActions;
+}) {
+  const faqStrategy = marketing.faq_strategy;
+  if (!faqStrategy) return null;
+  return (
+    <Stack gap="sm">
+      <FaqListCard
+        title="구매 전환 FAQ"
+        items={faqStrategy.buyer_faq ?? []}
+        pathPrefix="faq_strategy.buyer_faq"
+        changeByPath={changeByPath}
+        actions={changeActions}
+      />
+      <FaqListCard
+        title="운영 확인 FAQ"
+        items={faqStrategy.operation_faq ?? []}
+        pathPrefix="faq_strategy.operation_faq"
+        changeByPath={changeByPath}
+        actions={changeActions}
+      />
+    </Stack>
+  );
+}
+
+function SnsCampaignPanel({
+  marketing,
+  changeByPath,
+  changeActions,
+}: {
+  marketing: MarketingAsset;
+  changeByPath: RevisionChangeMap;
+  changeActions: RevisionChangeActions;
+}) {
+  const campaign = marketing.sns_campaign;
+  if (!campaign) return null;
+  return (
+    <Stack gap="md">
+      <SimpleGrid cols={{ base: 1, md: 2 }}>
+        <StrategyPairList
+          title="캠페인 각도"
+          items={(campaign.campaign_angles ?? []).map((item, index) => ({
+            title: item.angle,
+            body: item.rationale,
+            change: marketingChange(changeByPath, `sns_campaign.campaign_angles[${index}].angle`),
+          }))}
+          emptyText="캠페인 각도 없음"
+          actions={changeActions}
+        />
+        <StrategyTextBlock title="비주얼 방향" items={campaign.visual_direction ?? []} emptyText="비주얼 방향 없음" />
+      </SimpleGrid>
+      <StrategyPairList
+        title="SNS 포스트"
+        items={(campaign.posts ?? []).map((item, index) => ({
+          title: `${item.format || "feed"} · ${item.hook || ""}`.trim(),
+          body: item.body,
+          note: (item.hashtags ?? []).join(" "),
+          change: marketingChange(changeByPath, `sns_campaign.posts[${index}].body`),
+        }))}
+        emptyText="SNS 포스트 없음"
+        actions={changeActions}
+      />
+    </Stack>
+  );
+}
+
+function ClaimStrategyPanel({
+  marketing,
+  productNotToClaim = [],
+  changeByPath,
+  changeActions,
+}: {
+  marketing: MarketingAsset;
+  productNotToClaim?: string[];
+  changeByPath: RevisionChangeMap;
+  changeActions: RevisionChangeActions;
+}) {
+  const strategy = marketing.claim_strategy;
+  if (!strategy) return null;
+  return (
+    <Stack gap="md">
+      <SimpleGrid cols={{ base: 1, md: 2 }}>
+        <StrategyPairList
+          title="활용 가능한 주장"
+          items={(strategy.usable_claims ?? []).map((item, index) => ({
+            title: item.claim,
+            body: item.evidence_basis,
+            change: marketingChange(changeByPath, `claim_strategy.usable_claims[${index}].claim`),
+          }))}
+          emptyText="활용 가능한 주장 없음"
+          actions={changeActions}
+        />
+        <StrategyPairList
+          title="주의 표현"
+          items={[
+            ...(strategy.caution_phrasing ?? []).map((item, index) => ({
+              title: item.phrase,
+              body: item.reason,
+              change: marketingChange(changeByPath, `claim_strategy.caution_phrasing[${index}].phrase`),
+            })),
+            ...productNotToClaim.map((item) => ({ title: item })),
+          ]}
+          emptyText="주의 표현 없음"
+          actions={changeActions}
+        />
+      </SimpleGrid>
+    </Stack>
+  );
+}
+
+function FaqListCard({
+  title,
+  items,
+  pathPrefix,
+  changeByPath,
+  actions,
+}: {
+  title: string;
+  items: Array<{ question?: string; answer?: string }>;
+  pathPrefix?: string;
+  changeByPath?: RevisionChangeMap;
+  actions?: RevisionChangeActions;
+}) {
+  return (
+    <Paper withBorder p="sm">
+      <Text fw={700} size="sm">{title}</Text>
+      <Stack gap="xs" mt="xs">
+        {items.length > 0 ? items.map((item, index) => {
+          const body = (
+            <div style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+              <Text size="sm" fw={600}>{item.question}</Text>
+              <Text size="sm" c="dimmed">{item.answer}</Text>
+            </div>
+          );
+          const change = pathPrefix && changeByPath
+            ? marketingChange(changeByPath, `${pathPrefix}[${index}].answer`)
+            : undefined;
+          return (
+            <div key={`${title}-${index}`}>
+              {change && actions ? (
+                <RevisionChangeInline change={change} actions={actions}>{body}</RevisionChangeInline>
+              ) : body}
+            </div>
+          );
+        }) : <Text size="sm" c="dimmed">항목 없음</Text>}
+      </Stack>
+    </Paper>
+  );
+}
+
+function StrategyTextBlock({
+  title,
+  items,
+  emptyText,
+}: {
+  title: string;
+  items: string[];
+  emptyText: string;
+}) {
+  const visibleItems = items.map((item) => String(item || "").trim()).filter(Boolean);
+  return (
+    <Paper withBorder p="sm">
+      <Text fw={700} size="sm">{title}</Text>
+      <Stack gap={4} mt="xs">
+        {visibleItems.length > 0 ? visibleItems.map((item) => (
+          <Text key={item} size="sm" style={{ overflowWrap: "anywhere" }}>- {item}</Text>
+        )) : <Text size="sm" c="dimmed">{emptyText}</Text>}
+      </Stack>
+    </Paper>
+  );
+}
+
+function StrategyPairList({
+  title,
+  items,
+  emptyText,
+  actions,
+}: {
+  title: string;
+  items: Array<{ title?: string; body?: string; note?: string; change?: RevisionChangeReviewItem }>;
+  emptyText: string;
+  actions?: RevisionChangeActions;
+}) {
+  const visibleItems = items.filter((item) => item.title || item.body || item.note);
+  return (
+    <Paper withBorder p="sm">
+      <Text fw={700} size="sm">{title}</Text>
+      <Stack gap="xs" mt="xs">
+        {visibleItems.length > 0 ? visibleItems.map((item, index) => {
+          const content = (
+            <div style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+              {item.title ? <Text size="sm" fw={600}>{item.title}</Text> : null}
+              {item.body ? <Text size="sm" c="dimmed">{item.body}</Text> : null}
+              {item.note ? <Badge size="xs" variant="light" color="gray" mt={4}>{item.note}</Badge> : null}
+            </div>
+          );
+          return (
+            <div key={`${title}-${index}`}>
+              {item.change && actions ? (
+                <RevisionChangeInline change={item.change} actions={actions}>{content}</RevisionChangeInline>
+              ) : content}
+            </div>
+          );
+        }) : <Text size="sm" c="dimmed">{emptyText}</Text>}
+      </Stack>
+    </Paper>
   );
 }
 
@@ -3492,11 +3983,15 @@ function TabLabelWithCount({ label, count }: { label: string; count: number }) {
   );
 }
 
-function revisionChangeTab(change: RevisionChangeReviewItem): "copy" | "faq" | "sns" | "rules" {
+function revisionChangeTab(
+  change: RevisionChangeReviewItem
+): "strategy" | "landing" | "copy" | "faq" | "sns" | "rules" {
   const path = change.field_path;
-  if (path.startsWith("faq[")) return "faq";
-  if (path === "sns_posts" || path === "search_keywords") return "sns";
-  if (path === "assumptions" || path === "not_to_claim" || path === "claim_limits") return "rules";
+  if (path.startsWith("marketing_strategy.")) return "strategy";
+  if (path.startsWith("landing_page_outline.")) return "landing";
+  if (path.startsWith("faq_strategy.") || path.startsWith("faq[")) return "faq";
+  if (path.startsWith("sns_campaign.") || path === "search_keywords") return "sns";
+  if (path.startsWith("claim_strategy.") || path === "assumptions" || path === "not_to_claim" || path === "claim_limits") return "rules";
   return "copy";
 }
 
@@ -3750,7 +4245,8 @@ function posterStyleLabel(styleId: string, options: PosterOptions | null) {
 function posterSectionPreview(
   section: PosterIncludedSection,
   product: ProductIdea | null,
-  marketing: MarketingAsset | null
+  marketing: MarketingAsset | null,
+  evidenceDocuments: EvidenceDocument[] = []
 ) {
   if (!product) return "상품을 선택하면 이 항목에 들어갈 실제 내용이 표시됩니다.";
   if (section === "product_summary") {
@@ -3766,26 +4262,184 @@ function posterSectionPreview(
     return items.join(" → ") || "일정/경험 요소 없음";
   }
   if (section === "marketing_copy") {
-    return [marketing?.sales_copy.headline, marketing?.sales_copy.subheadline]
+    return posterMarketingPreviewText(marketing) || "마케팅 문구 없음";
+  }
+  if (section === "target_segment") {
+    const target = marketing?.marketing_strategy?.target_segment;
+    return [target?.primary, target?.secondary?.join(", "), target?.foreigner_context]
       .map((item) => String(item ?? "").trim())
       .filter(Boolean)
-      .join(" / ") || "마케팅 문구 없음";
+      .join(" / ") || "판매 대상 정보 없음";
+  }
+  if (section === "key_selling_points") {
+    return (marketing?.marketing_strategy?.key_selling_points ?? [])
+      .map((item) => [item.point, item.usage_note].filter(Boolean).join(" — "))
+      .filter(Boolean)
+      .join(" / ") || "핵심 Selling Point 없음";
+  }
+  if (section === "landing_outline") {
+    const outline = marketing?.landing_page_outline;
+    return [
+      outline?.hero?.headline,
+      outline?.hero?.subheadline,
+      outline?.hero?.hook,
+      ...(outline?.why_this_product ?? []),
+      ...(outline?.evidence_backed_points ?? []).map((item) => item.point),
+      ...(outline?.practical_info ?? []),
+    ]
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean)
+      .slice(0, 6)
+      .join(" / ") || "상세페이지 구성 없음";
+  }
+  if (section === "faq_strategy") {
+    const buyer = (marketing?.faq_strategy?.buyer_faq ?? []).map((item) => item.question || item.answer);
+    const operation = (marketing?.faq_strategy?.operation_faq ?? []).map((item) => item.question || item.answer);
+    return [...buyer, ...operation].map((item) => String(item ?? "").trim()).filter(Boolean).slice(0, 4).join(" / ") || "FAQ 전략 없음";
   }
   if (section === "sns_copy") {
-    return marketing?.sns_posts[0] || "SNS 문구 없음";
+    return posterSnsPreviewText(marketing) || "SNS 문구 없음";
+  }
+  if (section === "usable_claims") {
+    return (marketing?.claim_strategy?.usable_claims ?? [])
+      .map((item) => [item.claim, item.evidence_basis].filter(Boolean).join(" — "))
+      .filter(Boolean)
+      .join(" / ") || "활용 가능한 주장 없음";
   }
   if (section === "evidence_summary") {
-    return product.evidence_summary?.trim() || "근거 요약 없음";
+    return posterEvidencePreviewText(product, evidenceDocuments) || "연결된 근거 제목/요약이 없어 포스터에는 넣지 않습니다.";
   }
   if (section === "claim_limits") {
     const limits = [
       ...stringListFromUnknown(product.claim_limits),
       ...stringListFromUnknown(product.not_to_claim),
       ...stringListFromUnknown(product.needs_review),
+      ...posterCautionPhrases(marketing),
     ];
     return limits.join(" / ") || "제한/주의사항 없음";
   }
   return "선택한 데이터가 포스터 프롬프트에 반영됩니다.";
+}
+
+function posterEvidencePreviewText(product: ProductIdea, evidenceDocuments: EvidenceDocument[]) {
+  const sourceIds = new Set(stringListFromUnknown(product.source_ids));
+  const docTexts = evidenceDocuments
+    .filter((doc) => !sourceIds.size || sourceIds.has(doc.doc_id))
+    .map((doc) => {
+      const body = doc.snippet?.trim() || doc.content?.trim().slice(0, 160) || "";
+      return [doc.title?.trim(), body].filter(Boolean).join(": ");
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+  const summary = product.evidence_summary?.trim() ?? "";
+  if (summary && !isLowInformationEvidenceSummary(summary)) {
+    docTexts.push(summary);
+  }
+  return Array.from(new Set(docTexts)).slice(0, 3).join(" / ");
+}
+
+function isLowInformationEvidenceSummary(value: string) {
+  return value.includes("근거를 사용했습니다") && value.length < 90 && !value.includes(":");
+}
+
+function posterMarketingPreviewText(marketing: MarketingAsset | null) {
+  if (!marketing) return "";
+  return [
+    marketing.landing_page_outline?.hero?.headline,
+    marketing.landing_page_outline?.hero?.subheadline,
+    marketing.landing_page_outline?.hero?.hook,
+    marketing.sales_copy.headline,
+    marketing.sales_copy.subheadline,
+    ...(marketing.marketing_strategy?.key_selling_points ?? []).map((item) => item.point),
+  ]
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .join(" / ");
+}
+
+function posterSnsPreviewText(marketing: MarketingAsset | null) {
+  if (!marketing) return "";
+  const campaignPost = marketing.sns_campaign?.posts?.find((post) => post.hook || post.body);
+  return [campaignPost?.hook, campaignPost?.body]
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" / ");
+}
+
+function posterCautionPhrases(marketing: MarketingAsset | null) {
+  return (marketing?.claim_strategy?.caution_phrasing ?? [])
+    .map((item) => [item.phrase, item.reason].filter(Boolean).join(" — "))
+    .filter(Boolean);
+}
+
+function ReadableTextInput({
+  value,
+  onChange,
+  placeholder,
+  ariaLabel,
+  tone = "body",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  ariaLabel: string;
+  tone?: "headline" | "body" | "subtle" | "meta";
+}) {
+  const inputClass =
+    tone === "headline"
+      ? classes.revisionPlainHeadlineInput
+      : tone === "subtle"
+        ? classes.revisionPlainSubtleInput
+        : tone === "meta"
+          ? classes.revisionInlineMetaInput
+          : classes.revisionPlainInput;
+  return (
+    <TextInput
+      aria-label={ariaLabel}
+      placeholder={placeholder}
+      value={value}
+      variant="unstyled"
+      classNames={{ input: inputClass }}
+      onChange={(event) => onChange(event.currentTarget.value)}
+    />
+  );
+}
+
+function ReadableTextarea({
+  value,
+  onChange,
+  placeholder,
+  ariaLabel,
+  tone = "body",
+  minRows = 3,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  ariaLabel: string;
+  tone?: "headline" | "body" | "subtle";
+  minRows?: number;
+}) {
+  const inputClass =
+    tone === "headline"
+      ? classes.revisionPlainHeadlineInput
+      : tone === "subtle"
+        ? classes.revisionPlainSubtleInput
+        : classes.revisionPlainInput;
+  return (
+    <Textarea
+      aria-label={ariaLabel}
+      placeholder={placeholder}
+      autosize
+      minRows={minRows}
+      variant="unstyled"
+      classNames={{ input: inputClass }}
+      value={value}
+      onChange={(event) => onChange(event.currentTarget.value)}
+    />
+  );
 }
 
 function EvidenceStateList({
@@ -3822,6 +4476,7 @@ function RevisionEditor({
   onSalesCopyChange,
   onSalesCopySectionChange,
   onFaqChange,
+  onMarketingPathChange,
 }: {
   product: ProductIdea;
   marketing: MarketingAsset;
@@ -3833,32 +4488,41 @@ function RevisionEditor({
     patch: Partial<{ title: string; body: string }>
   ) => void;
   onFaqChange: (index: number, patch: Partial<{ question: string; answer: string }>) => void;
+  onMarketingPathChange: (path: string, value: unknown) => void;
 }) {
   return (
     <Tabs defaultValue="product">
       <Tabs.List>
         <Tabs.Tab value="product">Product</Tabs.Tab>
+        <Tabs.Tab value="strategy">상품 판매 전략</Tabs.Tab>
+        <Tabs.Tab value="landing">상세페이지 구성</Tabs.Tab>
         <Tabs.Tab value="copy">Sales Copy</Tabs.Tab>
         <Tabs.Tab value="faq">FAQ</Tabs.Tab>
-        <Tabs.Tab value="sns">SNS / Keywords</Tabs.Tab>
+        <Tabs.Tab value="sns">SNS</Tabs.Tab>
         <Tabs.Tab value="claims">Claims</Tabs.Tab>
       </Tabs.List>
 
       <Tabs.Panel value="product" pt="md">
-        <Stack gap="sm">
-          <TextInput
-            label="Title"
-            value={product.title}
-            onChange={(event) => onProductChange({ title: event.currentTarget.value })}
-          />
-          <Textarea
-            label="One-liner"
-            autosize
-            minRows={4}
-            maxRows={8}
-            value={product.one_liner}
-            onChange={(event) => onProductChange({ one_liner: event.currentTarget.value })}
-          />
+        <Stack gap="sm" className={classes.revisionReadableStack}>
+          <Paper p="md" className={classes.revisionReadableGroup}>
+            <Stack gap="xs">
+              <ReadableTextInput
+                ariaLabel="상품 제목"
+                placeholder="상품 제목"
+                tone="headline"
+                value={product.title}
+                onChange={(value) => onProductChange({ title: value })}
+              />
+              <ReadableTextarea
+                ariaLabel="상품 한 줄 설명"
+                placeholder="상품 한 줄 설명"
+                tone="subtle"
+                minRows={2}
+                value={product.one_liner}
+                onChange={(value) => onProductChange({ one_liner: value })}
+              />
+            </Stack>
+          </Paper>
           <Group grow>
             <TextInput
               label="Duration"
@@ -3878,125 +4542,514 @@ function RevisionEditor({
         </Stack>
       </Tabs.Panel>
 
+      <Tabs.Panel value="strategy" pt="md">
+        <RevisionStrategyEditor marketing={marketing} onMarketingPathChange={onMarketingPathChange} />
+      </Tabs.Panel>
+
+      <Tabs.Panel value="landing" pt="md">
+        <RevisionLandingEditor marketing={marketing} onMarketingPathChange={onMarketingPathChange} />
+      </Tabs.Panel>
+
       <Tabs.Panel value="copy" pt="md">
-        <Stack gap="sm">
-          <TextInput
-            label="Headline"
-            value={marketing.sales_copy.headline}
-            onChange={(event) => onSalesCopyChange({ headline: event.currentTarget.value })}
-          />
-          <Textarea
-            label="Subheadline"
-            autosize
-            minRows={4}
-            maxRows={8}
-            value={marketing.sales_copy.subheadline}
-            onChange={(event) => onSalesCopyChange({ subheadline: event.currentTarget.value })}
-          />
-          {marketing.sales_copy.sections.map((section, index) => (
-            <Paper key={`${product.id}-section-${index}`} withBorder p="sm">
-              <Stack gap="xs">
-                <TextInput
-                  label={`Section ${index + 1} title`}
-                  value={section.title}
-                  onChange={(event) =>
-                    onSalesCopySectionChange(index, { title: event.currentTarget.value })
-                  }
-                />
-                <Textarea
-                  label={`Section ${index + 1} body`}
-                  autosize
-                  minRows={7}
-                  maxRows={14}
-                  value={section.body}
-                  onChange={(event) =>
-                    onSalesCopySectionChange(index, { body: event.currentTarget.value })
-                  }
-                />
-              </Stack>
-            </Paper>
-          ))}
-          <Textarea
-            label="Disclaimer"
-            autosize
-            minRows={4}
-            maxRows={8}
-            value={marketing.sales_copy.disclaimer}
-            onChange={(event) => onSalesCopyChange({ disclaimer: event.currentTarget.value })}
-          />
-        </Stack>
+        <Paper p="md" className={classes.revisionReadableGroup}>
+          <Stack gap="md" className={classes.revisionReadableStack}>
+            <ReadableTextInput
+              ariaLabel="Sales Copy headline"
+              placeholder="대표 제목"
+              tone="headline"
+              value={marketing.sales_copy.headline}
+              onChange={(value) => onSalesCopyChange({ headline: value })}
+            />
+            <ReadableTextarea
+              ariaLabel="Sales Copy subheadline"
+              placeholder="보조 문구"
+              tone="subtle"
+              minRows={2}
+              value={marketing.sales_copy.subheadline}
+              onChange={(value) => onSalesCopyChange({ subheadline: value })}
+            />
+            {marketing.sales_copy.sections.map((section, index) => (
+              <div key={`${product.id}-section-${index}`} className={classes.revisionReadableGroupSoft}>
+                <Stack gap={4}>
+                  <ReadableTextInput
+                    ariaLabel={`Sales Copy section ${index + 1} title`}
+                    placeholder="섹션 제목"
+                    tone="headline"
+                    value={section.title}
+                    onChange={(value) => onSalesCopySectionChange(index, { title: value })}
+                  />
+                  <ReadableTextarea
+                    ariaLabel={`Sales Copy section ${index + 1} body`}
+                    placeholder="섹션 본문"
+                    minRows={2}
+                    value={section.body}
+                    onChange={(value) => onSalesCopySectionChange(index, { body: value })}
+                  />
+                </Stack>
+              </div>
+            ))}
+            <div className={classes.revisionReadableGroupSoft}>
+              <ReadableTextarea
+                ariaLabel="Sales Copy disclaimer"
+                placeholder="운영자 확인/주의 문구"
+                tone="subtle"
+                minRows={2}
+                value={marketing.sales_copy.disclaimer}
+                onChange={(value) => onSalesCopyChange({ disclaimer: value })}
+              />
+            </div>
+          </Stack>
+        </Paper>
       </Tabs.Panel>
 
       <Tabs.Panel value="faq" pt="md">
-        <Stack gap="sm">
-          {marketing.faq.map((item, index) => (
-            <Paper key={`${product.id}-faq-${index}`} withBorder p="sm">
-              <Stack gap="xs">
-                <TextInput
-                  label={`Question ${index + 1}`}
-                  value={item.question}
-                  onChange={(event) => onFaqChange(index, { question: event.currentTarget.value })}
-                />
-                <Textarea
-                  label={`Answer ${index + 1}`}
-                  autosize
-                  minRows={6}
-                  maxRows={11}
-                  value={item.answer}
-                  onChange={(event) => onFaqChange(index, { answer: event.currentTarget.value })}
-                />
-              </Stack>
-            </Paper>
-          ))}
-        </Stack>
+        <RevisionFaqEditor
+          marketing={marketing}
+          onFaqChange={onFaqChange}
+          onMarketingPathChange={onMarketingPathChange}
+        />
       </Tabs.Panel>
 
       <Tabs.Panel value="sns" pt="md">
-        <SimpleGrid cols={{ base: 1, md: 2 }}>
-          <Textarea
-            label="SNS posts"
-            autosize
-            minRows={11}
-            maxRows={21}
-            value={joinLines(marketing.sns_posts)}
-            onChange={(event) =>
-              onMarketingChange({ sns_posts: splitLines(event.currentTarget.value) })
-            }
-          />
-          <Textarea
-            label="Search keywords"
-            autosize
-            minRows={11}
-            maxRows={21}
-            value={joinLines(marketing.search_keywords)}
-            onChange={(event) =>
-              onMarketingChange({ search_keywords: splitLines(event.currentTarget.value) })
-            }
-          />
-        </SimpleGrid>
+        <RevisionSnsEditor
+          marketing={marketing}
+          onMarketingChange={onMarketingChange}
+          onMarketingPathChange={onMarketingPathChange}
+        />
       </Tabs.Panel>
 
       <Tabs.Panel value="claims" pt="md">
-        <SimpleGrid cols={{ base: 1, md: 2 }}>
-          <Textarea
-            label="Assumptions"
-            autosize
-            minRows={11}
-            maxRows={21}
-            value={joinLines(product.assumptions)}
-            onChange={(event) => onProductChange({ assumptions: splitLines(event.currentTarget.value) })}
-          />
-          <Textarea
-            label="Do not claim"
-            autosize
-            minRows={11}
-            maxRows={21}
-            value={joinLines(product.not_to_claim)}
-            onChange={(event) => onProductChange({ not_to_claim: splitLines(event.currentTarget.value) })}
-          />
-        </SimpleGrid>
+        <RevisionClaimsEditor
+          product={product}
+          marketing={marketing}
+          onProductChange={onProductChange}
+          onMarketingPathChange={onMarketingPathChange}
+        />
       </Tabs.Panel>
     </Tabs>
+  );
+}
+
+function RevisionStrategyEditor({
+  marketing,
+  onMarketingPathChange,
+}: {
+  marketing: MarketingAsset;
+  onMarketingPathChange: (path: string, value: unknown) => void;
+}) {
+  const strategy = marketing.marketing_strategy;
+  if (!strategy) return <Text c="dimmed">이전 run에는 상품 판매 전략 정보가 없습니다.</Text>;
+  return (
+    <Stack gap="sm">
+      <SimpleGrid cols={{ base: 1, md: 2 }}>
+        <Paper p="md" className={classes.revisionReadableGroup}>
+          <Stack gap="xs">
+            <Text fw={700} size="sm">판매 대상</Text>
+            <ReadableTextInput
+              ariaLabel="판매 대상"
+              placeholder="주 타깃"
+              value={strategy.target_segment?.primary ?? ""}
+              onChange={(value) => onMarketingPathChange("marketing_strategy.target_segment.primary", value)}
+            />
+            <ReadableTextarea
+              ariaLabel="부가 타깃"
+              placeholder="부가 타깃"
+              minRows={3}
+              value={joinLines(strategy.target_segment?.secondary)}
+              onChange={(value) => onMarketingPathChange("marketing_strategy.target_segment.secondary", splitLines(value))}
+            />
+            <ReadableTextarea
+              ariaLabel="외국인 관광 맥락"
+              placeholder="외국인 관광 맥락"
+              minRows={3}
+              value={strategy.target_segment?.foreigner_context ?? ""}
+              onChange={(value) => onMarketingPathChange("marketing_strategy.target_segment.foreigner_context", value)}
+            />
+          </Stack>
+        </Paper>
+        <Paper p="md" className={classes.revisionReadableGroup}>
+          <Stack gap="xs">
+            <Text fw={700} size="sm">포지셔닝</Text>
+            <ReadableTextarea
+              ariaLabel="포지셔닝 요약"
+              placeholder="요약"
+              minRows={3}
+              value={strategy.product_positioning?.summary ?? ""}
+              onChange={(value) => onMarketingPathChange("marketing_strategy.product_positioning.summary", value)}
+            />
+            <ReadableTextarea
+              ariaLabel="포지셔닝 차별점"
+              placeholder="차별점"
+              minRows={3}
+              value={strategy.product_positioning?.differentiation ?? ""}
+              onChange={(value) => onMarketingPathChange("marketing_strategy.product_positioning.differentiation", value)}
+            />
+          </Stack>
+        </Paper>
+      </SimpleGrid>
+
+      <EditablePairCards
+        title="핵심 Selling Point"
+        items={strategy.key_selling_points ?? []}
+        pathPrefix="marketing_strategy.key_selling_points"
+        fields={[
+          { key: "point", label: "Point" },
+          { key: "evidence_basis", label: "근거", textarea: true },
+          { key: "usage_note", label: "활용 메모", textarea: true },
+        ]}
+        onMarketingPathChange={onMarketingPathChange}
+      />
+      <EditablePairCards
+        title="고객 망설임 대응"
+        items={strategy.customer_objections ?? []}
+        pathPrefix="marketing_strategy.customer_objections"
+        fields={[
+          { key: "objection", label: "망설임" },
+          { key: "response", label: "대응 설명", textarea: true },
+        ]}
+        onMarketingPathChange={onMarketingPathChange}
+      />
+      <EditablePairCards
+        title="운영 체크리스트"
+        items={strategy.operation_checklist ?? []}
+        pathPrefix="marketing_strategy.operation_checklist"
+        fields={[
+          { key: "item", label: "확인 항목" },
+          { key: "reason", label: "이유", textarea: true },
+        ]}
+        onMarketingPathChange={onMarketingPathChange}
+      />
+    </Stack>
+  );
+}
+
+function RevisionLandingEditor({
+  marketing,
+  onMarketingPathChange,
+}: {
+  marketing: MarketingAsset;
+  onMarketingPathChange: (path: string, value: unknown) => void;
+}) {
+  const outline = marketing.landing_page_outline;
+  if (!outline) return <Text c="dimmed">이전 run에는 상세페이지 구성 정보가 없습니다.</Text>;
+  return (
+    <Stack gap="sm">
+      <Paper p="md" className={classes.revisionReadableGroup}>
+        <Stack gap="xs">
+          <Text fw={700} size="sm">첫 화면</Text>
+          <ReadableTextInput
+            ariaLabel="상세페이지 첫 화면 제목"
+            placeholder="상세페이지 첫 화면 제목"
+            tone="headline"
+            value={outline.hero?.headline ?? ""}
+            onChange={(value) => onMarketingPathChange("landing_page_outline.hero.headline", value)}
+          />
+          <ReadableTextarea
+            ariaLabel="상세페이지 첫 화면 보조 문구"
+            placeholder="보조 문구"
+            tone="subtle"
+            minRows={3}
+            value={outline.hero?.subheadline ?? ""}
+            onChange={(value) => onMarketingPathChange("landing_page_outline.hero.subheadline", value)}
+          />
+          <ReadableTextarea
+            ariaLabel="상세페이지 hook"
+            placeholder="고객을 붙잡는 첫 문장"
+            minRows={3}
+            value={outline.hero?.hook ?? ""}
+            onChange={(value) => onMarketingPathChange("landing_page_outline.hero.hook", value)}
+          />
+        </Stack>
+      </Paper>
+      <Paper p="md" className={classes.revisionReadableGroup}>
+        <Text fw={700} size="sm" mb="xs">선택해야 하는 이유</Text>
+        <ReadableTextarea
+        ariaLabel="선택해야 하는 이유"
+        placeholder="한 줄에 하나씩 입력"
+        minRows={5}
+        value={joinLines(outline.why_this_product)}
+        onChange={(value) => onMarketingPathChange("landing_page_outline.why_this_product", splitLines(value))}
+        />
+      </Paper>
+      <EditablePairCards
+        title="근거 기반 상세페이지 포인트"
+        items={outline.evidence_backed_points ?? []}
+        pathPrefix="landing_page_outline.evidence_backed_points"
+        fields={[
+          { key: "point", label: "Point" },
+          { key: "evidence_basis", label: "근거", textarea: true },
+        ]}
+        onMarketingPathChange={onMarketingPathChange}
+      />
+      <Paper p="md" className={classes.revisionReadableGroup}>
+        <Text fw={700} size="sm" mb="xs">게시 전 확인 정보</Text>
+        <ReadableTextarea
+        ariaLabel="게시 전 확인 정보"
+        placeholder="한 줄에 하나씩 입력"
+        minRows={5}
+        value={joinLines(outline.practical_info)}
+        onChange={(value) => onMarketingPathChange("landing_page_outline.practical_info", splitLines(value))}
+        />
+      </Paper>
+    </Stack>
+  );
+}
+
+function RevisionFaqEditor({
+  marketing,
+  onFaqChange,
+  onMarketingPathChange,
+}: {
+  marketing: MarketingAsset;
+  onFaqChange: (index: number, patch: Partial<{ question: string; answer: string }>) => void;
+  onMarketingPathChange: (path: string, value: unknown) => void;
+}) {
+  if (marketing.faq_strategy) {
+    return (
+      <Stack gap="md">
+        <EditableFaqCards title="구매 전환 FAQ" items={marketing.faq_strategy.buyer_faq ?? []} pathPrefix="faq_strategy.buyer_faq" onMarketingPathChange={onMarketingPathChange} />
+        <EditableFaqCards title="운영 확인 FAQ" items={marketing.faq_strategy.operation_faq ?? []} pathPrefix="faq_strategy.operation_faq" onMarketingPathChange={onMarketingPathChange} />
+      </Stack>
+    );
+  }
+  return (
+    <Stack gap="sm">
+      {marketing.faq.map((item, index) => (
+        <Paper key={`${marketing.product_id}-faq-${index}`} p="md" className={classes.revisionReadableGroup}>
+          <Stack gap="xs">
+            <ReadableTextInput ariaLabel={`FAQ ${index + 1} 질문`} placeholder="질문" tone="headline" value={item.question} onChange={(value) => onFaqChange(index, { question: value })} />
+            <ReadableTextarea ariaLabel={`FAQ ${index + 1} 답변`} placeholder="답변" minRows={3} value={item.answer} onChange={(value) => onFaqChange(index, { answer: value })} />
+          </Stack>
+        </Paper>
+      ))}
+    </Stack>
+  );
+}
+
+function RevisionSnsEditor({
+  marketing,
+  onMarketingChange,
+  onMarketingPathChange,
+}: {
+  marketing: MarketingAsset;
+  onMarketingChange: (patch: Partial<MarketingAsset>) => void;
+  onMarketingPathChange: (path: string, value: unknown) => void;
+}) {
+  return (
+    <Stack gap="md">
+      {marketing.sns_campaign ? (
+        <>
+          <EditablePairCards
+            title="캠페인 각도"
+            items={marketing.sns_campaign.campaign_angles ?? []}
+            pathPrefix="sns_campaign.campaign_angles"
+            fields={[
+              { key: "angle", label: "각도" },
+              { key: "rationale", label: "이유", textarea: true },
+            ]}
+            onMarketingPathChange={onMarketingPathChange}
+          />
+          <EditableSnsPostCards items={marketing.sns_campaign.posts ?? []} onMarketingPathChange={onMarketingPathChange} />
+          <Textarea
+            label="비주얼 방향"
+            variant="unstyled"
+            classNames={{ input: classes.revisionPlainInput }}
+            autosize
+            minRows={5}
+            value={joinLines(marketing.sns_campaign.visual_direction)}
+            onChange={(event) => onMarketingPathChange("sns_campaign.visual_direction", splitLines(event.currentTarget.value))}
+          />
+        </>
+      ) : (
+        <Text size="sm" c="dimmed">SNS 정보가 없습니다.</Text>
+      )}
+      <Textarea
+        label="Search keywords"
+        variant="unstyled"
+        classNames={{ input: classes.revisionPlainInput }}
+        autosize
+        minRows={5}
+        maxRows={12}
+        value={joinLines(marketing.search_keywords)}
+        onChange={(event) => onMarketingChange({ search_keywords: splitLines(event.currentTarget.value) })}
+      />
+    </Stack>
+  );
+}
+
+function RevisionClaimsEditor({
+  product,
+  marketing,
+  onProductChange,
+  onMarketingPathChange,
+}: {
+  product: ProductIdea;
+  marketing: MarketingAsset;
+  onProductChange: (patch: Partial<ProductIdea>) => void;
+  onMarketingPathChange: (path: string, value: unknown) => void;
+}) {
+  return (
+    <Stack gap="md">
+      {marketing.claim_strategy ? (
+        <SimpleGrid cols={{ base: 1, md: 2 }}>
+          <EditablePairCards
+            title="활용 가능한 주장"
+            items={marketing.claim_strategy.usable_claims ?? []}
+            pathPrefix="claim_strategy.usable_claims"
+            fields={[
+              { key: "claim", label: "주장" },
+              { key: "evidence_basis", label: "근거", textarea: true },
+            ]}
+            onMarketingPathChange={onMarketingPathChange}
+          />
+          <EditablePairCards
+            title="주의 표현"
+            items={marketing.claim_strategy.caution_phrasing ?? []}
+            pathPrefix="claim_strategy.caution_phrasing"
+            fields={[
+              { key: "phrase", label: "표현" },
+              { key: "reason", label: "이유", textarea: true },
+            ]}
+            onMarketingPathChange={onMarketingPathChange}
+          />
+        </SimpleGrid>
+      ) : null}
+      <SimpleGrid cols={{ base: 1, md: 2 }}>
+        <Textarea
+          label="운영 전제/확인 메모"
+          variant="unstyled"
+          classNames={{ input: classes.revisionPlainInput }}
+          autosize
+          minRows={9}
+          maxRows={18}
+          value={joinLines(product.assumptions)}
+          onChange={(event) => onProductChange({ assumptions: splitLines(event.currentTarget.value) })}
+        />
+        <Textarea
+          label="주의 표현"
+          variant="unstyled"
+          classNames={{ input: classes.revisionPlainInput }}
+          autosize
+          minRows={9}
+          maxRows={18}
+          value={joinLines(product.not_to_claim)}
+          onChange={(event) => onProductChange({ not_to_claim: splitLines(event.currentTarget.value) })}
+        />
+      </SimpleGrid>
+    </Stack>
+  );
+}
+
+type EditableFieldConfig = { key: string; label: string; textarea?: boolean };
+
+function EditablePairCards({
+  title,
+  items,
+  pathPrefix,
+  fields,
+  onMarketingPathChange,
+}: {
+  title: string;
+  items: Array<Record<string, unknown>>;
+  pathPrefix: string;
+  fields: EditableFieldConfig[];
+  onMarketingPathChange: (path: string, value: unknown) => void;
+}) {
+  return (
+    <Paper p="md" className={classes.revisionReadableGroup}>
+      <Text fw={700} size="sm">{title}</Text>
+      <Stack gap={0} mt="xs">
+        {items.length > 0 ? items.map((item, index) => (
+          <div key={`${pathPrefix}-${index}`} className={classes.revisionReadableGroupSoft}>
+            <Stack gap="xs">
+              {fields.map((field) => {
+                const value = String(item[field.key] ?? "");
+                return field.textarea ? (
+                  <ReadableTextarea
+                    key={field.key}
+                    ariaLabel={`${title} ${index + 1} ${field.label}`}
+                    placeholder={field.label}
+                    minRows={3}
+                    value={value}
+                    onChange={(nextValue) => onMarketingPathChange(`${pathPrefix}[${index}].${field.key}`, nextValue)}
+                  />
+                ) : (
+                  <ReadableTextInput
+                    key={field.key}
+                    ariaLabel={`${title} ${index + 1} ${field.label}`}
+                    placeholder={field.label}
+                    tone={field.key === "point" || field.key === "claim" || field.key === "objection" || field.key === "item" ? "headline" : "body"}
+                    value={value}
+                    onChange={(nextValue) => onMarketingPathChange(`${pathPrefix}[${index}].${field.key}`, nextValue)}
+                  />
+                );
+              })}
+              {Object.prototype.hasOwnProperty.call(item, "requires_confirmation") ? (
+                <Checkbox
+                  label="게시 전 확인 필요"
+                  checked={Boolean(item.requires_confirmation)}
+                  onChange={(event) => onMarketingPathChange(`${pathPrefix}[${index}].requires_confirmation`, event.currentTarget.checked)}
+                />
+              ) : null}
+            </Stack>
+          </div>
+        )) : <Text size="sm" c="dimmed">기존 항목 없음</Text>}
+      </Stack>
+    </Paper>
+  );
+}
+
+function EditableFaqCards({
+  title,
+  items,
+  pathPrefix,
+  onMarketingPathChange,
+}: {
+  title: string;
+  items: Array<{ question?: string; answer?: string }>;
+  pathPrefix: string;
+  onMarketingPathChange: (path: string, value: unknown) => void;
+}) {
+  return (
+    <Paper p="md" className={classes.revisionReadableGroup}>
+      <Text fw={700} size="sm">{title}</Text>
+      <Stack gap={0} mt="xs">
+        {items.length > 0 ? items.map((item, index) => (
+          <div key={`${pathPrefix}-${index}`} className={classes.revisionReadableGroupSoft}>
+            <Stack gap="xs">
+              <ReadableTextInput ariaLabel={`${title} ${index + 1} 질문`} placeholder="질문" tone="headline" value={item.question ?? ""} onChange={(value) => onMarketingPathChange(`${pathPrefix}[${index}].question`, value)} />
+              <ReadableTextarea ariaLabel={`${title} ${index + 1} 답변`} placeholder="답변" minRows={3} value={item.answer ?? ""} onChange={(value) => onMarketingPathChange(`${pathPrefix}[${index}].answer`, value)} />
+            </Stack>
+          </div>
+        )) : <Text size="sm" c="dimmed">기존 항목 없음</Text>}
+      </Stack>
+    </Paper>
+  );
+}
+
+function EditableSnsPostCards({
+  items,
+  onMarketingPathChange,
+}: {
+  items: Array<{ format?: string; hook?: string; body?: string; hashtags?: string[] }>;
+  onMarketingPathChange: (path: string, value: unknown) => void;
+}) {
+  return (
+    <Paper p="md" className={classes.revisionReadableGroup}>
+      <Text fw={700} size="sm">SNS 포스트</Text>
+      <Stack gap={0} mt="xs">
+        {items.length > 0 ? items.map((item, index) => (
+          <div key={`sns-campaign-post-${index}`} className={classes.revisionReadableGroupSoft}>
+            <Stack gap="xs">
+              <ReadableTextInput ariaLabel={`SNS 포스트 ${index + 1} 형식`} placeholder="feed / reels / story" tone="meta" value={item.format ?? ""} onChange={(value) => onMarketingPathChange(`sns_campaign.posts[${index}].format`, value)} />
+              <ReadableTextInput ariaLabel={`SNS 포스트 ${index + 1} hook`} placeholder="첫 문장 또는 hook" tone="headline" value={item.hook ?? ""} onChange={(value) => onMarketingPathChange(`sns_campaign.posts[${index}].hook`, value)} />
+              <ReadableTextarea ariaLabel={`SNS 포스트 ${index + 1} 본문`} placeholder="본문" minRows={3} value={item.body ?? ""} onChange={(value) => onMarketingPathChange(`sns_campaign.posts[${index}].body`, value)} />
+              <ReadableTextarea ariaLabel={`SNS 포스트 ${index + 1} 해시태그`} placeholder="해시태그를 한 줄씩 입력" tone="subtle" minRows={2} value={joinLines(item.hashtags)} onChange={(value) => onMarketingPathChange(`sns_campaign.posts[${index}].hashtags`, splitLines(value))} />
+            </Stack>
+          </div>
+        )) : <Text size="sm" c="dimmed">기존 항목 없음</Text>}
+      </Stack>
+    </Paper>
   );
 }
 

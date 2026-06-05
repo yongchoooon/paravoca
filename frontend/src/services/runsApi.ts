@@ -58,10 +58,48 @@ export type MarketingAsset = {
     disclaimer: string;
   };
   faq: Array<{ question: string; answer: string }>;
-  sns_posts: string[];
   search_keywords: string[];
   evidence_disclaimer?: string;
   claim_limits?: string[];
+  marketing_strategy?: {
+    target_segment?: {
+      primary?: string;
+      secondary?: string[];
+      foreigner_context?: string;
+    };
+    product_positioning?: {
+      summary?: string;
+      differentiation?: string;
+    };
+    key_selling_points?: Array<{ point?: string; evidence_basis?: string; usage_note?: string }>;
+    customer_objections?: Array<{ objection?: string; response?: string; requires_confirmation?: boolean }>;
+    operation_checklist?: Array<{ item?: string; reason?: string }>;
+  };
+  landing_page_outline?: {
+    hero?: {
+      headline?: string;
+      subheadline?: string;
+      hook?: string;
+    };
+    why_this_product?: string[];
+    evidence_backed_points?: Array<{ point?: string; evidence_basis?: string }>;
+    practical_info?: string[];
+  };
+  faq_strategy?: {
+    buyer_faq?: Array<{ question?: string; answer?: string }>;
+    operation_faq?: Array<{ question?: string; answer?: string }>;
+  };
+  sns_campaign?: {
+    campaign_angles?: Array<{ angle?: string; rationale?: string }>;
+    posts?: Array<{ format?: "feed" | "reels" | "story" | string; hook?: string; body?: string; hashtags?: string[] }>;
+    visual_direction?: string[];
+  };
+  claim_strategy?: {
+    usable_claims?: Array<{ claim?: string; evidence_basis?: string }>;
+    caution_phrasing?: Array<{ phrase?: string; reason?: string }>;
+    needs_confirmation?: Array<{ claim?: string; reason?: string }>;
+    avoid_phrasing?: Array<{ phrase?: string; reason?: string }>;
+  };
 };
 
 export type EvidenceDocument = {

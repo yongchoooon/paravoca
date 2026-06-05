@@ -1,8 +1,12 @@
+import copy
+import json
+
 import pytest
 
 from fastapi.testclient import TestClient
 
 from app.agents.workflow import (
+    _marketing_prompt,
     _product_prompt,
     _filter_retrieved_documents_by_geo_scope,
     _merge_retrieved_documents,
@@ -108,7 +112,7 @@ def _product_payload(count: int = 2) -> dict:
     }
 
 
-def _marketing_payload(*, sns_posts: list[str]) -> dict:
+def _marketing_payload(*, sns_bodies: list[str]) -> dict:
     return {
         "marketing_assets": [
             {
@@ -119,13 +123,119 @@ def _marketing_payload(*, sns_posts: list[str]) -> dict:
                     "sections": [{"title": "핵심", "body": "수변 산책 근거를 중심으로 구성합니다."}],
                     "disclaimer": "세부 요금은 운영자가 최종 확인해야 합니다.",
                 },
-                "faq": [{"question": "가격이 확정됐나요?", "answer": "가격은 운영자가 확인해야 합니다."}],
-                "sns_posts": sns_posts,
+                "faq": [
+                    {
+                        "question": "누구에게 추천하나요?",
+                        "answer": "대전의 수변 분위기를 가볍게 경험하고 싶은 외국인 관광객에게 추천합니다.",
+                    },
+                    {"question": "가격이 확정됐나요?", "answer": "가격은 운영자가 확인해야 합니다."},
+                ],
+                "sns_campaign": {
+                    "campaign_angles": [{"angle": "대전 수변 야간 산책", "rationale": "수변 경관과 밤 산책 장면이 SNS hook으로 적합합니다."}],
+                    "posts": [
+                        {"format": "feed", "hook": body.split()[0] if body.split() else "대전 수변 산책", "body": body, "hashtags": ["#대전여행"]}
+                        for body in sns_bodies
+                    ],
+                    "visual_direction": ["수변 산책로의 저녁 분위기"],
+                },
                 "search_keywords": ["대전", "수변 산책"],
                 "evidence_disclaimer": "요금 정보는 운영자 확인 후 게시하세요.",
                 "claim_limits": ["무료 여부 단정 금지"],
             }
         ]
+    }
+
+
+def _marketing_payload_for_products(product_ids: list[str], *, sns_bodies: list[str]) -> dict:
+    template = _marketing_payload(sns_bodies=sns_bodies)["marketing_assets"][0]
+    return {"marketing_assets": [dict(copy.deepcopy(template), product_id=product_id) for product_id in product_ids]}
+
+
+def _marketing_strategy_pack() -> dict:
+    return {
+        "marketing_strategy": {
+            "target_segment": {
+                "primary": "대전의 수변 분위기를 부담 없이 경험하고 싶은 외국인 관광객",
+                "secondary": ["야간 산책을 선호하는 커플", "가벼운 로컬 경험을 찾는 소규모 여행자"],
+                "foreigner_context": "처음 방문한 외국인도 지역 분위기를 이해하기 쉬운 산책형 상품으로 안내합니다.",
+            },
+            "product_positioning": {
+                "summary": "대전 수변의 밤 분위기를 가볍게 경험하는 입문형 산책 상품",
+                "differentiation": "실제 수변 산책 근거를 중심으로 무리한 운영 조건을 단정하지 않는 점이 강점입니다.",
+            },
+            "key_selling_points": [
+                {
+                    "point": "수변 경관을 중심으로 한 야간 산책 경험",
+                    "evidence_basis": "갑천 주변 야간 산책과 수변 경관 근거가 확인됩니다.",
+                    "usage_note": "상세페이지 첫 화면과 SNS hook에 활용합니다.",
+                }
+            ],
+            "customer_objections": [
+                {
+                    "objection": "요금이나 운영시간이 확정됐는지 궁금할 수 있습니다.",
+                    "response": "게시 전 운영자가 최종 확인한 뒤 안내한다고 설명합니다.",
+                    "requires_confirmation": True,
+                }
+            ],
+            "operation_checklist": [
+                {"item": "요금과 운영시간 확인", "reason": "근거에 확정 정보가 부족해 게시 전 확인이 필요합니다."}
+            ],
+        },
+        "landing_page_outline": {
+            "hero": {
+                "headline": "대전의 밤을 천천히 걷는 수변 산책",
+                "subheadline": "외국인 관광객도 부담 없이 지역 분위기를 느낄 수 있는 코스",
+                "hook": "처음 방문한 대전이라면 밤의 수변 분위기부터 가볍게 시작해 보세요.",
+            },
+            "why_this_product": ["수변 경관과 산책 근거를 중심으로 구성한 입문형 상품입니다."],
+            "evidence_backed_points": [
+                {
+                    "point": "갑천 주변 수변 산책 경험",
+                    "evidence_basis": "갑천 야간 산책 근거에서 수변 경관 맥락을 확인할 수 있습니다.",
+                }
+            ],
+            "practical_info": ["요금과 운영시간은 게시 전 운영자가 확인해야 합니다."],
+        },
+        "faq_strategy": {
+            "buyer_faq": [
+                {
+                    "question": "어떤 여행자에게 잘 맞나요?",
+                    "answer": "대전의 로컬 분위기를 가볍게 느끼고 싶은 외국인 관광객에게 잘 맞습니다.",
+                }
+            ],
+            "operation_faq": [
+                {
+                    "question": "요금과 운영시간은 확정됐나요?",
+                    "answer": "게시 전 운영자가 요금과 운영시간을 최종 확인해야 합니다.",
+                }
+            ],
+        },
+        "sns_campaign": {
+            "campaign_angles": [
+                {"angle": "대전 수변 야간 산책", "rationale": "수변 경관과 밤 산책 장면이 SNS hook으로 적합합니다."}
+            ],
+            "posts": [
+                {
+                    "format": "feed",
+                    "hook": "대전의 밤을 천천히 걷고 싶다면",
+                    "body": "갑천 주변 수변 분위기를 중심으로 가볍게 즐기는 산책 상품을 검토해 보세요.",
+                    "hashtags": ["#대전여행", "#수변산책"],
+                }
+            ],
+            "visual_direction": ["수변 산책로의 저녁 분위기", "걷는 장면과 주변 경관"],
+        },
+        "claim_strategy": {
+            "usable_claims": [
+                {
+                    "claim": "수변 경관을 중심으로 한 산책 경험을 제안할 수 있습니다.",
+                    "evidence_basis": "갑천 주변 산책과 수변 경관 근거가 확인됩니다.",
+                }
+            ],
+            "caution_phrasing": [
+                {"phrase": "요금과 운영시간", "reason": "근거에 확정 정보가 부족합니다."},
+                {"phrase": "무료로 언제나 이용 가능", "reason": "요금과 운영시간 근거가 부족합니다."}
+            ],
+        },
     }
 
 
@@ -144,6 +254,38 @@ def test_product_prompt_includes_evidence_fusion_context_and_avoid_rules():
     assert "unresolved_gaps" in prompt
     assert "무리한 도보" in prompt
     assert "운영시간, 요금, 예약 가능 여부" in prompt
+    assert "상품성_기준" in prompt
+    assert "같은 제목 패턴" in prompt
+
+
+def test_marketing_prompt_includes_phase19_quality_rules():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+
+    prompt = _marketing_prompt(
+        products,
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+        qa_settings={"avoid": ["가격 단정 표현"]},
+    )
+
+    assert "마케팅_출력_품질_기준" in prompt
+    assert "상품별_차별화_지시" in prompt
+    assert "근거_안전_마케팅_정책" in prompt
+    assert "구매 전 궁금증" in prompt
+    assert "첫 문장에 hook" in prompt
+    assert "not_to_claim, claim_limits, source_id" in prompt
+    assert "Marketing_Strategy_Pack_출력_형식" in prompt
+    assert "marketing_strategy" in prompt
+    assert "landing_page_outline" in prompt
+    assert "faq_strategy" in prompt
+    assert "sns_campaign" in prompt
+    assert "claim_strategy" in prompt
+    assert "관광상품 판매 기획서" in prompt
 
 
 def test_product_prompt_prioritizes_evidence_card_document_ids():
@@ -585,8 +727,18 @@ def test_validate_marketing_assets_preserves_evidence_disclaimer_and_claim_limit
                     "sections": [{"title": "핵심", "body": "수변 산책 근거를 중심으로 구성합니다."}],
                     "disclaimer": "세부 요금은 운영자가 최종 확인해야 합니다.",
                 },
-                "faq": [{"question": "가격이 확정됐나요?", "answer": "가격은 운영자가 확인해야 합니다."}],
-                "sns_posts": ["대전 수변 산책 상품 초안"],
+                "faq": [
+                    {
+                        "question": "누구에게 추천하나요?",
+                        "answer": "대전의 수변 분위기를 가볍게 경험하고 싶은 외국인 관광객에게 추천합니다.",
+                    },
+                    {"question": "가격이 확정됐나요?", "answer": "가격은 운영자가 확인해야 합니다."},
+                ],
+                "sns_campaign": {
+                    "campaign_angles": [{"angle": "대전 수변 산책", "rationale": "수변 산책 장면이 SNS hook으로 적합합니다."}],
+                    "posts": [{"format": "feed", "hook": "대전 수변 산책", "body": "대전 수변 산책 상품 초안", "hashtags": ["#대전여행"]}],
+                    "visual_direction": ["수변 산책 장면"],
+                },
                 "search_keywords": ["대전", "수변 산책"],
                 "evidence_disclaimer": "요금 정보는 운영자 확인 후 게시하세요.",
                 "claim_limits": ["무료 여부 단정 금지"],
@@ -601,7 +753,156 @@ def test_validate_marketing_assets_preserves_evidence_disclaimer_and_claim_limit
     assert "가격 단정 금지" in assets[0]["claim_limits"]
 
 
-def test_marketing_agent_retries_when_sns_posts_are_not_korean(monkeypatch):
+def test_validate_marketing_assets_accepts_strategy_pack():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    payload = _marketing_payload(sns_bodies=["대전 수변의 밤을 가볍게 걸어보는 외국인 여행 코스입니다. #대전여행"])
+    payload["marketing_assets"][0].update(_marketing_strategy_pack())
+
+    assets = validate_marketing_assets(payload, products, evidence_context=EVIDENCE_CONTEXT)
+    asset = assets[0]
+
+    assert asset["sales_copy"]["headline"] == "대전 수변 산책"
+    assert asset["faq"][0]["question"] == "누구에게 추천하나요?"
+    assert asset["sns_campaign"]["posts"]
+    assert "무료 여부 단정 금지" in asset["claim_limits"]
+    assert asset["marketing_strategy"]["target_segment"]["primary"].startswith("대전의 수변")
+    assert asset["marketing_strategy"]["key_selling_points"][0]["evidence_basis"]
+    assert asset["landing_page_outline"]["hero"]["headline"].startswith("대전의 밤")
+    assert asset["faq_strategy"]["buyer_faq"][0]["question"] == "어떤 여행자에게 잘 맞나요?"
+    assert asset["faq_strategy"]["operation_faq"][0]["question"] == "요금과 운영시간은 확정됐나요?"
+    assert asset["sns_campaign"]["posts"][0]["hashtags"] == ["#대전여행", "#수변산책"]
+    assert asset["claim_strategy"]["usable_claims"][0]["claim"].startswith("수변 경관")
+    assert "reasons_to_believe" not in asset["marketing_strategy"]
+    assert "recommended_sales_angle" not in asset["marketing_strategy"]
+    assert "experience_story" not in asset["landing_page_outline"]
+    assert "conversion_cta" not in asset["landing_page_outline"]
+    assert asset["claim_strategy"]["caution_phrasing"][0]["phrase"] == "요금과 운영시간"
+    assert "safe_alternatives" not in asset["claim_strategy"]
+    assert "needs_confirmation" not in asset["claim_strategy"]
+    assert "avoid_phrasing" not in asset["claim_strategy"]
+
+
+def test_validate_marketing_assets_requires_sns_campaign():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    payload = _marketing_payload(sns_bodies=[])
+    payload["marketing_assets"][0].pop("sns_campaign")
+
+    with pytest.raises(ValueError, match="sns_campaign must be present"):
+        validate_marketing_assets(payload, products, evidence_context=EVIDENCE_CONTEXT)
+
+
+def test_validate_marketing_assets_normalizes_string_usable_claims():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    payload = _marketing_payload(sns_bodies=["대전 수변의 밤을 가볍게 걸어보는 외국인 여행 코스입니다. #대전여행"])
+    strategy_pack = _marketing_strategy_pack()
+    strategy_pack["claim_strategy"]["usable_claims"] = ["수변 경관을 중심으로 한 산책 경험을 제안할 수 있습니다."]
+    payload["marketing_assets"][0].update(strategy_pack)
+
+    assets = validate_marketing_assets(payload, products, evidence_context=EVIDENCE_CONTEXT)
+
+    assert assets[0]["claim_strategy"]["usable_claims"] == [
+        {
+            "claim": "수변 경관을 중심으로 한 산책 경험을 제안할 수 있습니다.",
+            "evidence_basis": "수변 경관을 중심으로 한 산책 경험을 제안할 수 있습니다.",
+        }
+    ]
+
+
+def test_validate_marketing_assets_rejects_unsupported_string_usable_claim():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    payload = _marketing_payload(sns_bodies=["대전 수변의 밤을 가볍게 걸어보는 외국인 여행 코스입니다. #대전여행"])
+    strategy_pack = _marketing_strategy_pack()
+    strategy_pack["claim_strategy"]["usable_claims"] = ["무료로 예약 즉시 확정되는 안전한 산책 상품입니다."]
+    payload["marketing_assets"][0].update(strategy_pack)
+
+    with pytest.raises(ValueError, match="unsupported operational claim"):
+        validate_marketing_assets(payload, products, evidence_context=EVIDENCE_CONTEXT)
+
+
+def test_validate_marketing_assets_rejects_internal_terms_in_strategy_pack():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    payload = _marketing_payload(sns_bodies=["대전 수변의 밤을 가볍게 걸어보는 외국인 여행 코스입니다. #대전여행"])
+    strategy_pack = _marketing_strategy_pack()
+    strategy_pack["marketing_strategy"]["key_selling_points"][0]["point"] = "source_id 기준으로 선택한 수변 산책"
+    payload["marketing_assets"][0].update(strategy_pack)
+
+    with pytest.raises(ValueError, match="internal diagnostic terminology"):
+        validate_marketing_assets(payload, products, evidence_context=EVIDENCE_CONTEXT)
+
+
+def test_validate_marketing_assets_rejects_unsupported_usable_claim():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    payload = _marketing_payload(sns_bodies=["대전 수변의 밤을 가볍게 걸어보는 외국인 여행 코스입니다. #대전여행"])
+    strategy_pack = _marketing_strategy_pack()
+    strategy_pack["claim_strategy"]["usable_claims"][0]["claim"] = "무료로 예약 즉시 확정되는 안전한 산책 상품입니다."
+    payload["marketing_assets"][0].update(strategy_pack)
+
+    with pytest.raises(ValueError, match="unsupported operational claim"):
+        validate_marketing_assets(payload, products, evidence_context=EVIDENCE_CONTEXT)
+
+
+def test_validate_marketing_assets_rejects_operational_only_faq():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    payload = _marketing_payload(sns_bodies=["대전 수변의 밤을 가볍게 걸어보는 외국인 여행 코스입니다. #대전여행"])
+    payload["marketing_assets"][0]["faq"] = [
+        {"question": "가격이 확정됐나요?", "answer": "가격은 운영자가 확인해야 합니다."},
+        {"question": "운영시간은 확정인가요?", "answer": "운영시간은 게시 전 확인이 필요합니다."},
+    ]
+
+    with pytest.raises(ValueError, match="buyer-facing value question"):
+        validate_marketing_assets(payload, products, evidence_context=EVIDENCE_CONTEXT)
+
+
+def test_validate_marketing_assets_rejects_internal_terms_in_user_copy():
+    products = validate_products(
+        _product_payload(1),
+        {"product_count": 1, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    payload = _marketing_payload(sns_bodies=["대전 수변 산책에서 밤의 분위기를 느껴보세요. #대전여행"])
+    payload["marketing_assets"][0]["sales_copy"]["headline"] = "source_id 기준 대전 수변 산책"
+
+    with pytest.raises(ValueError, match="internal diagnostic terminology"):
+        validate_marketing_assets(payload, products, evidence_context=EVIDENCE_CONTEXT)
+
+
+def test_marketing_agent_retries_when_sns_campaign_is_not_korean(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     get_settings.cache_clear()
 
@@ -612,7 +913,7 @@ def test_marketing_agent_retries_when_sns_posts_are_not_korean(monkeypatch):
         is_repair = kwargs["purpose"] == "marketing_generation_repair"
         return GeminiJsonResult(
             data=_marketing_payload(
-                sns_posts=[
+                sns_bodies=[
                     "대전 수변 산책 상품을 근거 기반으로 검토해 보세요. #대전여행 #수변산책"
                 ]
                 if is_repair
@@ -666,9 +967,75 @@ def test_marketing_agent_retries_when_sns_posts_are_not_korean(monkeypatch):
 
     assert [call["purpose"] for call in calls] == ["marketing_generation", "marketing_generation_repair"]
     assert "검증_실패_수정" in calls[1]["prompt"]
-    assert next_state["marketing_assets"][0]["sns_posts"] == [
-        "대전 수변 산책 상품을 근거 기반으로 검토해 보세요. #대전여행 #수변산책"
-    ]
+    assert next_state["marketing_assets"][0]["sns_campaign"]["posts"][0]["body"] == "대전 수변 산책 상품을 근거 기반으로 검토해 보세요. #대전여행 #수변산책"
+
+
+def test_marketing_agent_retries_when_product_asset_is_missing(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    get_settings.cache_clear()
+
+    calls: list[dict] = []
+
+    def fake_call_gemini_json(**kwargs):
+        calls.append(kwargs)
+        product_ids = ["product_1", "product_2"] if kwargs["purpose"] == "marketing_generation_repair" else ["product_1"]
+        return GeminiJsonResult(
+            data=_marketing_payload_for_products(
+                product_ids,
+                sns_bodies=["대전 수변 산책 상품을 근거 기반으로 검토해 보세요. #대전여행 #수변산책"],
+            ),
+            model="gemini-test",
+            prompt_tokens=100,
+            completion_tokens=40,
+            total_tokens=140,
+            cost_usd=0.0,
+            paid_tier_equivalent_cost_usd=0.0,
+            latency_ms=1,
+            raw_text="{}",
+        )
+
+    monkeypatch.setattr("app.agents.workflow.call_gemini_json", fake_call_gemini_json)
+
+    with TestClient(app):
+        pass
+
+    products = validate_products(
+        _product_payload(2),
+        {"product_count": 2, "target_customer": "외국인"},
+        DOCS,
+        evidence_context=EVIDENCE_CONTEXT,
+    )
+    with SessionLocal() as db:
+        run = models.WorkflowRun(
+            template_id="default_product_planning",
+            input={"message": "대전 외국인 관광 상품", "product_count": 2},
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        state = {
+            "run_id": run.id,
+            "product_ideas": products,
+            "retrieved_documents": DOCS,
+            "evidence_profile": EVIDENCE_CONTEXT.get("evidence_profile", {}),
+            "productization_advice": EVIDENCE_CONTEXT.get("productization_advice", {}),
+            "data_coverage": EVIDENCE_CONTEXT.get("data_coverage", {}),
+            "unresolved_gaps": EVIDENCE_CONTEXT.get("unresolved_gaps", []),
+            "source_confidence": EVIDENCE_CONTEXT.get("source_confidence", 0.7),
+            "ui_highlights": EVIDENCE_CONTEXT.get("ui_highlights", []),
+            "agent_execution": [],
+        }
+        next_state = marketing_agent(db, state)
+
+    get_settings.cache_clear()
+
+    assert [call["purpose"] for call in calls] == ["marketing_generation", "marketing_generation_repair"]
+    generation_prompt = json.loads(calls[0]["prompt"])
+    assert [product["id"] for product in generation_prompt["상품_목록"]] == ["product_1", "product_2"]
+    assert "Missing marketing asset for product_2" in calls[1]["prompt"]
+    assert "모든 product_id" in calls[1]["prompt"]
+    assert [asset["product_id"] for asset in next_state["marketing_assets"]] == ["product_1", "product_2"]
 
 
 def test_validate_qa_report_flags_invalid_source_id():

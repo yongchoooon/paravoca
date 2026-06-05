@@ -378,6 +378,70 @@
   cursor: zoom-in;
 }
 
+.revisionReadableStack {
+  max-width: 920px;
+}
+
+.revisionReadableGroup {
+  padding: 14px 16px;
+  border: 1px solid var(--mantine-color-gray-2);
+  border-radius: var(--mantine-radius-md);
+  background: var(--mantine-color-white);
+}
+
+.revisionReadableGroupSoft {
+  padding: 12px 0;
+  border-top: 1px solid var(--mantine-color-gray-2);
+}
+
+.revisionReadableGroupSoft:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.revisionPlainInput {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  line-height: 1.5;
+}
+
+.revisionPlainInput:focus,
+.revisionPlainInput:focus-within {
+  outline: 1px solid var(--mantine-color-blue-3);
+  outline-offset: 4px;
+}
+
+.revisionPlainHeadlineInput {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 1.05rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.revisionPlainSubtleInput {
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mantine-color-dimmed);
+  line-height: 1.45;
+}
+
+.revisionInlineMetaInput {
+  max-width: 120px;
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
+}
+
 .evidenceImageButton {
   display: block;
   flex: 0 0 auto;
