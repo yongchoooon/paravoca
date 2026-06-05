@@ -223,13 +223,12 @@ KorService2 상세 보강 대상만 선택합니다.
 - `kto_wellness`
 - `kto_pet`
 - `kto_audio`
-- `kto_eco`
 - `kto_medical`
 
 현재 상태:
 
 - Phase 10.2에서는 capability routing과 skipped/future 기록까지만 했습니다.
-- Phase 12.3에서 웰니스, 반려동물, 오디오, 생태, 의료관광 provider/executor 연결을 완료했습니다.
+- Phase 12.3에서 웰니스, 반려동물, 오디오, 의료관광 provider/executor 연결을 완료했습니다.
 - 의료관광은 `ALLOW_MEDICAL_API=true`일 때만 실제 호출합니다.
 - feature flag가 꺼져 있거나 서비스키가 없으면 실제 호출하지 않고 disabled/skipped로 기록합니다.
 
@@ -319,7 +318,6 @@ planner가 만든 plan 중 현재 실행 가능한 call만 실행합니다.
 | `kto_wellness` | `99_03` | 웰니스 테마 속성 | Phase 12.3 |
 | `kto_pet` | `99_05` | 반려동물 동반 조건 | Phase 12.3 |
 | `kto_audio` | `99_07` | 해설/스토리/다국어 소재 | Phase 12.3 |
-| `kto_eco` | `99_08` | 생태/지속가능성 맥락 | Phase 12.3 |
 | `kto_medical` | `99_04` | 의료관광 맥락 | Phase 12.3, feature flag 필요 |
 
 Phase 10.2에서는 99번 API들의 의미와 gap 연결을 정리했지만, KorService2 외 추가 API의 실제 호출은 Phase 12에서 구현합니다.
@@ -381,7 +379,6 @@ KTO_WELLNESS_ENABLED=false
 KTO_PET_ENABLED=false
 KTO_DURUNUBI_ENABLED=false
 KTO_AUDIO_ENABLED=false
-KTO_ECO_ENABLED=false
 KTO_TOURISM_PHOTO_ENABLED=false
 KTO_BIGDATA_ENABLED=false
 KTO_CROWDING_ENABLED=false
@@ -432,4 +429,4 @@ Phase 12는 99번 문서에 정리된 추가 KTO API들을 실제 provider/execu
 
 - Phase 12.1 Visual APIs: 관광사진, 공모전 사진. 구현 완료
 - Phase 12.2 Route/Related/Demand Signals: 두루누비, 연관 관광지, 관광빅데이터, 혼잡도, 지역 관광수요. 구현 완료
-- Phase 12.3 Theme APIs: 웰니스, 반려동물, 오디오, 생태, 의료관광. 구현 완료
+- Phase 12.3 Theme APIs: 웰니스, 반려동물, 오디오, 의료관광. 구현 완료

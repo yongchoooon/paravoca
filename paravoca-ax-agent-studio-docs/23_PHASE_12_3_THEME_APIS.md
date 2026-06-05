@@ -18,10 +18,6 @@ Phase 12.3은 99번 KTO API 명세 중 테마 계열을 실제 provider/executor
   - 문서: `99_07_KTO_AUDIO_GUIDE_SPEC.md`
   - 실제 실행 operation: `storySearchList`, `themeSearchList`
   - feature flag: `KTO_AUDIO_ENABLED`
-- `kto_eco`
-  - 문서: `99_08_KTO_ECO_TOURISM_SPEC.md`
-  - 실제 실행 operation: `areaBasedList1`
-  - feature flag: `KTO_ECO_ENABLED`
 - `kto_medical`
   - 문서: `99_04_KTO_MEDICAL_TOURISM_SPEC.md`
   - 실제 실행 operation: `searchKeyword`
@@ -31,7 +27,7 @@ base URL은 환경변수가 아니라 `backend/app/tools/themes.py`의 provider 
 
 ## 데이터 흐름
 
-1. `DataGapProfilerAgent`가 `missing_theme_specific_data`, `missing_pet_policy`, `missing_wellness_attributes`, `missing_story_asset`, `missing_multilingual_story`, `missing_sustainability_context`, `missing_medical_context` gap을 만든다.
+1. `DataGapProfilerAgent`가 `missing_theme_specific_data`, `missing_pet_policy`, `missing_wellness_attributes`, `missing_story_asset`, `missing_multilingual_story`, `missing_medical_context` gap을 만든다.
 2. `ApiCapabilityRouterAgent`가 theme 계열이 필요하다고 판단하면 `ThemeDataPlannerAgent`로 배정한다.
 3. `ThemeDataPlannerAgent`는 활성화된 source family와 남은 call budget 안에서 필요한 call만 계획한다.
 4. `EnrichmentExecutor`가 계획된 theme call만 실행한다.
@@ -68,7 +64,6 @@ Theme 데이터는 아래 claim을 허용하지 않습니다.
 
 - 웰니스/의료관광 정보를 건강 개선, 치료, 효능, 안전 보장으로 단정
 - 반려동물 API 후보를 실제 동반 가능 확정 정보로 단정
-- 생태 관광 정보를 정량 환경 효과나 인증처럼 단정
 - 오디오/다국어 후보를 실제 현장 제공 언어로 단정
 - 이미지 후보를 게시 확정 이미지로 단정
 

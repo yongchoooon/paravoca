@@ -817,7 +817,6 @@ PARAVOCA 구현:
 | `kto_pet` 반려동물 동반여행 서비스 | 별도 서비스의 지역/위치 검색과 동반 조건 상세 | 미포함. KorService2 `detailPetTour2`와 혼동하지 말 것 |
 | `kto_durunubi` 두루누비 정보 서비스_GW | 코스 목록, 길 목록, GPX/route asset | 미포함 |
 | `kto_audio` 관광지 오디오 가이드정보_GW | 키워드/위치 검색, 오디오 가이드 상세 | 미포함 |
-| `kto_eco` 생태 관광 정보_GW | 생태 관광 후보 조회와 상세 | 미포함 |
 | `kto_tourism_photo` 관광사진 정보_GW | 관광사진 검색/동기화 | 미포함 |
 | `kto_tourism_bigdata` 관광빅데이터 정보서비스_GW | 지역/기간별 방문자 수요 신호 | 미포함 |
 | `kto_crowding_forecast` 관광지 집중률 방문자 추이 예측 정보 | 관광지 집중률 예측 신호 | 미포함 |

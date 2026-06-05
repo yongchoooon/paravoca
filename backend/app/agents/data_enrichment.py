@@ -51,14 +51,13 @@ ROUTE_SIGNAL_GAP_TYPES = {
     "missing_crowding_signal",
     "missing_regional_demand_signal",
 }
-THEME_SOURCE_FAMILIES = {"kto_wellness", "kto_pet", "kto_audio", "kto_eco", "kto_medical"}
+THEME_SOURCE_FAMILIES = {"kto_wellness", "kto_pet", "kto_audio", "kto_medical"}
 THEME_GAP_TYPES = {
     "missing_theme_specific_data",
     "missing_pet_policy",
     "missing_wellness_attributes",
     "missing_medical_context",
     "missing_story_asset",
-    "missing_sustainability_context",
     "missing_multilingual_story",
 }
 
@@ -80,7 +79,6 @@ FUTURE_SOURCE_BY_GAP = {
     "missing_wellness_attributes": "kto_wellness",
     "missing_story_asset": "kto_audio",
     "missing_multilingual_story": "kto_audio",
-    "missing_sustainability_context": "kto_eco",
     "missing_medical_context": "kto_medical",
 }
 
@@ -92,8 +90,6 @@ THEME_SOURCE_HINTS = {
     "힐링": "kto_wellness",
     "오디오": "kto_audio",
     "해설": "kto_audio",
-    "생태": "kto_eco",
-    "친환경": "kto_eco",
     "의료": "kto_medical",
     "메디컬": "kto_medical",
 }
@@ -139,14 +135,13 @@ PLANNER_DEFINITIONS: dict[str, dict[str, Any]] = {
         "agent_name": "ThemeDataPlannerAgent",
         "purpose": "theme_data_planning",
         "display_name": "테마 데이터 Planner",
-        "source_families": ["kto_wellness", "kto_pet", "kto_audio", "kto_eco", "kto_medical"],
+        "source_families": ["kto_wellness", "kto_pet", "kto_audio", "kto_medical"],
         "gap_types": [
             "missing_theme_specific_data",
             "missing_pet_policy",
             "missing_wellness_attributes",
             "missing_medical_context",
             "missing_story_asset",
-            "missing_sustainability_context",
             "missing_multilingual_story",
         ],
         "phase10_2_execution": "phase12_3_implemented_when_enabled",
@@ -166,7 +161,6 @@ GAP_TYPES = {
     "missing_wellness_attributes",
     "missing_medical_context",
     "missing_story_asset",
-    "missing_sustainability_context",
     "missing_demand_signal",
     "missing_crowding_signal",
     "missing_regional_demand_signal",
@@ -338,17 +332,6 @@ KTO_API_CAPABILITY_MATRIX: list[dict[str, Any]] = [
         "response_fields": ["title", "script/story summary", "audio/image URL", "language fields"],
         "db_targets": ["source_documents", "tourism_entities"],
         "ui_use": "스토리텔링/해설 후보로 요약 표시하고 원문 장문 복제는 피합니다.",
-        "phase10_2_status": "phase12_3_implemented_when_enabled",
-    },
-    {
-        "source_family": "kto_eco",
-        "document": "99_08_KTO_ECO_TOURISM_SPEC.md",
-        "operations": ["areaBasedList1", "areaBasedSyncList1", "areaCode1"],
-        "fills_gaps": ["missing_sustainability_context", "missing_theme_specific_data"],
-        "request_fields": ["areaCode, paging"],
-        "response_fields": ["생태 관광명, 주소/지역, 설명 계열 field"],
-        "db_targets": ["tourism_entities", "source_documents"],
-        "ui_use": "생태/친환경 테마 적합성만 표시하고 정량 ESG 효과는 claim하지 않습니다.",
         "phase10_2_status": "phase12_3_implemented_when_enabled",
     },
     {
@@ -643,11 +626,10 @@ def capability_brief_for_prompt(settings: Settings | None = None) -> str:
             or settings.kto_crowding_enabled
             or settings.kto_regional_tourism_demand_enabled
         ),
-        "웰니스/반려동물/오디오/생태": (
+        "웰니스/반려동물/오디오": (
             settings.kto_wellness_enabled
             or settings.kto_pet_enabled
             or settings.kto_audio_enabled
-            or settings.kto_eco_enabled
         ),
         "의료관광": settings.allow_medical_api,
     }
@@ -656,7 +638,7 @@ def capability_brief_for_prompt(settings: Settings | None = None) -> str:
             "KorService2 상세 API는 contentId/contentTypeId로 개요, 홈페이지, 문의처, 이용시간, 요금성 정보, 예약/이용 안내, 상세 이미지 후보를 보강할 수 있습니다. 현재 workflow에서 실제 실행 가능한 core 보강입니다.",
             "사진 공모전/관광사진 API는 장소나 지역 키워드로 시각 참고 이미지를 찾을 수 있습니다. KTO_TOURISM_PHOTO_ENABLED 또는 KTO_PHOTO_CONTEST_ENABLED가 켜져 있고 서비스키가 있으면 workflow에서 실제 이미지 후보를 조회합니다.",
             "두루누비, 연관관광지, 관광빅데이터, 혼잡 예측, 지역 관광수요 API는 동선, 주변 장소, 수요/혼잡 신호를 줄 수 있습니다. Phase 12.2부터 관련 feature flag와 서비스키가 있으면 workflow에서 실제 보조 근거를 조회합니다.",
-            "웰니스, 반려동물, 오디오, 생태 API는 테마 특화 조건과 스토리 소재를 줄 수 있습니다. Phase 12.3부터 관련 feature flag와 서비스키가 있으면 workflow에서 실제 테마 후보를 조회합니다.",
+            "웰니스, 반려동물, 오디오 API는 테마 특화 조건과 스토리 소재를 줄 수 있습니다. Phase 12.3부터 관련 feature flag와 서비스키가 있으면 workflow에서 실제 테마 후보를 조회합니다.",
             "의료관광 API는 고위험 정보이므로 allow_medical_api가 true일 때만 실제 호출하고, false이면 호출 대상으로 만들지 않습니다.",
             "현재 feature flag: "
             + ", ".join(f"{name}={'on' if enabled else 'off'}" for name, enabled in flags.items()),
@@ -767,7 +749,7 @@ def build_data_gap_profile_prompt(
                 "요청 상품 유형과 무관한 gap은 선택하지 마세요.",
                 "근거에 없는 운영시간, 요금, 예약정보, 언어지원, 동선, 반려동물 정책을 추측하지 마세요.",
                 "overview 부족은 missing_detail_info로만 다루고 missing_overview는 쓰지 마세요.",
-                "웰니스/반려동물/생태/오디오/의료 같은 테마 요청은 api_capability_brief의 source family와 연결하세요.",
+                "웰니스/반려동물/오디오/의료 같은 테마 요청은 api_capability_brief의 source family와 연결하세요.",
             ],
             "출력_규칙": [
                 "selected_gap_refs는 최대 12개만 작성하세요.",
@@ -810,7 +792,7 @@ def build_data_gap_profile_prompt(
             "overview가 없다는 이유만으로 missing_overview를 만들지 마세요. missing_overview는 허용 gap_type이 아닙니다. 개요/상세 설명 부족은 missing_detail_info로 통합하세요.",
             "낮은 심각도의 반복 gap은 개별 gaps로 모두 만들지 말고 coverage.gap_counts와 reasoning_summary에 요약하세요.",
             "코스/동선형 요청이면 route context가 필요한지 판단하세요.",
-            "웰니스/반려동물/생태/오디오/의료 같은 테마 요청은 api_capability_brief에서 설명한 source family와 연결하세요.",
+            "웰니스/반려동물/오디오/의료 같은 테마 요청은 api_capability_brief에서 설명한 source family와 연결하세요.",
             "의료관광은 고위험 정보이므로 needs_review를 true로 두세요.",
         ],
         "출력_규칙": [
@@ -848,7 +830,6 @@ def build_api_capability_router_prompt(
             "kto_pet_enabled": settings.kto_pet_enabled,
             "kto_durunubi_enabled": settings.kto_durunubi_enabled,
             "kto_audio_enabled": settings.kto_audio_enabled,
-            "kto_eco_enabled": settings.kto_eco_enabled,
             "kto_tourism_photo_enabled": settings.kto_tourism_photo_enabled,
             "kto_bigdata_enabled": settings.kto_bigdata_enabled,
             "kto_crowding_enabled": settings.kto_crowding_enabled,
@@ -914,7 +895,6 @@ def build_api_family_planner_prompt(
             "kto_wellness_enabled": settings.kto_wellness_enabled,
             "kto_pet_enabled": settings.kto_pet_enabled,
             "kto_audio_enabled": settings.kto_audio_enabled,
-            "kto_eco_enabled": settings.kto_eco_enabled,
         },
         "출력_규칙": [
             "assigned_gaps에 있는 gap_id만 사용하세요.",
@@ -925,8 +905,8 @@ def build_api_family_planner_prompt(
             "visual_data planned call은 kto_tourism_photo_search/gallerySearchList1 또는 kto_photo_contest_award_list/phokoAwrdList 중 하나를 사용하세요.",
             "route_signal planner는 두루누비/연관관광지/수요/혼잡/지역수요 source family가 workflow_enabled이면 planned_calls를 만들 수 있습니다.",
             "route_signal planned call은 kto_durunubi_course_list/courseList, kto_related_places_keyword/searchKeyword1, kto_related_places_area/areaBasedList1, kto_tourism_bigdata_locgo_visitors/locgoRegnVisitrDDList, kto_tourism_bigdata_metco_visitors/metcoRegnVisitrDDList, kto_attraction_crowding_forecast/tatsCnctrRatedList, kto_regional_tourism_demand_area/areaTarSvcDemList 중 하나를 사용하세요.",
-            "theme_data planner는 웰니스/반려동물/오디오/생태/의료 source family가 workflow_enabled이면 planned_calls를 만들 수 있습니다.",
-            "theme_data planned call은 kto_wellness_keyword_search/searchKeyword, kto_pet_keyword_search/searchKeyword2, kto_audio_story_search/storySearchList, kto_audio_theme_search/themeSearchList, kto_eco_area_search/areaBasedList1, kto_medical_keyword_search/searchKeyword 중 하나를 사용하세요.",
+            "theme_data planner는 웰니스/반려동물/오디오/의료 source family가 workflow_enabled이면 planned_calls를 만들 수 있습니다.",
+            "theme_data planned call은 kto_wellness_keyword_search/searchKeyword, kto_pet_keyword_search/searchKeyword2, kto_audio_story_search/storySearchList, kto_audio_theme_search/themeSearchList, kto_medical_keyword_search/searchKeyword 중 하나를 사용하세요.",
             "의료관광은 allow_medical_api가 false이면 반드시 skipped_calls에 feature_flag_disabled로 남기세요.",
             "remaining_budget을 넘기지 마세요.",
         ],
@@ -2705,7 +2685,6 @@ def _future_tool_name(source_family: str) -> str:
         "kto_pet": "kto_pet_keyword_search",
         "kto_wellness": "kto_wellness_keyword_search",
         "kto_audio": "kto_audio_story_search",
-        "kto_eco": "kto_eco_area_search",
     }.get(source_family, f"{source_family}_future")
 
 
@@ -2883,8 +2862,6 @@ def _gap_resolved(
         return "kto_audio" in theme_source_families
     if gap_type == "missing_multilingual_story":
         return "kto_audio" in theme_source_families
-    if gap_type == "missing_sustainability_context":
-        return "kto_eco" in theme_source_families
     if gap_type == "missing_medical_context":
         return "kto_medical" in theme_source_families
     return False
@@ -3037,7 +3014,7 @@ def _productization_advice(
             "TourAPI에 있는 장소명, 주소, 개요, 행사 기간은 근거 문서와 함께 사용할 수 있습니다.",
             "상세 이미지 후보는 candidate 상태이며 게시 전 라이선스와 원 출처 확인이 필요합니다.",
             "두루누비/연관관광지/수요/혼잡 신호는 동선과 우선순위 판단의 보조 근거로만 사용할 수 있습니다.",
-            "테마 API 근거는 웰니스/반려동물/오디오/생태/의료 후보를 보조하되 인증, 효능, 안전, 허용 조건을 단정하지 않습니다.",
+            "테마 API 근거는 웰니스/반려동물/오디오/의료 후보를 보조하되 인증, 효능, 안전, 허용 조건을 단정하지 않습니다.",
         ],
         "candidate_evidence_cards": [_candidate_evidence_card(entity) for entity in entities],
         "needs_review_fields": unresolved_types,
@@ -3101,8 +3078,6 @@ def _candidate_evidence_card(entity: dict[str, Any]) -> dict[str, Any]:
             restricted_claims.append("의료/웰니스 효과, 치료, 건강 개선을 확정 표현하지 마세요.")
         if "kto_pet" in theme_sources:
             restricted_claims.append("반려동물 동반 가능 여부와 제한 조건은 운영자 확인 없이 단정하지 마세요.")
-        if "kto_eco" in theme_sources:
-            restricted_claims.append("생태/친환경 효과를 정량 보장하거나 인증처럼 표현하지 마세요.")
         if "kto_audio" in theme_sources:
             restricted_claims.append("오디오/외국어 해설 제공 여부는 실제 운영 확인 없이 단정하지 마세요.")
     visual_candidates = entity.get("visual_candidates") if isinstance(entity.get("visual_candidates"), list) else []
@@ -3285,7 +3260,6 @@ def _restricted_claims_from_unresolved(unresolved_gap_types: list[str]) -> list[
         "missing_wellness_attributes": "웰니스 효능이나 건강 개선을 단정하지 마세요.",
         "missing_story_asset": "스토리/해설 소재를 근거 없이 새로 만들지 마세요.",
         "missing_multilingual_story": "외국어 또는 오디오 해설 제공을 단정하지 마세요.",
-        "missing_sustainability_context": "생태/친환경 효과를 정량 보장하지 마세요.",
         "missing_medical_context": "의료 효과, 치료, 안전성을 단정하지 마세요.",
     }
     return [mapping[gap_type] for gap_type in unresolved_gap_types if gap_type in mapping]
@@ -4048,7 +4022,6 @@ def _can_execute_workflow_call(call: dict[str, Any], capability: dict[str, Any])
             "kto_wellness": {"kto_wellness_keyword_search", "kto_wellness_area_search"},
             "kto_pet": {"kto_pet_keyword_search", "kto_pet_area_search"},
             "kto_audio": {"kto_audio_story_search", "kto_audio_theme_search", "kto_audio_keyword_search"},
-            "kto_eco": {"kto_eco_area_search"},
             "kto_medical": {"kto_medical_keyword_search", "kto_medical_area_search"},
         }
         if tool_name not in allowed_tools.get(source_family, set()):
@@ -4282,9 +4255,8 @@ def _theme_source_family_for_gap(gap: dict[str, Any], settings: Settings) -> str
         "missing_wellness_attributes": ["kto_wellness"],
         "missing_story_asset": ["kto_audio"],
         "missing_multilingual_story": ["kto_audio"],
-        "missing_sustainability_context": ["kto_eco"],
         "missing_medical_context": ["kto_medical"],
-        "missing_theme_specific_data": ["kto_pet", "kto_wellness", "kto_audio", "kto_eco"],
+        "missing_theme_specific_data": ["kto_pet", "kto_wellness", "kto_audio"],
     }.get(gap_type, [])
     text = " ".join(
         str(value or "")
@@ -4313,8 +4285,6 @@ def _theme_enabled_families(settings: Settings) -> set[str]:
         families.add("kto_pet")
     if settings.kto_audio_enabled:
         families.add("kto_audio")
-    if settings.kto_eco_enabled:
-        families.add("kto_eco")
     if settings.allow_medical_api:
         families.add("kto_medical")
     return families
@@ -4325,7 +4295,6 @@ def _theme_tool_name(source_family: str) -> str:
         "kto_wellness": "kto_wellness_keyword_search",
         "kto_pet": "kto_pet_keyword_search",
         "kto_audio": "kto_audio_story_search",
-        "kto_eco": "kto_eco_area_search",
         "kto_medical": "kto_medical_keyword_search",
     }.get(source_family, f"{source_family}_search")
 
@@ -4335,7 +4304,6 @@ def _theme_operation(source_family: str) -> str:
         "kto_wellness": "searchKeyword",
         "kto_pet": "searchKeyword2",
         "kto_audio": "storySearchList",
-        "kto_eco": "areaBasedList1",
         "kto_medical": "searchKeyword",
     }.get(source_family, "future")
 

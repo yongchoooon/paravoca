@@ -508,7 +508,11 @@ FAQ는 운영자가 실제로 확인해야 할 질문을 포함합니다.
       "answer": "기상 상황과 현장 안전 기준에 따라 변경될 수 있어 운영자 확인이 필요합니다."
     }
   ],
-  "sns_posts": [],
+  "sns_campaign": {
+    "campaign_angles": [],
+    "posts": [],
+    "visual_direction": []
+  },
   "search_keywords": []
 }
 ```

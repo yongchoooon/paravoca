@@ -174,7 +174,11 @@ Gemini API, rule-based mode, 로컬 vector index를 조합해 대규모 GPU 인�
     "detail_sections": []
   },
   "faq": [],
-  "sns_posts": [],
+  "sns_campaign": {
+    "campaign_angles": [],
+    "posts": [],
+    "visual_direction": []
+  },
   "search_keywords": [],
   "risk_review": {
     "status": "needs_review",

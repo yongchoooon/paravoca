@@ -391,7 +391,7 @@ def test_geo_resolver_does_not_compact_cross_word_foreign_destination():
     with SessionLocal() as db:
         scope = resolve_geo_scope(
             db,
-            message="이번 달 포항에서 외국인 대상 해변 여행 상품, 생태관광 상품을 2개 기획해줘",
+            message="이번 달 포항에서 외국인 대상 해변 여행 상품, 자연 관찰 상품을 2개 기획해줘",
         )
 
     assert scope["status"] == "resolved"

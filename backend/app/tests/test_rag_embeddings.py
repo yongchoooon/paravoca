@@ -256,7 +256,7 @@ def test_source_document_lifecycle_metadata_and_runtime_upsert():
         source="tourapi",
         content_id="phase171",
         content_type="event",
-        title="포항 해변 생태 체험",
+        title="포항 해변 자연 체험",
         region_code="35",
         ldong_regn_cd="47",
         ldong_signgu_cd="111",
@@ -264,7 +264,7 @@ def test_source_document_lifecycle_metadata_and_runtime_upsert():
         lcls_systm_2="A02",
         lcls_systm_3="A0207",
         address="경상북도 포항시 북구",
-        overview="해변과 생태 관찰을 함께 다루는 체험 행사입니다.",
+        overview="해변과 자연 관찰을 함께 다루는 체험 행사입니다.",
     )
 
     payload = build_source_document(
@@ -364,13 +364,13 @@ def test_chroma_search_returns_retrieval_diagnostics_without_fallback(monkeypatc
                 id="doc:test:phase171:match",
                 source="tourapi",
                 source_item_id="phase171:match",
-                title="포항 생태 해변 산책",
-                content="포항 생태 해변 외국인 산책 프로그램",
+                title="포항 자연 해변 산책",
+                content="포항 자연 해변 외국인 산책 프로그램",
                 document_metadata={
                     "source": "tourapi",
                     "source_family": "kto_tourapi_kor",
                     "source_role": SOURCE_ROLE_RUNTIME,
-                    "title": "포항 생태 해변 산책",
+                    "title": "포항 자연 해변 산책",
                     "ldong_regn_cd": "47",
                     "ldong_signgu_cd": "111",
                     "content_type": "event",
@@ -385,7 +385,7 @@ def test_chroma_search_returns_retrieval_diagnostics_without_fallback(monkeypatc
         assert index_source_documents(db, docs) == 1
 
     result = search_source_documents_with_diagnostics(
-        query="경상북도 포항시 외국인 생태 해변",
+        query="경상북도 포항시 외국인 자연 해변",
         top_k=5,
         filters={
             "source": "tourapi",
@@ -396,7 +396,7 @@ def test_chroma_search_returns_retrieval_diagnostics_without_fallback(monkeypatc
             "test_case": "phase171-diagnostics",
         },
         search_context={
-            "preferred_themes": ["생태", "해변"],
+            "preferred_themes": ["자연", "해변"],
             "target_customer": "외국인",
             "narrow_keywords": ["포항", "해변"],
         },
@@ -404,7 +404,7 @@ def test_chroma_search_returns_retrieval_diagnostics_without_fallback(monkeypatc
 
     assert [row["doc_id"] for row in result["results"]] == ["doc:test:phase171:match"]
     diagnostics = result["retrieval_diagnostics"]
-    assert diagnostics["query"] == "경상북도 포항시 외국인 생태 해변"
+    assert diagnostics["query"] == "경상북도 포항시 외국인 자연 해변"
     assert diagnostics["filters"]["ldong_signgu_cd"] == "111"
     assert diagnostics["result_count"] == 1
     assert diagnostics["fallback_applied"] is False
@@ -451,7 +451,7 @@ def test_chroma_search_empty_result_does_not_widen_scope_or_create_fallback(monk
         assert index_source_documents(db, [doc]) == 1
 
     result = search_source_documents_with_diagnostics(
-        query="포항 생태 해변",
+        query="포항 자연 해변",
         top_k=5,
         filters={
             "source": "tourapi",
@@ -490,13 +490,13 @@ def test_unknown_source_role_receives_lower_relevance_than_classified_role(monke
                 id="doc:test:phase171:known-role",
                 source="tourapi",
                 source_item_id="known-role",
-                title="포항 해변 생태",
-                content="포항 해변 생태 체험",
+                title="포항 해변 자연",
+                content="포항 해변 자연 체험",
                 document_metadata={
                     "source": "tourapi",
                     "source_family": "kto_tourapi_kor",
                     "source_role": SOURCE_ROLE_RUNTIME,
-                    "title": "포항 해변 생태",
+                    "title": "포항 해변 자연",
                     "test_case": "phase171-role-rank",
                 },
             ),
@@ -504,12 +504,12 @@ def test_unknown_source_role_receives_lower_relevance_than_classified_role(monke
                 id="doc:test:phase171:unknown-role",
                 source="tourapi",
                 source_item_id="unknown-role",
-                title="포항 해변 생태",
-                content="포항 해변 생태 체험",
+                title="포항 해변 자연",
+                content="포항 해변 자연 체험",
                 document_metadata={
                     "source": "tourapi",
                     "source_family": "kto_tourapi_kor",
-                    "title": "포항 해변 생태",
+                    "title": "포항 해변 자연",
                     "test_case": "phase171-role-rank",
                 },
             ),
@@ -521,7 +521,7 @@ def test_unknown_source_role_receives_lower_relevance_than_classified_role(monke
         assert index_source_documents(db, docs) == 2
 
     rows = search_source_documents(
-        query="포항 해변 생태",
+        query="포항 해변 자연",
         top_k=2,
         filters={"test_case": "phase171-role-rank"},
     )
@@ -536,7 +536,7 @@ def test_workflow_rag_query_and_filters_include_request_scope():
     normalized = {
         "question": "이번 달 포항에서 외국인 대상 해변 여행 상품을 기획해줘",
         "target_customer": "외국인",
-        "preferred_themes": ["생태", "해변"],
+        "preferred_themes": ["자연", "해변"],
     }
     geo_scope = {
         "allow_nationwide": False,
@@ -558,7 +558,7 @@ def test_workflow_rag_query_and_filters_include_request_scope():
 
     assert "경상북도 포항시" in query
     assert "외국인" in query
-    assert "생태" in query
+    assert "자연" in query
     assert "해변" in query
     assert "포항" in context["narrow_keywords"]
     assert context["target_customer"] == "외국인"

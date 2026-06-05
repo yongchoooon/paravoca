@@ -93,7 +93,7 @@ export const workflowStages: WorkflowStage[] = [
   {
     key: "theme_data_planning",
     label: "Theme Planner",
-    description: "Gemini가 웰니스, 반려동물, 생태, 오디오, 의료 API 후보를 분리합니다.",
+    description: "Gemini가 웰니스, 반려동물, 오디오, 의료 API 후보를 분리합니다.",
     agentName: "ThemeDataPlannerAgent",
     stepType: "theme_data_planning",
   },
@@ -330,7 +330,6 @@ export function fieldPathLabel(path: string) {
   if (normalized.includes("sales_copy.sections")) return "상세 설명";
   if (normalized.startsWith("faq") && normalized.includes(".question")) return "FAQ 질문";
   if (normalized.startsWith("faq") && normalized.includes(".answer")) return "FAQ 답변";
-  if (normalized.startsWith("sns_posts")) return "SNS 문구";
   if (normalized.startsWith("search_keywords")) return "검색 키워드";
   if (normalized.startsWith("marketing_assets")) return "마케팅 자산";
   if (normalized.startsWith("products")) return "상품 정보";

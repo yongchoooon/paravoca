@@ -15,7 +15,6 @@
 | 99-05 | [99_05_KTO_PET_TOUR_SPEC.md](./99_05_KTO_PET_TOUR_SPEC.md) | `kto_pet` | `theme` | `API명세서/한국관광공사_반려동물_동반여행_서비스` |
 | 99-06 | [99_06_KTO_DURUNUBI_SPEC.md](./99_06_KTO_DURUNUBI_SPEC.md) | `kto_durunubi` | `route` | `API명세서/한국관광공사_두루누비 정보 서비스_GW` |
 | 99-07 | [99_07_KTO_AUDIO_GUIDE_SPEC.md](./99_07_KTO_AUDIO_GUIDE_SPEC.md) | `kto_audio` | `story` | `API명세서/한국관광공사_관광지 오디오 가이드정보_GW` |
-| 99-08 | [99_08_KTO_ECO_TOURISM_SPEC.md](./99_08_KTO_ECO_TOURISM_SPEC.md) | `kto_eco` | `theme` | `API명세서/한국관광공사_생태 관광 정보_GW` |
 | 99-09 | [99_09_KTO_TOURISM_PHOTO_SPEC.md](./99_09_KTO_TOURISM_PHOTO_SPEC.md) | `kto_tourism_photo` | `visual` | `API명세서/한국관광공사_관광사진 정보_GW` |
 | 99-10 | [99_10_KTO_TOURISM_BIGDATA_SPEC.md](./99_10_KTO_TOURISM_BIGDATA_SPEC.md) | `kto_tourism_bigdata` | `signal` | `API명세서/한국관광공사_관광빅데이터 정보서비스_ GW` |
 | 99-11 | [99_11_KTO_CROWDING_FORECAST_SPEC.md](./99_11_KTO_CROWDING_FORECAST_SPEC.md) | `kto_crowding_forecast` | `signal` | `API명세서/한국관광공사_관광지 집중률 방문자 추이 예측 정보` |
@@ -38,4 +37,4 @@
 |---|---|---|
 | 없음 | 2026-05-07 현재 모두 정리됨 | `한국관광공사_지역별 관광 자원 수요`는 `99-13`에 정리했습니다. |
 
-`국문 관광정보 서비스_GW`, `지역별 관광 자원 수요`, `관광공모전 사진 수상작`, `웰니스`, `의료`, `반려동물`, `두루누비`, `오디오 가이드`, `생태 관광`, `관광사진`, `관광빅데이터`, `집중률 예측`, `연관 관광지` 원본은 확인해 99번 문서로 정리했습니다.
+`국문 관광정보 서비스_GW`, `지역별 관광 자원 수요`, `관광공모전 사진 수상작`, `웰니스`, `의료`, `반려동물`, `두루누비`, `오디오 가이드`, `관광사진`, `관광빅데이터`, `집중률 예측`, `연관 관광지` 원본은 확인해 99번 문서로 정리했습니다.

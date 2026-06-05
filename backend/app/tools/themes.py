@@ -23,7 +23,6 @@ KTO_WELLNESS_BASE_URL = "https://apis.data.go.kr/B551011/WellnessTursmService"
 KTO_MEDICAL_BASE_URL = "https://apis.data.go.kr/B551011/MdclTursmService"
 KTO_PET_BASE_URL = "https://apis.data.go.kr/B551011/KorPetTourService2"
 KTO_AUDIO_BASE_URL = "https://apis.data.go.kr/B551011/Odii"
-KTO_ECO_BASE_URL = "https://apis.data.go.kr/B551011/GreenTourService1"
 
 
 @dataclass
@@ -71,15 +70,6 @@ class ThemeDataProvider(Protocol):
         ...
 
     def search_audio(self, *, keyword: str, limit: int = 5) -> list[ThemeDataCandidate]:
-        ...
-
-    def search_eco(
-        self,
-        *,
-        area_code: str | None = None,
-        sigungu_code: str | None = None,
-        limit: int = 5,
-    ) -> list[ThemeDataCandidate]:
         ...
 
     def search_medical(
@@ -182,28 +172,6 @@ class KtoThemeProvider:
             if len(candidates) >= limit:
                 break
         return candidates[:limit]
-
-    def search_eco(
-        self,
-        *,
-        area_code: str | None = None,
-        sigungu_code: str | None = None,
-        limit: int = 5,
-    ) -> list[ThemeDataCandidate]:
-        if not self.settings.kto_eco_enabled:
-            raise RuntimeError("KTO_ECO_ENABLED is false")
-        data = self._get(
-            base_url=KTO_ECO_BASE_URL,
-            operation="areaBasedList1",
-            params={
-                "areaCode": area_code,
-                "sigunguCode": sigungu_code,
-                "arrange": "C",
-                "numOfRows": limit,
-                "pageNo": 1,
-            },
-        )
-        return [_eco_candidate(raw, "areaBasedList1") for raw in _extract_response_items(data)]
 
     def search_medical(
         self,
@@ -338,20 +306,6 @@ def execute_theme_search(
             call=lambda: provider.search_audio(keyword=keyword, limit=limit),
         )
         candidates, rejected_candidates = _filter_theme_candidates_for_target(raw_candidates, target_item)
-    elif source_family == "kto_eco":
-        candidates = _log_theme_tool_call(
-            db=db,
-            run_id=run_id,
-            step_id=step_id,
-            tool_name="kto_eco_area_search",
-            source=source_family,
-            arguments={"area_code": area_code, "sigungu_code": sigungu_code, "limit": limit},
-            call=lambda: provider.search_eco(
-                area_code=area_code,
-                sigungu_code=sigungu_code,
-                limit=limit,
-            ),
-        )
     elif source_family == "kto_medical":
         candidates = _log_theme_tool_call(
             db=db,
@@ -777,35 +731,6 @@ def _audio_candidate(raw: dict[str, Any], operation: str) -> ThemeDataCandidate:
     )
 
 
-def _eco_candidate(raw: dict[str, Any], operation: str) -> ThemeDataCandidate:
-    content_id = _string_or_none(raw.get("contentid") or raw.get("contentId"))
-    title = _string_or_none(raw.get("title"))
-    return ThemeDataCandidate(
-        id=_stable_candidate_id("kto_eco", content_id or title or "", raw),
-        source_family="kto_eco",
-        operation=operation,
-        title=title,
-        content_id=content_id,
-        address=_string_or_none(raw.get("addr")),
-        tel=_string_or_none(raw.get("tel")),
-        overview=_string_or_none(raw.get("summary") or raw.get("subtitle")),
-        image_url=_string_or_none(raw.get("mainimage")),
-        thumbnail_url=_string_or_none(raw.get("mainimage")),
-        license_type=_string_or_none(raw.get("cpyrhtDivCd")),
-        theme_attributes={
-            key: value
-            for key, value in {
-                "subtitle": _string_or_none(raw.get("subtitle")),
-                "area_code": _string_or_none(raw.get("areacode")),
-                "sigungu_code": _string_or_none(raw.get("sigungucode")),
-            }.items()
-            if value
-        },
-        needs_review=["생태/친환경 테마 정보는 지속가능성 맥락 후보이며 정량 효과를 보장하지 마세요."],
-        raw=raw,
-    )
-
-
 def _pet_policy_attributes(raw: dict[str, Any]) -> dict[str, Any]:
     keys = {
         "acmpyNeedMtr": "companion_requirements",
@@ -1074,15 +999,6 @@ def _contains_family_generic_signal(query: str | None, source_family: str) -> bo
             "치유",
             "건강",
         },
-        "kto_eco": {
-            "eco",
-            "ecology",
-            "nature",
-            "생태",
-            "생태관광",
-            "친환경",
-            "자연",
-        },
         "kto_medical": {
             "medical",
             "meditour",
@@ -1113,7 +1029,6 @@ def _theme_interpretation_notes(source_family: str) -> list[str]:
         "kto_wellness": ["웰니스 테마 후보입니다. 건강 효능이나 치료 효과를 확정 claim으로 쓰지 않습니다."],
         "kto_pet": ["반려동물 동반 조건 후보입니다. 실제 동반 가능 여부와 제한 조건은 운영 전 확인합니다."],
         "kto_audio": ["오디오/스토리 소재 후보입니다. 실제 제공 언어와 사용 조건은 확인 필요입니다."],
-        "kto_eco": ["생태/친환경 테마 후보입니다. 정량 환경 효과를 보장하지 않습니다."],
         "kto_medical": ["의료관광 고위험 근거입니다. 의료 효과, 안전, 치료 결과를 확정 표현하지 않습니다."],
     }.get(source_family, ["테마 보조 근거입니다. 운영자 확인이 필요합니다."])
 

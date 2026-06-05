@@ -1515,7 +1515,7 @@ export function Dashboard({ activeSection }: { activeSection: AppSection }) {
             ) : null}
             <MultiSelect
               label="Preferences"
-              data={["웰니스", "반려동물", "생태", "오디오 해설", "야간 관광", "축제", "전통시장", "해변", "요트", "푸드투어"]}
+              data={["웰니스", "반려동물", "오디오 해설", "자연 관찰", "야간 관광", "축제", "전통시장", "해변", "요트", "푸드투어"]}
               searchable
               {...form.getInputProps("preferences")}
             />

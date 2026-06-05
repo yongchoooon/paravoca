@@ -124,14 +124,6 @@ SOURCE_API_PROFILES: dict[str, dict[str, Any]] = {
         "origin_description": "오디오 가이드 검색 결과를 스토리 근거 문서로 저장합니다.",
         "purpose_tags": ["culture"],
     },
-    "kto_eco": {
-        "purpose": "생태 관광 테마 후보와 지역 기반 생태 정보를 찾습니다.",
-        "input_fields": ["지역 코드", "키워드"],
-        "output_fields": ["생태 관광지명", "주소", "소개", "테마 속성"],
-        "example_use": "생태/공정관광 성격의 상품 후보를 찾되 효과를 보장하지 않습니다.",
-        "origin_description": "생태 관광 API 응답을 테마 근거 문서로 저장합니다.",
-        "purpose_tags": ["culture", "base"],
-    },
     "kto_tourism_bigdata": {
         "purpose": "광역/기초 지자체 방문자 수요 신호를 확인합니다.",
         "input_fields": ["지역 코드", "기간"],

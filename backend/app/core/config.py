@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     kto_pet_enabled: bool = False
     kto_durunubi_enabled: bool = False
     kto_audio_enabled: bool = False
-    kto_eco_enabled: bool = False
     kto_tourism_photo_enabled: bool = False
     kto_bigdata_enabled: bool = False
     kto_crowding_enabled: bool = False

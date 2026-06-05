@@ -86,7 +86,6 @@ const GAP_LABELS: Record<string, string> = {
   missing_route_asset: "코스/GPX",
   missing_story_asset: "해설/스토리",
   missing_multilingual_story: "다국어 스토리",
-  missing_sustainability_context: "생태/공정관광",
   missing_demand_signal: "수요 신호",
   missing_crowding_signal: "혼잡 신호",
   missing_regional_demand_signal: "지역 수요",

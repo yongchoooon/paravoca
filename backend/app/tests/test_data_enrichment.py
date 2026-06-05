@@ -282,22 +282,6 @@ class ThemeProvider:
             )
         ][:limit]
 
-    def search_eco(self, *, area_code=None, sigungu_code=None, limit=5):
-        return [
-            ThemeDataCandidate(
-                id="theme-eco-1",
-                source_family="kto_eco",
-                operation="areaBasedList1",
-                title="대전 생태관광 후보",
-                content_id="ECO-1",
-                address="대전광역시 중구",
-                overview="생태 해설 맥락 후보입니다.",
-                theme_attributes={"subtitle": "생태 탐방"},
-                needs_review=["생태 효과를 정량 보장하지 마세요."],
-                raw={"contentid": "ECO-1"},
-            )
-        ][:limit]
-
     def search_medical(self, *, keyword, ldong_regn_cd=None, ldong_signgu_cd=None, limit=5):
         return [
             ThemeDataCandidate(
@@ -1597,7 +1581,6 @@ def test_theme_capabilities_are_workflow_enabled_only_when_flags_are_on():
             kto_wellness_enabled=False,
             kto_pet_enabled=False,
             kto_audio_enabled=False,
-            kto_eco_enabled=False,
             allow_medical_api=False,
         )
     )
@@ -1609,13 +1592,12 @@ def test_theme_capabilities_are_workflow_enabled_only_when_flags_are_on():
             kto_wellness_enabled=True,
             kto_pet_enabled=True,
             kto_audio_enabled=True,
-            kto_eco_enabled=True,
             allow_medical_api=False,
         )
     )
     enabled_by_family = {item["source_family"]: item for item in enabled}
 
-    for family in ["kto_wellness", "kto_pet", "kto_audio", "kto_eco"]:
+    for family in ["kto_wellness", "kto_pet", "kto_audio"]:
         assert not disabled_by_family[family]["enabled"]
         assert not any(op["workflow_enabled"] for op in disabled_by_family[family]["operations"])
         assert enabled_by_family[family]["enabled"]

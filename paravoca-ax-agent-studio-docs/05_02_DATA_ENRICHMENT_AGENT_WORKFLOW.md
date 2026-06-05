@@ -160,7 +160,6 @@ Approved or Reviewable Run
 | 의료/검진/뷰티/병원 키워드 포함 | `missing_medical_context` |
 | 걷기/트레킹/둘레길/GPX 키워드 포함 | `missing_route_asset` |
 | 역사/문화/해설/외국인 키워드 포함 | `missing_story_asset` |
-| 생태/친환경/공정관광/ESG 키워드 포함 | `missing_sustainability_context` |
 | 지역 후보 ranking 근거가 필요함 | `missing_demand_signal` |
 | 30일 이내 특정 날짜 운영 | `missing_crowding_signal` |
 | itinerary가 1개 장소 중심으로 약함 | `missing_related_places` |
@@ -232,7 +231,6 @@ Approved or Reviewable Run
 | `missing_medical_context` | `kto_medical_keyword_search`, `kto_medical_detail` |
 | `missing_route_asset` | `kto_durunubi_course_list`, `kto_durunubi_path_list` |
 | `missing_story_asset` | `kto_audio_keyword_search`, `kto_audio_location_search`, `kto_audio_detail` |
-| `missing_sustainability_context` | `kto_eco_tourism_search`, `kto_eco_tourism_detail` |
 | `missing_demand_signal` | `kto_tourism_bigdata_visitors` |
 | `missing_crowding_signal` | `kto_attraction_crowding_forecast` |
 | `missing_related_places` | `kto_related_places_area`, `kto_related_places_keyword` |
@@ -584,7 +582,6 @@ kto_durunubi_path_list
 kto_audio_story_search
 kto_audio_theme_search
 
-kto_eco_area_search
 ```
 
 ### 수요/혼잡/연관 보강
@@ -933,7 +930,7 @@ Poster Studio에서 사용할 데이터:
 - Run Review의 상품명, 타깃, 핵심 가치, itinerary, FAQ, QA issue
 - 관광사진/공모전 사진의 촬영지, 키워드, 이미지 URL
 - 집중률/혼잡 signal에 따른 포스터 메시지 톤
-- 오디오 가이드/생태/웰니스 데이터에서 추출한 분위기와 스토리 키워드
+- 오디오 가이드/웰니스 데이터에서 추출한 분위기와 스토리 키워드
 
 사용자 옵션 추천:
 
