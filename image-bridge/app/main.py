@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     image_bridge_token: str = ""
     image_bridge_model: str = "gpt-image-2"
     image_bridge_default_size: str = "1024x1536"
-    image_bridge_default_quality: str = "medium"
+    image_bridge_default_quality: str = "low"
     image_bridge_public_base_url: str = ""
     image_bridge_storage_dir: str = "data/images"
     image_bridge_request_timeout_seconds: float = 120.0

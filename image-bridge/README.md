@@ -15,7 +15,7 @@ Content-Type: application/json
   "prompt": "Create one portrait travel promotion poster draft...",
   "input_image_urls": ["https://example.com/reference.jpg"],
   "size": "1024x1536",
-  "quality": "medium"
+  "quality": "low"
 }
 ```
 
@@ -38,7 +38,7 @@ Content-Type: application/json
   "input_image_count": 1,
   "model": "gpt-image-2",
   "size": "1024x1536",
-  "quality": "medium"
+  "quality": "low"
 }
 ```
 
@@ -63,7 +63,7 @@ Generate test:
 curl -X POST http://localhost:8080/generate \
   -H "Authorization: Bearer $IMAGE_BRIDGE_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"Create one portrait Korean travel poster draft for a quiet coastal walking tour.","size":"1024x1536","quality":"medium"}'
+  -d '{"prompt":"Create one portrait Korean travel poster draft for a quiet coastal walking tour.","size":"1024x1536","quality":"low"}'
 ```
 
 ## Cloudflare Tunnel
