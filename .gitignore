@@ -35,3 +35,5 @@ ai_agent_travel_product_evaluation.md
 backend/reports/
 reports/
 image-bridge/data/images/
+
+.env.image-bridge
