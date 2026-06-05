@@ -15,30 +15,33 @@ Content-Type: application/json
   "prompt": "Create one portrait travel promotion poster draft...",
   "input_image_urls": ["https://example.com/reference.jpg"],
   "size": "1024x1536",
-  "quality": "low"
+  "quality": "low",
+  "output_format": "jpeg"
 }
 ```
 
-`input_image_urls`는 선택값이며 최대 3개다.
+`input_image_urls`는 선택값이며 최대 3개다. `output_format`은 선택값이며 기본값은 `jpeg`다. 허용값은 `png`, `jpeg`, `webp`다.
 
 ## Behavior
 
 - `input_image_urls`가 없으면 `POST https://api.openai.com/v1/images/generations`를 JSON으로 호출한다.
 - `input_image_urls`가 있으면 서버가 URL을 다운로드한 뒤 `POST https://api.openai.com/v1/images/edits`를 multipart form-data로 호출한다.
+- OpenAI 요청에는 기본적으로 `output_format=jpeg`를 포함한다. OpenAI 공식 문서 기준 JPEG는 PNG보다 빠르므로 latency가 중요할 때 우선 사용할 수 있다.
 - OpenAI 응답의 `b64_json`은 decode하고, `url` 응답은 다시 다운로드한다.
-- 생성 이미지는 `data/images/{YYYYMMDDTHHMMSSffffffZ}.png`에 저장하고 `/images/{YYYYMMDDTHHMMSSffffffZ}.png`로 서빙한다.
+- 생성 이미지는 `data/images/{YYYYMMDDTHHMMSSffffffZ}.jpg`에 저장하고 `/images/{YYYYMMDDTHHMMSSffffffZ}.jpg`로 서빙한다.
 
 ## Response
 
 ```json
 {
-  "image_url": "https://image-api.example.com/images/20260605T154512345678Z.png",
-  "markdown": "![generated poster](https://image-api.example.com/images/20260605T154512345678Z.png)",
+  "image_url": "https://image-api.example.com/images/20260605T154512345678Z.jpg",
+  "markdown": "![generated poster](https://image-api.example.com/images/20260605T154512345678Z.jpg)",
   "image_id": "20260605T154512345678Z",
   "input_image_count": 1,
   "model": "gpt-image-2",
   "size": "1024x1536",
-  "quality": "low"
+  "quality": "low",
+  "output_format": "jpeg"
 }
 ```
 
@@ -113,5 +116,5 @@ Restart the bridge after changing `.env.image-bridge`.
 - Method: `POST`
 - URL: `https://image-api.example.com/generate`
 - Header: `Authorization: Bearer <IMAGE_BRIDGE_TOKEN>`
-- Body: prompt, optional `input_image_urls`, `size`, `quality`
+- Body: prompt, optional `input_image_urls`, `size`, `quality`, `output_format`
 - Display: render `markdown` or use `image_url` in Markdown.

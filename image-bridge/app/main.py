@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     image_bridge_model: str = "gpt-image-2"
     image_bridge_default_size: str = "1024x1536"
     image_bridge_default_quality: str = "low"
+    image_bridge_default_output_format: str = "jpeg"
     image_bridge_public_base_url: str = ""
     image_bridge_storage_dir: str = "data/images"
     image_bridge_request_timeout_seconds: float = 120.0
@@ -41,6 +42,7 @@ app.mount("/images", StaticFiles(directory=str(storage_dir)), name="images")
 
 _ALLOWED_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
 _ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
+_ALLOWED_OUTPUT_FORMATS = {"png", "jpeg", "webp"}
 _ALLOWED_SCHEMES = {"http", "https"}
 
 
@@ -49,6 +51,7 @@ class ImageGenerateRequest(BaseModel):
     input_image_urls: list[str] = Field(default_factory=list)
     size: str | None = None
     quality: str | None = None
+    output_format: str | None = None
     model: str | None = None
 
     @field_validator("prompt")
@@ -95,6 +98,15 @@ class ImageGenerateRequest(BaseModel):
             raise ValueError(f"quality must be one of {sorted(_ALLOWED_QUALITIES)}")
         return value
 
+    @field_validator("output_format")
+    @classmethod
+    def validate_output_format(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if value not in _ALLOWED_OUTPUT_FORMATS:
+            raise ValueError(f"output_format must be one of {sorted(_ALLOWED_OUTPUT_FORMATS)}")
+        return value
+
 
 class ImageGenerateResponse(BaseModel):
     image_url: str
@@ -104,6 +116,7 @@ class ImageGenerateResponse(BaseModel):
     model: str
     size: str
     quality: str
+    output_format: str
     provider_response_summary: dict[str, Any]
     latency_ms: int
 
@@ -127,6 +140,7 @@ def health() -> dict[str, Any]:
         "model": settings.image_bridge_model,
         "storage_dir": str(storage_dir),
         "auth_configured": bool(settings.image_bridge_token.strip()),
+        "default_output_format": settings.image_bridge_default_output_format,
     }
 
 
@@ -140,6 +154,7 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
     model = payload.model or settings.image_bridge_model
     size = payload.size or settings.image_bridge_default_size
     quality = payload.quality or settings.image_bridge_default_quality
+    output_format = payload.output_format or settings.image_bridge_default_output_format
 
     with httpx.Client(timeout=settings.image_bridge_request_timeout_seconds, follow_redirects=True) as client:
         if payload.input_image_urls:
@@ -150,6 +165,7 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
                 prompt=payload.prompt,
                 size=size,
                 quality=quality,
+                output_format=output_format,
                 input_image_urls=payload.input_image_urls,
             )
             endpoint = "images/edits"
@@ -161,6 +177,7 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
                 prompt=payload.prompt,
                 size=size,
                 quality=quality,
+                output_format=output_format,
             )
             endpoint = "images/generations"
 
@@ -178,7 +195,7 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
         response_payload = response.json()
         image_bytes = _image_bytes_from_openai_response(client, response_payload)
 
-    image_id, image_path = _new_timestamped_image_path()
+    image_id, image_path = _new_timestamped_image_path(output_format)
     filename = image_path.name
     image_path.write_bytes(image_bytes)
 
@@ -188,7 +205,7 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
         "endpoint": endpoint,
         "request_id": response.headers.get("x-request-id"),
         "usage": response_payload.get("usage") if isinstance(response_payload, dict) else None,
-        "output_format": response_payload.get("output_format") if isinstance(response_payload, dict) else "png",
+        "output_format": (response_payload.get("output_format") if isinstance(response_payload, dict) else None) or output_format,
     }
     return ImageGenerateResponse(
         image_url=image_url,
@@ -198,12 +215,13 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
         model=model,
         size=size,
         quality=quality,
+        output_format=output_format,
         provider_response_summary=provider_summary,
         latency_ms=latency_ms,
     )
 
 
-def _new_timestamped_image_path() -> tuple[str, Path]:
+def _new_timestamped_image_path(output_format: str = "jpeg") -> tuple[str, Path]:
     """Return a timestamp-based image id and path with microsecond precision.
 
     The UTC timestamp keeps filenames sortable and avoids characters that are
@@ -213,11 +231,12 @@ def _new_timestamped_image_path() -> tuple[str, Path]:
 
     base_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     image_id = base_id
-    image_path = storage_dir / f"{image_id}.png"
+    extension = _extension_for_output_format(output_format)
+    image_path = storage_dir / f"{image_id}.{extension}"
     suffix = 2
     while image_path.exists():
         image_id = f"{base_id}-{suffix}"
-        image_path = storage_dir / f"{image_id}.png"
+        image_path = storage_dir / f"{image_id}.{extension}"
         suffix += 1
     return image_id, image_path
 
@@ -230,11 +249,12 @@ def _call_image_generations(
     prompt: str,
     size: str,
     quality: str,
+    output_format: str,
 ) -> httpx.Response:
     return client.post(
         "https://api.openai.com/v1/images/generations",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model, "prompt": prompt, "n": 1, "size": size, "quality": quality},
+        json={"model": model, "prompt": prompt, "n": 1, "size": size, "quality": quality, "output_format": output_format},
     )
 
 
@@ -246,6 +266,7 @@ def _call_image_edits(
     prompt: str,
     size: str,
     quality: str,
+    output_format: str,
     input_image_urls: list[str],
 ) -> httpx.Response:
     image_files = _download_input_images(input_image_urls)
@@ -255,7 +276,7 @@ def _call_image_edits(
     return client.post(
         "https://api.openai.com/v1/images/edits",
         headers={"Authorization": f"Bearer {api_key}"},
-        data={"model": model, "prompt": prompt, "n": "1", "size": size, "quality": quality},
+        data={"model": model, "prompt": prompt, "n": "1", "size": size, "quality": quality, "output_format": output_format},
         files=files,
     )
 
@@ -342,6 +363,10 @@ def _extension_from_image_type(detected: str | None, content_type: str) -> str:
         value = match.group(1)
         return "jpg" if value == "jpeg" else value
     return "png"
+
+
+def _extension_for_output_format(output_format: str) -> str:
+    return "jpg" if output_format == "jpeg" else output_format
 
 
 def _content_type_from_extension(extension: str) -> str:
