@@ -28,15 +28,15 @@ Content-Type: application/json
 - `input_image_urls`가 있으면 서버가 URL을 다운로드한 뒤 `POST https://api.openai.com/v1/images/edits`를 multipart form-data로 호출한다.
 - OpenAI 요청에는 기본적으로 `output_format=jpeg`를 포함한다. OpenAI 공식 문서 기준 JPEG는 PNG보다 빠르므로 latency가 중요할 때 우선 사용할 수 있다.
 - OpenAI 응답의 `b64_json`은 decode하고, `url` 응답은 다시 다운로드한다.
-- 생성 이미지는 `data/images/{YYYYMMDDTHHMMSSffffffZ}.jpg`에 저장하고 `/images/{YYYYMMDDTHHMMSSffffffZ}.jpg`로 서빙한다.
+- 생성 이미지는 `data/images/{YYYYMMDDTHHMMSSffffffKST}.jpg`에 저장하고 `/images/{YYYYMMDDTHHMMSSffffffKST}.jpg`로 서빙한다.
 
 ## Response
 
 ```json
 {
-  "image_url": "https://image-api.example.com/images/20260605T154512345678Z.jpg",
-  "markdown": "![generated poster](https://image-api.example.com/images/20260605T154512345678Z.jpg)",
-  "image_id": "20260605T154512345678Z",
+  "image_url": "https://image-api.example.com/images/20260605T154512345678KST.jpg",
+  "markdown": "![generated poster](https://image-api.example.com/images/20260605T154512345678KST.jpg)",
+  "image_id": "20260605T154512345678KST",
   "input_image_count": 1,
   "model": "gpt-image-2",
   "size": "1024x1536",

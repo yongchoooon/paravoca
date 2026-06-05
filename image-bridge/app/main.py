@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import re
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any
 from urllib.parse import urlparse
 
@@ -224,12 +225,13 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
 def _new_timestamped_image_path(output_format: str = "jpeg") -> tuple[str, Path]:
     """Return a timestamp-based image id and path with microsecond precision.
 
-    The UTC timestamp keeps filenames sortable and avoids characters that are
-    awkward in URLs. A numeric suffix is used only if two writes land on the
-    same microsecond or an existing file is present.
+    The Korean local timestamp keeps filenames close to operator-visible
+    creation time and avoids characters that are awkward in URLs. A numeric
+    suffix is used only if two writes land on the same microsecond or an
+    existing file is present.
     """
 
-    base_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    base_id = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%dT%H%M%S%fKST")
     image_id = base_id
     extension = _extension_for_output_format(output_format)
     image_path = storage_dir / f"{image_id}.{extension}"
