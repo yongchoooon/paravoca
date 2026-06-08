@@ -39,6 +39,7 @@ class NotionPageCreateRequest(BaseModel):
     title: str = Field(..., min_length=1)
     markdown: str = Field(..., min_length=1)
     proposal_type: str = Field(..., min_length=1)
+    created_at: str = ""
 
     @field_validator("title")
     @classmethod
@@ -67,6 +68,11 @@ class NotionPageCreateRequest(BaseModel):
         if cleaned not in _ALLOWED_PROPOSAL_TYPES:
             raise ValueError(f"proposal_type must be one of {sorted(_ALLOWED_PROPOSAL_TYPES)}")
         return cleaned
+
+    @field_validator("created_at")
+    @classmethod
+    def validate_created_at(cls, value: str) -> str:
+        return " ".join(value.strip().split())
 
 
 class NotionPageCreateResponse(BaseModel):
@@ -111,7 +117,7 @@ def create_notion_page(payload: NotionPageCreateRequest) -> NotionPageCreateResp
         raise HTTPException(status_code=500, detail="NOTION_PARENT_PAGE_ID is not configured")
 
     started = time.perf_counter()
-    notion_markdown = _build_notion_markdown(title=payload.title, markdown=payload.markdown)
+    notion_markdown = _build_notion_markdown(title=payload.title, markdown=payload.markdown, created_at=payload.created_at)
 
     with httpx.Client(timeout=settings.notion_bridge_request_timeout_seconds, follow_redirects=True) as client:
         response = _post_notion_page(
@@ -173,10 +179,18 @@ def _post_notion_page(
     )
 
 
-def _build_notion_markdown(*, title: str, markdown: str) -> str:
-    normalized = _normalize_ennoia_markdown(markdown)
+def _build_notion_markdown(*, title: str, markdown: str, created_at: str = "") -> str:
+    markdown_with_timestamp = _prepend_created_at(markdown=markdown, created_at=created_at)
+    normalized = _normalize_ennoia_markdown(markdown_with_timestamp)
     demoted = _demote_headings(normalized)
     return f"# {title}\n\n{demoted}".strip()
+
+
+def _prepend_created_at(*, markdown: str, created_at: str) -> str:
+    cleaned = created_at.strip()
+    if not cleaned or markdown.lstrip().startswith("작성일시:"):
+        return markdown
+    return f"작성일시: {cleaned}\n\n{markdown}"
 
 
 def _normalize_ennoia_markdown(markdown: str) -> str:
@@ -184,13 +198,110 @@ def _normalize_ennoia_markdown(markdown: str) -> str:
     text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*img\b[^>]*>", _replace_img_tag, text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<\s*a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)<\s*/\s*a\s*>", _replace_anchor_tag, text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<\s*/?\s*(div|table|thead|tbody|tr)\b[^>]*>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<\s*/?\s*(td|th)\b[^>]*>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"<\s*table\b[^>]*>.*?<\s*/\s*table\s*>", _replace_table_tag, text, flags=re.IGNORECASE | re.DOTALL)
+    text = _replace_pipe_tables(text)
+    text = re.sub(r"<\s*/?\s*div\b[^>]*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", _strip_unsupported_html_tag, text)
     text = html.unescape(text)
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _replace_table_tag(match: re.Match[str]) -> str:
+    table_html = match.group(0)
+    row_matches = re.findall(r"<\s*tr\b[^>]*>(.*?)<\s*/\s*tr\s*>", table_html, flags=re.IGNORECASE | re.DOTALL)
+    rows: list[list[str]] = []
+    for row_html in row_matches:
+        cell_matches = re.findall(r"<\s*(?:td|th)\b[^>]*>(.*?)<\s*/\s*(?:td|th)\s*>", row_html, flags=re.IGNORECASE | re.DOTALL)
+        cells = [_normalize_table_cell(cell) for cell in cell_matches]
+        if cells:
+            rows.append(cells)
+
+    if not rows:
+        return _strip_tags(table_html)
+
+    return "\n\n" + _build_notion_table(rows, header_row=True) + "\n\n"
+
+
+def _replace_pipe_tables(markdown: str) -> str:
+    lines = markdown.split("\n")
+    output: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        if index + 1 < len(lines) and _is_pipe_table_header(lines[index], lines[index + 1]):
+            table_lines = [lines[index], lines[index + 1]]
+            index += 2
+            while index < len(lines) and _is_pipe_table_row(lines[index]):
+                table_lines.append(lines[index])
+                index += 1
+
+            rows = [_parse_pipe_table_row(line) for line in table_lines[:1] + table_lines[2:]]
+            output.append(_build_notion_table(rows, header_row=True))
+            continue
+
+        output.append(lines[index])
+        index += 1
+
+    return "\n".join(output)
+
+
+def _is_pipe_table_header(header_line: str, separator_line: str) -> bool:
+    if not _is_pipe_table_row(header_line) or not _is_pipe_table_row(separator_line):
+        return False
+    cells = _parse_pipe_table_row(separator_line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+
+
+def _is_pipe_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+
+def _parse_pipe_table_row(line: str) -> list[str]:
+    cells = re.split(r"(?<!\\)\|", line.strip())
+    if cells and cells[0] == "":
+        cells = cells[1:]
+    if cells and cells[-1] == "":
+        cells = cells[:-1]
+    return [cell.replace("\\|", "|").strip() for cell in cells]
+
+
+def _build_notion_table(rows: list[list[str]], *, header_row: bool) -> str:
+    column_count = max(len(row) for row in rows)
+    normalized_rows = [row + [""] * (column_count - len(row)) for row in rows]
+    lines = [f'<table fit-page-width="true" header-row="{str(header_row).lower()}">']
+    for row in normalized_rows:
+        lines.append("\t<tr>")
+        for cell in row:
+            lines.append(f"\t\t<td>{_escape_notion_table_cell(cell)}</td>")
+        lines.append("\t</tr>")
+    lines.append("</table>")
+    return "\n".join(lines)
+
+
+def _normalize_table_cell(cell_html: str) -> str:
+    cell = re.sub(r"<\s*br\s*/?\s*>", " ", cell_html, flags=re.IGNORECASE)
+    cell = _strip_tags(cell)
+    cell = html.unescape(cell)
+    cell = re.sub(r"\s+", " ", cell).strip()
+    return cell
+
+
+def _escape_notion_table_cell(cell: str) -> str:
+    return html.escape(cell, quote=False)
+
+
+def _strip_unsupported_html_tag(match: re.Match[str]) -> str:
+    tag = match.group(0)
+    tag_name_match = re.match(r"<\s*/?\s*([a-zA-Z0-9_-]+)", tag)
+    if not tag_name_match:
+        return ""
+    tag_name = tag_name_match.group(1).lower()
+    if tag_name in {"table", "tr", "td", "colgroup", "col"}:
+        return tag
+    return ""
 
 
 def _replace_anchor_tag(match: re.Match[str]) -> str:

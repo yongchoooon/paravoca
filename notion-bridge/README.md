@@ -14,7 +14,8 @@ Content-Type: application/json
 {
   "title": "서귀포 동선 중심 여행상품 제안서",
   "markdown": "# 여행 상품 추천\n\n...",
-  "proposal_type": "travel_recommendation"
+  "proposal_type": "travel_recommendation",
+  "created_at": "2026-06-08 21:26:51"
 }
 ```
 
@@ -29,8 +30,9 @@ Content-Type: application/json
 ## Behavior
 
 - `markdown`은 Notion의 Markdown page 생성 API로 전달한다.
+- `created_at`이 있으면 서버가 본문 맨 위에 `작성일시: ...`를 한 번만 추가한다.
 - 서버는 입력 Markdown 앞에 `# {title}`을 붙이고, 기존 heading은 한 단계 낮춰 Notion page title이 요청 title로 잡히게 한다.
-- Ennoia 출력에 포함된 HTML 버튼과 이미지 태그는 Markdown 링크와 이미지 문법으로 정규화한다.
+- Ennoia 출력에 포함된 HTML 링크, 이미지, 표는 Notion이 처리하기 쉬운 Markdown 링크, 이미지, 표 문법으로 정규화한다.
 - Notion API key는 서버 환경변수에만 둔다. Ennoia에는 `NOTION_BRIDGE_TOKEN`만 넣는다.
 
 ## Response
@@ -75,7 +77,7 @@ Create page test:
 curl -X POST http://localhost:8081/notion/pages \
   -H "Authorization: Bearer $NOTION_BRIDGE_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"title":"PARAVOCA 테스트 문서","markdown":"# 테스트\n\n본문입니다.","proposal_type":"travel_recommendation"}'
+  -d '{"title":"PARAVOCA 테스트 문서","markdown":"# 테스트\n\n본문입니다.","proposal_type":"travel_recommendation","created_at":"2026-06-08 21:26:51"}'
 ```
 
 ## Cloudflare Tunnel
@@ -133,6 +135,10 @@ Body schema:
     "proposal_type": {
       "type": "string",
       "description": "One of: travel_recommendation, product_planner, operations, marketing, poster_result."
+    },
+    "created_at": {
+      "type": "string",
+      "description": "Optional current datetime from Ennoia Current date, format YYYY-MM-DD HH:mm:ss."
     }
   },
   "required": [
