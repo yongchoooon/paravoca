@@ -37,3 +37,4 @@ reports/
 image-bridge/data/images/
 
 .env.image-bridge
+.env.notion-bridge

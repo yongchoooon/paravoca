@@ -1,0 +1,22 @@
+services:
+  notion-bridge:
+    build:
+      context: ./notion-bridge
+    environment:
+      NOTION_API_KEY: ${NOTION_API_KEY:-}
+      NOTION_PARENT_PAGE_ID: ${NOTION_PARENT_PAGE_ID:-}
+      NOTION_VERSION: ${NOTION_VERSION:-2026-03-11}
+      NOTION_BRIDGE_TOKEN: ${NOTION_BRIDGE_TOKEN:-}
+      NOTION_BRIDGE_REQUEST_TIMEOUT_SECONDS: ${NOTION_BRIDGE_REQUEST_TIMEOUT_SECONDS:-30}
+      NOTION_BRIDGE_MAX_TITLE_CHARS: ${NOTION_BRIDGE_MAX_TITLE_CHARS:-120}
+      NOTION_BRIDGE_MAX_MARKDOWN_CHARS: ${NOTION_BRIDGE_MAX_MARKDOWN_CHARS:-80000}
+    ports:
+      - "8081:8081"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles:
+      - tunnel
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - notion-bridge
