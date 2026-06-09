@@ -91,6 +91,26 @@ def test_normalizes_pipe_tables_to_notion_tables():
     assert "| --- | --- |" not in normalized
 
 
+def test_keeps_multiline_table_cell_bullets_inside_the_cell():
+    markdown = """
+| 항목 | 내용 |
+| --- | --- |
+| 세일즈 포인트 | - 무료 입장 명소 위주로 구성되어 비용 부담이 적습니다. |
+- 인스타그램 포토존으로 알려진 보름달 조형물 등이 포함되어 있습니다.
+- 부산항대교 야경과 도심 조망이 가능한 명소들로 동선이 구성되어 있습니다.
+"""
+
+    normalized = _normalize_ennoia_markdown(markdown)
+
+    assert '<table fit-page-width="true" header-row="true">' in normalized
+    assert (
+        "<td>- 무료 입장 명소 위주로 구성되어 비용 부담이 적습니다.<br>"
+        "- 인스타그램 포토존으로 알려진 보름달 조형물 등이 포함되어 있습니다.<br>"
+        "- 부산항대교 야경과 도심 조망이 가능한 명소들로 동선이 구성되어 있습니다.</td>"
+    ) in normalized
+    assert normalized.count("<br>- ") == 2
+
+
 def test_build_notion_markdown_sets_requested_title_and_demotes_existing_h1():
     result = _build_notion_markdown(title="서귀포 상품 제안서", markdown="# 여행 상품 추천\n\n## 1. 상품")
 

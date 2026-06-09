@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     notion_bridge_token: str = ""
     notion_bridge_request_timeout_seconds: float = 30.0
     notion_bridge_max_title_chars: int = 120
-    notion_bridge_max_markdown_chars: int = 80000
+    notion_bridge_max_markdown_chars: int = 150000
+    notion_bridge_max_notion_markdown_bytes: int = 475000
 
 
 settings = Settings()
@@ -59,6 +60,11 @@ class NotionPageCreateRequest(BaseModel):
             raise ValueError("markdown is required")
         if len(cleaned) > settings.notion_bridge_max_markdown_chars:
             raise ValueError(f"markdown must be <= {settings.notion_bridge_max_markdown_chars} characters")
+        markdown_size = len(cleaned.encode("utf-8"))
+        if markdown_size > settings.notion_bridge_max_notion_markdown_bytes:
+            raise ValueError(
+                f"markdown must be <= {settings.notion_bridge_max_notion_markdown_bytes} bytes when encoded as UTF-8"
+            )
         return cleaned
 
     @field_validator("proposal_type")
@@ -104,6 +110,7 @@ def health() -> dict[str, Any]:
         "notion_configured": bool(settings.notion_api_key.strip() and settings.notion_parent_page_id.strip()),
         "notion_version": settings.notion_version,
         "max_markdown_chars": settings.notion_bridge_max_markdown_chars,
+        "max_notion_markdown_bytes": settings.notion_bridge_max_notion_markdown_bytes,
     }
 
 
@@ -118,6 +125,16 @@ def create_notion_page(payload: NotionPageCreateRequest) -> NotionPageCreateResp
 
     started = time.perf_counter()
     notion_markdown = _build_notion_markdown(title=payload.title, markdown=payload.markdown, created_at=payload.created_at)
+    notion_markdown_size = len(notion_markdown.encode("utf-8"))
+    if notion_markdown_size > settings.notion_bridge_max_notion_markdown_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={
+                "reason": "notion_markdown_too_large_after_normalization",
+                "max_bytes": settings.notion_bridge_max_notion_markdown_bytes,
+                "actual_bytes": notion_markdown_size,
+            },
+        )
 
     with httpx.Client(timeout=settings.notion_bridge_request_timeout_seconds, follow_redirects=True) as client:
         response = _post_notion_page(
@@ -231,13 +248,36 @@ def _replace_pipe_tables(markdown: str) -> str:
 
     while index < len(lines):
         if index + 1 < len(lines) and _is_pipe_table_header(lines[index], lines[index + 1]):
-            table_lines = [lines[index], lines[index + 1]]
+            header_line = lines[index]
+            separator_line = lines[index + 1]
+            rows = [_parse_pipe_table_row(header_line)]
             index += 2
-            while index < len(lines) and _is_pipe_table_row(lines[index]):
-                table_lines.append(lines[index])
-                index += 1
+            current_row: list[str] | None = None
 
-            rows = [_parse_pipe_table_row(line) for line in table_lines[:1] + table_lines[2:]]
+            while index < len(lines):
+                line = lines[index]
+                if _is_pipe_table_row(line):
+                    if current_row is not None:
+                        rows.append(current_row)
+                    current_row = _parse_pipe_table_row(line)
+                    index += 1
+                    continue
+
+                if current_row is not None and _is_table_cell_continuation(line):
+                    current_row[-1] = _append_cell_continuation(current_row[-1], line)
+                    index += 1
+                    continue
+
+                break
+
+            if current_row is not None:
+                rows.append(current_row)
+
+            if len(rows) == 1:
+                output.append(header_line)
+                output.append(separator_line)
+                continue
+
             output.append(_build_notion_table(rows, header_row=True))
             continue
 
@@ -245,6 +285,31 @@ def _replace_pipe_tables(markdown: str) -> str:
         index += 1
 
     return "\n".join(output)
+
+
+def _is_table_cell_continuation(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("#"):
+        return False
+    if _is_pipe_table_row(stripped):
+        return False
+    return bool(
+        re.match(r"^[-*]\s+\S+", stripped)
+        or re.match(r"^\d+[.)]\s+\S+", stripped)
+        or line.startswith((" ", "\t"))
+    )
+
+
+def _append_cell_continuation(cell: str, line: str) -> str:
+    continuation = line.strip()
+    continuation = continuation.rstrip("|").strip()
+    if not continuation:
+        return cell
+    if cell:
+        return f"{cell}<br>{continuation}"
+    return continuation
 
 
 def _is_pipe_table_header(header_line: str, separator_line: str) -> bool:
@@ -290,7 +355,7 @@ def _normalize_table_cell(cell_html: str) -> str:
 
 
 def _escape_notion_table_cell(cell: str) -> str:
-    return html.escape(cell, quote=False)
+    return "<br>".join(html.escape(part, quote=False) for part in cell.split("<br>"))
 
 
 def _strip_unsupported_html_tag(match: re.Match[str]) -> str:
@@ -299,7 +364,7 @@ def _strip_unsupported_html_tag(match: re.Match[str]) -> str:
     if not tag_name_match:
         return ""
     tag_name = tag_name_match.group(1).lower()
-    if tag_name in {"table", "tr", "td", "colgroup", "col"}:
+    if tag_name in {"table", "tr", "td", "br", "colgroup", "col"}:
         return tag
     return ""
 

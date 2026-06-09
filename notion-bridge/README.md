@@ -33,6 +33,7 @@ Content-Type: application/json
 - `created_at`이 있으면 서버가 본문 맨 위에 `작성일시: ...`를 한 번만 추가한다.
 - 서버는 입력 Markdown 앞에 `# {title}`을 붙이고, 기존 heading은 한 단계 낮춰 Notion page title이 요청 title로 잡히게 한다.
 - Ennoia 출력에 포함된 HTML 링크, 이미지, 표는 Notion이 처리하기 쉬운 Markdown 링크, 이미지, 표 문법으로 정규화한다.
+- 기본 입력 Markdown 제한은 150,000자다. 변환 후 Notion에 보낼 Markdown은 UTF-8 기준 475,000 bytes를 넘기지 않는다.
 - Notion API key는 서버 환경변수에만 둔다. Ennoia에는 `NOTION_BRIDGE_TOKEN`만 넣는다.
 
 ## Response
@@ -61,6 +62,7 @@ Content-Type: application/json
 ```bash
 cp .env.notion-bridge.example .env.notion-bridge
 # Fill NOTION_API_KEY, NOTION_PARENT_PAGE_ID, NOTION_BRIDGE_TOKEN
+# Optional tuning: NOTION_BRIDGE_MAX_MARKDOWN_CHARS, NOTION_BRIDGE_MAX_NOTION_MARKDOWN_BYTES
 
 docker compose --env-file .env.notion-bridge -f docker-compose.notion-bridge.yml up --build notion-bridge
 ```
