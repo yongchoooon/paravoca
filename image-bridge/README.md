@@ -15,7 +15,7 @@ Content-Type: application/json
   "prompt": "Create one portrait travel promotion poster draft...",
   "input_image_urls": ["https://example.com/reference.jpg"],
   "size": "1024x1536",
-  "quality": "medium",
+  "quality": "low",
   "output_format": "jpeg"
 }
 ```
@@ -24,7 +24,6 @@ Content-Type: application/json
 
 ## Behavior
 
-- 요청 body에 `quality`가 들어와도 서버는 항상 `medium`으로 OpenAI에 전달한다.
 - `input_image_urls`가 없으면 `POST https://api.openai.com/v1/images/generations`를 JSON으로 호출한다.
 - `input_image_urls`가 있으면 서버가 URL을 다운로드한 뒤 `POST https://api.openai.com/v1/images/edits`를 multipart form-data로 호출한다.
 - OpenAI 요청에는 기본적으로 `output_format=jpeg`를 포함한다. OpenAI 공식 문서 기준 JPEG는 PNG보다 빠르므로 latency가 중요할 때 우선 사용할 수 있다.
@@ -41,7 +40,7 @@ Content-Type: application/json
   "input_image_count": 1,
   "model": "gpt-image-2",
   "size": "1024x1536",
-  "quality": "medium",
+  "quality": "low",
   "output_format": "jpeg"
 }
 ```
@@ -67,7 +66,7 @@ Generate test:
 curl -X POST http://localhost:8080/generate \
   -H "Authorization: Bearer $IMAGE_BRIDGE_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"prompt":"Create one portrait Korean travel poster draft for a quiet coastal walking tour.","size":"1024x1536","quality":"medium"}'
+  -d '{"prompt":"Create one portrait Korean travel poster draft for a quiet coastal walking tour.","size":"1024x1536","quality":"low"}'
 ```
 
 ## Cloudflare Tunnel
