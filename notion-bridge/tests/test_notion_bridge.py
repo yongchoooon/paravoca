@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+import re
 from fastapi.testclient import TestClient
 
 from app import main as main_module
@@ -10,6 +11,7 @@ from app.main import (
     _build_notion_markdown,
     _normalize_ennoia_markdown,
     _post_notion_page,
+    _server_created_at,
     app,
 )
 
@@ -34,6 +36,7 @@ def test_health_endpoint_available():
 def test_rejects_unsupported_proposal_type():
     with pytest.raises(ValueError):
         NotionPageCreateRequest(title="title", markdown="# body", proposal_type="unknown")
+
 
 
 def test_normalizes_html_buttons_and_images_to_markdown():
@@ -171,6 +174,12 @@ def test_build_notion_markdown_sets_requested_title_and_demotes_existing_h1():
 
     assert result.startswith("# 서귀포 상품 제안서\n\n## 여행 상품 추천")
     assert "\n\n### 1. 상품" in result
+
+
+def test_server_created_at_uses_korean_datetime_format():
+    value = _server_created_at()
+
+    assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", value)
 
 
 def test_build_notion_markdown_prepends_created_at_once():

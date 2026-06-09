@@ -14,8 +14,7 @@ Content-Type: application/json
 {
   "title": "서귀포 동선 중심 여행상품 제안서",
   "markdown": "# 여행 상품 추천\n\n...",
-  "proposal_type": "travel_recommendation",
-  "created_at": "2026-06-08 21:26:51"
+  "proposal_type": "travel_recommendation"
 }
 ```
 
@@ -30,7 +29,7 @@ Content-Type: application/json
 ## Behavior
 
 - `markdown`은 Notion의 Markdown page 생성 API로 전달한다.
-- `created_at`이 있으면 서버가 본문 맨 위에 `작성일시: ...`를 한 번만 추가한다.
+- 서버가 현재 한국 시간을 생성해 본문 맨 위에 `작성일시: ...`를 한 번만 추가한다.
 - 서버는 입력 Markdown 앞에 `# {title}`을 붙이고, 기존 heading은 한 단계 낮춰 Notion page title이 요청 title로 잡히게 한다.
 - Ennoia 출력에 포함된 HTML 링크, 이미지, 표는 Notion이 처리하기 쉬운 Markdown 링크, 이미지, 표 문법으로 정규화한다.
 - 기본 입력 Markdown 제한은 150,000자다. 변환 후 Notion에 보낼 Markdown은 UTF-8 기준 475,000 bytes를 넘기지 않는다.
@@ -79,7 +78,7 @@ Create page test:
 curl -X POST http://localhost:8081/notion/pages \
   -H "Authorization: Bearer $NOTION_BRIDGE_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"title":"PARAVOCA 테스트 문서","markdown":"# 테스트\n\n본문입니다.","proposal_type":"travel_recommendation","created_at":"2026-06-08 21:26:51"}'
+  -d '{"title":"PARAVOCA 테스트 문서","markdown":"# 테스트\n\n본문입니다.","proposal_type":"travel_recommendation"}'
 ```
 
 ## Cloudflare Tunnel
@@ -117,8 +116,9 @@ docker compose --env-file .env.notion-bridge -f docker-compose.notion-bridge.yml
 - Method: `POST`
 - URL: `https://notion-api.example.com/notion/pages`
 - Header: `Authorization: Bearer <NOTION_BRIDGE_TOKEN>`
-- Body: `title`, `markdown`, `proposal_type`
+- Body required: `title`, `markdown`, `proposal_type`
 - Display: render `markdown` or link to `page_url`.
+- The connector schema describes allowed fields. The HTTP request body must be the actual payload object, not the schema object.
 
 Body schema:
 
@@ -137,10 +137,6 @@ Body schema:
     "proposal_type": {
       "type": "string",
       "description": "One of: travel_recommendation, product_planner, operations, marketing, poster_result."
-    },
-    "created_at": {
-      "type": "string",
-      "description": "Optional current datetime from Ennoia Current date, format YYYY-MM-DD HH:mm:ss."
     }
   },
   "required": [

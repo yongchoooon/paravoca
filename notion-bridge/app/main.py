@@ -3,7 +3,9 @@ from __future__ import annotations
 import html
 import re
 import time
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -40,7 +42,6 @@ class NotionPageCreateRequest(BaseModel):
     title: str = Field(..., min_length=1)
     markdown: str = Field(..., min_length=1)
     proposal_type: str = Field(..., min_length=1)
-    created_at: str = ""
 
     @field_validator("title")
     @classmethod
@@ -75,10 +76,6 @@ class NotionPageCreateRequest(BaseModel):
             raise ValueError(f"proposal_type must be one of {sorted(_ALLOWED_PROPOSAL_TYPES)}")
         return cleaned
 
-    @field_validator("created_at")
-    @classmethod
-    def validate_created_at(cls, value: str) -> str:
-        return " ".join(value.strip().split())
 
 
 class NotionPageCreateResponse(BaseModel):
@@ -124,7 +121,7 @@ def create_notion_page(payload: NotionPageCreateRequest) -> NotionPageCreateResp
         raise HTTPException(status_code=500, detail="NOTION_PARENT_PAGE_ID is not configured")
 
     started = time.perf_counter()
-    notion_markdown = _build_notion_markdown(title=payload.title, markdown=payload.markdown, created_at=payload.created_at)
+    notion_markdown = _build_notion_markdown(title=payload.title, markdown=payload.markdown, created_at=_server_created_at())
     notion_markdown_size = len(notion_markdown.encode("utf-8"))
     if notion_markdown_size > settings.notion_bridge_max_notion_markdown_bytes:
         raise HTTPException(
@@ -194,6 +191,10 @@ def _post_notion_page(
             "markdown": markdown,
         },
     )
+
+
+def _server_created_at() -> str:
+    return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _build_notion_markdown(*, title: str, markdown: str, created_at: str = "") -> str:
