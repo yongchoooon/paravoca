@@ -238,6 +238,10 @@ def _replace_table_tag(match: re.Match[str]) -> str:
     if not rows:
         return _strip_tags(table_html)
 
+    image_gallery = _build_image_gallery(rows)
+    if image_gallery:
+        return "\n\n" + image_gallery + "\n\n"
+
     return "\n\n" + _build_notion_table(rows, header_row=True) + "\n\n"
 
 
@@ -278,7 +282,11 @@ def _replace_pipe_tables(markdown: str) -> str:
                 output.append(separator_line)
                 continue
 
-            output.append(_build_notion_table(rows, header_row=True))
+            image_gallery = _build_image_gallery(rows)
+            if image_gallery:
+                output.append(image_gallery)
+            else:
+                output.append(_build_notion_table(rows, header_row=True))
             continue
 
         output.append(lines[index])
@@ -344,6 +352,58 @@ def _build_notion_table(rows: list[list[str]], *, header_row: bool) -> str:
         lines.append("\t</tr>")
     lines.append("</table>")
     return "\n".join(lines)
+
+
+def _build_image_gallery(rows: list[list[str]]) -> str:
+    images, has_non_image_content = _collect_table_images(rows)
+    if (has_non_image_content or len(images) < 2) and len(rows) > 1:
+        images, has_non_image_content = _collect_table_images(rows[1:])
+
+    if has_non_image_content or len(images) < 2:
+        return ""
+
+    return "\n\n".join(f"![{alt or 'image'}]({url})" for alt, url in images[:6])
+
+
+def _collect_table_images(rows: list[list[str]]) -> tuple[list[tuple[str, str]], bool]:
+    images: list[tuple[str, str]] = []
+    has_non_image_content = False
+    for row in rows:
+        for cell in row:
+            cleaned = cell.strip()
+            if not cleaned:
+                continue
+            cell_images = _extract_cell_images(cleaned)
+            remaining = cleaned
+            for image_markdown, _, _ in cell_images:
+                remaining = remaining.replace(image_markdown, "")
+            remaining = re.sub(r"[\s|/·,]+", "", remaining)
+            if cell_images and not remaining:
+                images.extend((alt, url) for _, alt, url in cell_images)
+            else:
+                has_non_image_content = True
+
+    return images, has_non_image_content
+
+
+def _extract_cell_images(cell: str) -> list[tuple[str, str, str]]:
+    images: list[tuple[str, str, str]] = []
+
+    linked_image_pattern = re.compile(r"\[!\[([^\]]*)\]\(([^)\s]+)\)\]\(([^)\s]+)\)")
+    consumed_spans: list[tuple[int, int]] = []
+    for match in linked_image_pattern.finditer(cell):
+        image_url = match.group(2).strip()
+        link_url = match.group(3).strip()
+        images.append((match.group(0), match.group(1).strip(), link_url or image_url))
+        consumed_spans.append(match.span())
+
+    plain_image_pattern = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+    for match in plain_image_pattern.finditer(cell):
+        if any(start <= match.start() and match.end() <= end for start, end in consumed_spans):
+            continue
+        images.append((match.group(0), match.group(1).strip(), match.group(2).strip()))
+
+    return images
 
 
 def _normalize_table_cell(cell_html: str) -> str:

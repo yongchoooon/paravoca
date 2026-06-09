@@ -73,6 +73,26 @@ def test_normalizes_html_tables_to_notion_tables():
     assert "<th" not in normalized
 
 
+def test_extracts_html_image_tables_to_image_blocks():
+    markdown = """
+<table>
+  <tr>
+    <td><a href="https://example.com/a.jpg"><img src="https://example.com/a.jpg" alt="이미지 1" /></a></td>
+    <td><a href="https://example.com/b.jpg"><img src="https://example.com/b.jpg" alt="이미지 2" /></a></td>
+    <td><a href="https://example.com/c.jpg"><img src="https://example.com/c.jpg" alt="이미지 3" /></a></td>
+  </tr>
+</table>
+"""
+
+    normalized = _normalize_ennoia_markdown(markdown)
+
+    assert "![이미지 1](https://example.com/a.jpg)" in normalized
+    assert "![이미지 2](https://example.com/b.jpg)" in normalized
+    assert "![이미지 3](https://example.com/c.jpg)" in normalized
+    assert "<table" not in normalized
+    assert "<td>" not in normalized
+
+
 def test_normalizes_pipe_tables_to_notion_tables():
     markdown = """
 | 번호 | 광고 카피 |
@@ -89,6 +109,22 @@ def test_normalizes_pipe_tables_to_notion_tables():
     assert "<td>숲에서 쉬는 여행</td>" in normalized
     assert "<td>청풍호 | 호반 감성</td>" in normalized
     assert "| --- | --- |" not in normalized
+
+
+def test_extracts_pipe_image_tables_to_image_blocks():
+    markdown = """
+| 이미지 1 | 이미지 2 | 이미지 3 |
+| --- | --- | --- |
+| ![보름달](https://example.com/a.jpg) | ![야경](https://example.com/b.jpg) | ![전망](https://example.com/c.jpg) |
+"""
+
+    normalized = _normalize_ennoia_markdown(markdown)
+
+    assert "![보름달](https://example.com/a.jpg)" in normalized
+    assert "![야경](https://example.com/b.jpg)" in normalized
+    assert "![전망](https://example.com/c.jpg)" in normalized
+    assert "<table" not in normalized
+    assert "| 이미지 1 | 이미지 2 | 이미지 3 |" not in normalized
 
 
 def test_keeps_multiline_table_cell_bullets_inside_the_cell():
