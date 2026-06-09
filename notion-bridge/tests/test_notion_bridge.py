@@ -140,11 +140,30 @@ def test_keeps_multiline_table_cell_bullets_inside_the_cell():
 
     assert '<table fit-page-width="true" header-row="true">' in normalized
     assert (
-        "<td>- 무료 입장 명소 위주로 구성되어 비용 부담이 적습니다.<br>"
-        "- 인스타그램 포토존으로 알려진 보름달 조형물 등이 포함되어 있습니다.<br>"
+        "<td>- 무료 입장 명소 위주로 구성되어 비용 부담이 적습니다.<br />"
+        "- 인스타그램 포토존으로 알려진 보름달 조형물 등이 포함되어 있습니다.<br />"
         "- 부산항대교 야경과 도심 조망이 가능한 명소들로 동선이 구성되어 있습니다.</td>"
     ) in normalized
-    assert normalized.count("<br>- ") == 2
+    assert normalized.count("<br />- ") == 2
+
+
+def test_keeps_multiline_html_table_cells_inside_the_cell():
+    markdown = """
+<table>
+  <tr><th>항목</th><th>내용</th></tr>
+  <tr><td>판매/홍보 문구</td><td>Headline: 반려동물과 함께 걷는 부산<br>Subcopy: 해안 산책 코스입니다.<br>CTA: 코스 확인하기</td></tr>
+</table>
+"""
+
+    normalized = _normalize_ennoia_markdown(markdown)
+
+    assert '<table fit-page-width="true" header-row="true">' in normalized
+    assert "<td>판매/홍보 문구</td>" in normalized
+    assert (
+        "<td>Headline: 반려동물과 함께 걷는 부산<br />"
+        "Subcopy: 해안 산책 코스입니다.<br />"
+        "CTA: 코스 확인하기</td>"
+    ) in normalized
 
 
 def test_build_notion_markdown_sets_requested_title_and_demotes_existing_h1():

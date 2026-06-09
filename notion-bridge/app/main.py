@@ -212,7 +212,7 @@ def _prepend_created_at(*, markdown: str, created_at: str) -> str:
 
 def _normalize_ennoia_markdown(markdown: str) -> str:
     text = markdown.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\s*br\s*/?\s*>", "<br />", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*img\b[^>]*>", _replace_img_tag, text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<\s*a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)<\s*/\s*a\s*>", _replace_anchor_tag, text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<\s*table\b[^>]*>.*?<\s*/\s*table\s*>", _replace_table_tag, text, flags=re.IGNORECASE | re.DOTALL)
@@ -407,15 +407,18 @@ def _extract_cell_images(cell: str) -> list[tuple[str, str, str]]:
 
 
 def _normalize_table_cell(cell_html: str) -> str:
-    cell = re.sub(r"<\s*br\s*/?\s*>", " ", cell_html, flags=re.IGNORECASE)
+    line_break_token = "___PARAVOCA_BR___"
+    cell = re.sub(r"<\s*br\s*/?\s*>", line_break_token, cell_html, flags=re.IGNORECASE)
     cell = _strip_tags(cell)
     cell = html.unescape(cell)
-    cell = re.sub(r"\s+", " ", cell).strip()
+    parts = [re.sub(r"\s+", " ", part).strip() for part in cell.split(line_break_token)]
+    cell = "<br />".join(part for part in parts if part)
     return cell
 
 
 def _escape_notion_table_cell(cell: str) -> str:
-    return "<br>".join(html.escape(part, quote=False) for part in cell.split("<br>"))
+    parts = re.split(r"<br\s*/?>", cell)
+    return "<br />".join(html.escape(part, quote=False) for part in parts)
 
 
 def _strip_unsupported_html_tag(match: re.Match[str]) -> str:
