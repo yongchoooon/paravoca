@@ -16,6 +16,9 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+FIXED_IMAGE_QUALITY = "medium"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -23,7 +26,8 @@ class Settings(BaseSettings):
     image_bridge_token: str = ""
     image_bridge_model: str = "gpt-image-2"
     image_bridge_default_size: str = "1024x1536"
-    image_bridge_default_quality: str = "low"
+    # Kept for environment compatibility; /generate always uses FIXED_IMAGE_QUALITY.
+    image_bridge_default_quality: str = FIXED_IMAGE_QUALITY
     image_bridge_default_output_format: str = "jpeg"
     image_bridge_public_base_url: str = ""
     image_bridge_storage_dir: str = "data/images"
@@ -142,6 +146,7 @@ def health() -> dict[str, Any]:
         "storage_dir": str(storage_dir),
         "auth_configured": bool(settings.image_bridge_token.strip()),
         "default_output_format": settings.image_bridge_default_output_format,
+        "fixed_quality": FIXED_IMAGE_QUALITY,
     }
 
 
@@ -154,7 +159,9 @@ def generate_image(payload: ImageGenerateRequest, request: Request) -> ImageGene
     started = time.perf_counter()
     model = payload.model or settings.image_bridge_model
     size = payload.size or settings.image_bridge_default_size
-    quality = payload.quality or settings.image_bridge_default_quality
+    # Poster image quality is product-policy fixed. Accept legacy request values for
+    # connector compatibility, but never let callers downgrade or upgrade it.
+    quality = FIXED_IMAGE_QUALITY
     output_format = payload.output_format or settings.image_bridge_default_output_format
 
     with httpx.Client(timeout=settings.image_bridge_request_timeout_seconds, follow_redirects=True) as client:

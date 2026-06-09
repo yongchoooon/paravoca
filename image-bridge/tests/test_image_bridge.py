@@ -34,6 +34,7 @@ def test_health_endpoint_available():
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert response.json()["default_output_format"] == "jpeg"
+    assert response.json()["fixed_quality"] == "medium"
 
 
 def test_rejects_more_than_three_input_images():
@@ -105,6 +106,36 @@ def test_new_image_path_adds_suffix_on_timestamp_collision(monkeypatch, tmp_path
     assert not second_path.exists()
 
 
+def test_generate_endpoint_forces_medium_quality(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module.settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(main_module.settings, "image_bridge_token", "")
+    monkeypatch.setattr(main_module, "storage_dir", tmp_path)
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"x-request-id": "req-test"}
+
+        def json(self):
+            return {"data": [{"b64_json": base64.b64encode(b"jpg-bytes").decode("ascii")}]}
+
+    def fake_call_image_generations(**kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(main_module, "_call_image_generations", fake_call_image_generations)
+
+    client = TestClient(app)
+    response = client.post(
+        "/generate",
+        json={"prompt": "poster prompt", "size": "1024x1536", "quality": "low"},
+    )
+
+    assert response.status_code == 200
+    assert captured["quality"] == "medium"
+    assert response.json()["quality"] == "medium"
+
+
 def test_generation_request_asks_openai_for_jpeg_output():
     client = FakeOpenAIClient()
 
@@ -114,7 +145,7 @@ def test_generation_request_asks_openai_for_jpeg_output():
         model="gpt-image-2",
         prompt="poster prompt",
         size="1024x1024",
-        quality="low",
+        quality="medium",
         output_format="jpeg",
     )
 
@@ -136,7 +167,7 @@ def test_edit_request_asks_openai_for_jpeg_output(monkeypatch):
         model="gpt-image-2",
         prompt="poster prompt",
         size="1024x1536",
-        quality="low",
+        quality="medium",
         output_format="jpeg",
         input_image_urls=["https://example.com/reference.jpg"],
     )
